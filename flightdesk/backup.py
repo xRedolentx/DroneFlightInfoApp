@@ -140,11 +140,27 @@ def create_backup(conn: sqlite3.Connection, root: Path, destination: Path,
         target = destination / f"{BACKUP_PREFIX}{stamp}.zip"
         if target.exists():
             target = destination / f"{BACKUP_PREFIX}{stamp}-{os.getpid()}.zip"
-        with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
-            zf.write(manifest_path, MANIFEST)
-            zf.write(backup_db, DB_NAME)
-            for item in archive_manifest:
-                zf.write(staging / "archive" / item["rel"], f"archive/{item['rel']}")
+        # Write beside the destination and rename only once complete, so an
+        # interrupted or disk-full backup can never leave a truncated ZIP
+        # that looks like a real backup.
+        partial = target.with_name(target.name + ".part")
+        try:
+            with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+                zf.write(manifest_path, MANIFEST)
+                zf.write(backup_db, DB_NAME)
+                for item in archive_manifest:
+                    zf.write(staging / "archive" / item["rel"], f"archive/{item['rel']}")
+            os.replace(partial, target)
+        except OSError as exc:
+            partial.unlink(missing_ok=True)
+            code = "disk_full" if getattr(exc, "errno", None) == 28 else "backup_write_failed"
+            with db.tx(conn):
+                conn.execute(
+                    "INSERT INTO backup_runs(created_at,destination,status,note) "
+                    "VALUES(?,?,?,?)",
+                    (db.now_utc(), str(target), "failed", code),
+                )
+            return {"ok": False, "code": code, "warnings": warnings}
         zip_sha = _sha256_file(target)
         (target.with_suffix(target.suffix + ".sha256")).write_text(
             f"{zip_sha}  {target.name}\n", encoding="utf-8"

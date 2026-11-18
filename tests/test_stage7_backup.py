@@ -82,6 +82,37 @@ class BackupTest(TempCase):
         self.assertTrue(ok["ok"])
         self.assertFalse(lock.exists())
 
+    def test_interrupted_backup_leaves_no_partial_archive(self) -> None:
+        import zipfile
+        from unittest import mock
+
+        def exploding_write(self, *args, **kwargs):
+            raise OSError(28, "simulated disk full")
+
+        with mock.patch.object(zipfile.ZipFile, "write", exploding_write):
+            result = backup.create_backup(self.conn, self.root, self.dest)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "disk_full")
+        # nothing that looks like a backup may remain in the destination
+        leftovers = [p.name for p in self.dest.iterdir()]
+        self.assertEqual(leftovers, [])
+        # the lock must be released so the next attempt can run
+        self.assertFalse((self.root / "tmp" / "backup.lock").exists())
+        follow = backup.create_backup(self.conn, self.root, self.dest)
+        self.assertTrue(follow["ok"], follow)
+        self.assertTrue(backup.validate_backup(Path(follow["path"]))["ok"])
+
+    def test_interrupted_backup_is_recorded_as_failed(self) -> None:
+        import zipfile
+        from unittest import mock
+
+        with mock.patch.object(zipfile.ZipFile, "write",
+                               side_effect=OSError(28, "simulated disk full")):
+            backup.create_backup(self.conn, self.root, self.dest)
+        row = db.one(self.conn, "SELECT * FROM backup_runs ORDER BY id DESC LIMIT 1")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["status"], "failed")
+
     def test_corrupted_backup_is_rejected(self) -> None:
         result = backup.create_backup(self.conn, self.root, self.dest)
         path = Path(result["path"])

@@ -257,6 +257,41 @@ class FailureTest(TempCase):
         self.assertIn(row["status"], {"damaged", "needs_attention"})
         self.assertTrue(archive.archive_path(self.root, row["stored_rel"]).exists())
 
+    def test_disk_full_keeps_the_index_clean(self) -> None:
+        from unittest import mock
+        import flightdesk.archive as archive_mod
+
+        def failing_replace(src, dst, *args, **kwargs):
+            raise OSError(28, "simulated disk full")
+
+        with mock.patch.object(archive_mod.os, "replace", failing_replace):
+            totals = self.import_bytes(log_bytes(11), "DJIFlightRecord_2026-08-11_[21-53-20].txt")
+        self.assertEqual(totals["needs_attention"], 1)
+        self.assertEqual(totals["new"], 0)
+        self.assertEqual(totals["new_flight"], 0)
+        # no raw file and no flight were indexed for the failed write
+        self.assertEqual(self.counts()["raw"], 0)
+        self.assertEqual(self.counts()["flights"], 0)
+        row = db.one(self.conn, "SELECT * FROM import_batches ORDER BY rowid DESC LIMIT 1")
+        self.assertEqual(row["status"], "attention")
+        # The archive layer maps ENOSPC to a precise reason, not a generic one.
+        self.assertEqual(row["note"], "disk_full")
+        # A half-written temp file must not be left behind either.
+        self.assertEqual(list((self.root / "tmp").glob("ingest-*.part")), [])
+
+    def test_disk_full_during_ingest_is_a_stated_reason(self) -> None:
+        from unittest import mock
+        from flightdesk.archive import DiskFull
+        import flightdesk.importer as importer_mod
+
+        with mock.patch.object(importer_mod.archive, "store_stream",
+                               side_effect=DiskFull("no space")):
+            totals = self.import_bytes(log_bytes(11), "DJIFlightRecord_2026-08-11_[21-53-20].txt")
+        self.assertEqual(totals["needs_attention"], 1)
+        self.assertEqual(self.counts()["raw"], 0)
+        row = db.one(self.conn, "SELECT * FROM import_batches ORDER BY rowid DESC LIMIT 1")
+        self.assertEqual(row["note"], "disk_full")
+
     def test_restart_does_not_lose_queued_work(self) -> None:
         data = log_bytes(11, days=3)
         self.imp.import_stream(io.BytesIO(data), "FlightRecord_2026-08-14_[21-53-20].txt",
