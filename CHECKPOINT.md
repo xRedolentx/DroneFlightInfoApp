@@ -5,7 +5,7 @@ Everything below was verified on this machine today; nothing is aspirational.
 
 ## State at a glance
 
-- Local Git: **9 → 10 commits**, head `a631f9bd` (single-branch, no remote, no push).
+- Local Git: **14 commits**, head `59dee6cc`; no remote, nothing pushed.
 - Working tree: clean.
 - `python -m flightdesk selftest` → **130 tests, 0 failures, 0 errors**.
 - `node tools\ui_check.mjs <port> <outdir> <zip>` → **65 checks, 0 failures**.
