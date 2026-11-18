@@ -45,6 +45,24 @@ PASS second backup is independent
 {"distinct_files": 5, "logical_flights": 5, "rules": 35, "services": 21, "backups": 2}
 ```
 
+## 2b. Reconciliation arithmetic
+
+```
+> python tools\recon_check.py
+PASS archive files :: 3
+PASS archive air minutes :: 30.0
+PASS archive miles :: 3.0
+PASS video count stays unknown :: None
+PASS controller extra counted separately :: 1
+PASS combined :: 4
+PASS no signed difference on synthetic data :: None
+SUMMARY PASS checks=11 failures=0
+```
+
+Three archive flights of exactly 10 minutes and 1 mile each, plus one
+controller extra: the grouped views are arithmetically honest and a missing
+video count is not invented.
+
 ## 3. Browser workflow
 
 ```
