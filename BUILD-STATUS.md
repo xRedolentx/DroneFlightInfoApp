@@ -1,7 +1,7 @@
 # BUILD-STATUS
 
 Flight Desk · stage-by-stage status against `FlightDesk-DeepSeek-Build.md`.
-Last updated: 2026-11-17. Data used for every automated check below is
+Last updated: 2026-11-17 (end of day). Resume from `CHECKPOINT.md`. Data used for every automated check below is
 **synthetic** (invented aircraft, serials, dates, routes).
 
 ## How to reproduce
@@ -156,6 +156,14 @@ Keychain decoding uses `flightdesk-decode`, built locally from `shim/` against
   passes all 13 end-to-end steps on a fresh root.
 - Backup uses the SQLite backup API, copies every archive object, verifies each
   hash, writes a manifest with schema version and counts, and records the run.
+- **Interrupted backup is now safe.** The archive is written to `*.part` and
+  renamed only after the ZIP closes, so a disk-full or crash cannot leave a
+  truncated file that looks like a real backup. A failure returns
+  `{"ok": false, "code": "disk_full"}`, records a `failed` run, releases the
+  lock, and the next backup validates. Covered by three tests plus
+  `tools\fault_check.py`.
+- **Disk full during import** keeps the index clean: one `needs_attention` item,
+  `note = disk_full`, no raw file, no flight, no leftover `ingest-*.part`.
 - Restore extracts to a new root, re-verifies hashes and `foreign_key_check`,
   refuses the live root, refuses a populated target without confirmation, and
   refuses a corrupted archive.
@@ -188,7 +196,7 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 126 automated tests, all passing (`python -m flightdesk selftest`).
+- 130 automated tests, all passing (`python -m flightdesk selftest`).
 - 65 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview/apply gate).
@@ -210,6 +218,10 @@ Exact commands and outputs are in `VERIFICATION.md`.
    runs; it has never enumerated a real controller.
 3. **Screenshots 01/03/19/20/21–23 comparison** needs Kevin's reference images.
    The in-app comparison page pairs them without uploading.
+5. **Restore interruption** is only tested at its ends (validation failure,
+   live-root refusal, corrupted archive), not injected mid-extraction.
+   **Backup during an active USB scan** is covered by a settings-level test, not
+   a genuinely concurrent scan. Both are named in `CHECKPOINT.md`.
 4. **Video count** is reported as seconds only. The capture publishes no video
    count, so `videos_count` stays `null` instead of being derived.
 

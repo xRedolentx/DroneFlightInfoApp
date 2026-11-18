@@ -9,12 +9,12 @@ filenames, serials, coordinates or raw stderr were ever printed.
 
 ```
 > python -m flightdesk selftest
-{"ok": true, "tests": 126, "failures": 0, "errors": 0, "skipped": 0}
+{"ok": true, "tests": 130, "failures": 0, "errors": 0, "skipped": 0}
 ```
 
 Groups:
 
-- `tests/test_stage1_import.py` — 20 checks
+- `tests/test_stage1_import.py` — 23 checks (incl. disk-full paths)
 - `tests/test_stage2_equipment.py` — 22 checks
 - `tests/test_stage3_web.py` — 26 checks (HTTP security, API, packaged assets,
   a `node --check` parse gate over every browser script, the picker backend, and
@@ -22,7 +22,7 @@ Groups:
 - `tests/test_stage4_usb.py` — 13 checks (simulated adapter)
 - `tests/test_stage5_key.py` — 14 checks (exchange shape, DPAPI, offline cache)
 - `tests/test_stage6_analysis.py` — 10 checks
-- `tests/test_stage7_backup.py` — 12 checks
+- `tests/test_stage7_backup.py` — 14 checks (incl. interrupted backup)
 - `tests/test_diag_privacy.py` — 3 checks (fail-closed output redaction)
 
 ## 2. End-to-end rehearsal
@@ -44,6 +44,23 @@ PASS reconciliation report is readable
 PASS second backup is independent
 {"distinct_files": 5, "logical_flights": 5, "rules": 35, "services": 21, "backups": 2}
 ```
+
+## 2a. Fault injection
+
+```
+> python tools\fault_check.py
+backup_returned=False
+backup_code=disk_full
+destination_entries=[]
+lock_present=False
+staging_dirs=0
+followup_ok=True
+followup_valid=True
+```
+
+With `zipfile.ZipFile.write` forced to raise `ENOSPC`, the backup reports
+`disk_full`, leaves the destination **empty** (no truncated ZIP), releases its
+lock, and the next backup validates.
 
 ## 2b. Reconciliation arithmetic
 

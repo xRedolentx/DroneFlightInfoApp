@@ -12,7 +12,9 @@ database, and no request to any external service except the single DJI
 keychain exchange you explicitly trigger with your own developer key.
 
 Start with **`OWNER-GUIDE.md`**. Stage-by-stage status is in `BUILD-STATUS.md`;
-the raw evidence is in `VERIFICATION.md`.
+the raw evidence is in `VERIFICATION.md`. If you are resuming work on a later
+day, read **`CHECKPOINT.md`** first: it lists what is verified, what is still
+waiting on you, and the exact commands to re-check both.
 
 ## Start it
 
