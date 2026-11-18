@@ -444,7 +444,7 @@
       tile("Distance", fmtDistance(totals.distance_m, 1), "", "from log details") +
       tile("Media", totals.photos === null ? "—" : String(totals.photos),
         totals.photos === null ? "" : "photos",
-        totals.videos === null ? "counts unavailable" : totals.videos + " video clips");
+        totals.videos === null ? "counts unavailable" : totals.videos + " flights with video");
     var list = document.getElementById("flight-list");
     var records = document.getElementById("records");
     document.getElementById("list-count").textContent = data.rows.length + " shown";

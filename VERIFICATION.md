@@ -9,8 +9,13 @@ filenames, serials, coordinates or raw stderr were ever printed.
 
 ```
 > python -m flightdesk selftest
-{"ok": true, "tests": 130, "failures": 0, "errors": 0, "skipped": 0}
+{"ok": true, "tests": 149, "failures": 0, "errors": 0, "skipped": 0}
 ```
+
+Counts per module as of 2026-11-18 (test methods):
+`test_stage1_import` 24, `test_stage2_equipment` 34, `test_stage3_web` 31,
+`test_stage4_usb` 13, `test_stage5_key` 14, `test_stage6_analysis` 16,
+`test_stage7_backup` 14, `test_diag_privacy` 3.
 
 Groups:
 
@@ -152,8 +157,82 @@ key.
 
 ## 7. What this record does not prove
 
-- Any real DJI log: no archive, ZIP, capture or controller data exists on this
-  machine. Stage 1/2/5 reference numbers in the brief remain unverified here.
+- ~~Any real DJI log.~~ Superseded by section 8: the real archive is imported
+  and the real capture is applied. Physical USB controllers, a live DJI keychain
+  decode and visual parity against the 23 screenshots are still unproven.
 - Physical USB controllers (simulated adapter only).
 - A live DJI keychain decode (mechanism verified with a synthetic keychain).
 - Visual parity against the 23 original screenshots (not present here).
+
+## 8. Real inputs, aggregate only (2026-11-18)
+
+Real inputs were read by local code only. Everything printed below is a count by
+source/version/status, a total, or a figure the brief itself publishes. No
+filename, path, serial, coordinate or record row was printed.
+
+### 8.1 Archive inventory — `python tools\diag.py "<handoff.zip>"`
+
+```
+distinct_files=264  logical_flights=264  unresolved=0  errors={}
+source=archive discovered=264 new=225 awaiting_dji=39
+  versions=v8:7,v11:218,v14:39
+  statuses=imported:225,pending_key:39
+```
+
+With the supplied controller folder in the same run:
+
+```
+distinct_files=269  logical_flights=269  unresolved=0
+source=archive  versions=v8:7,v11:218,v14:39
+source=extras   versions=v11:4,v14:1
+```
+
+269 distinct hashes at **7 / 222 / 40** — the brief's table exactly. A second
+pass over the extracted folder reported `new=0 already_imported=264
+flights_added=0`.
+
+### 8.2 Real equipment capture
+
+Parsed and applied on scratch roots, then on the live root behind a rollback
+copy:
+
+```
+current_aircraft=3  historical_aircraft=3  batteries=20 (3 placeholders)
+rules=43  snapshot_counters=72  services=13 (12 resolved, 1 grouped)
+reported_total=21  reporting_gap=8  warnings=4
+statuses: due=2 due_soon=5 ok=20 unknown=16
+```
+
+Pass criteria, read from the live root:
+
+```
+Mavic 2 Pro Extended  flights=188/100 minutes=1018/1000  due
+Mavic 2 Pro Basic     flights=19/20   minutes=62/200      due soon
+Air 3S Basic          flights=16/20   minutes=111/200     due soon
+Mavic 2 battery 3402QS Basic flights=30/20 charges=15/20  due
+```
+
+Archive-then-capture and capture-then-archive produced an identical baseline
+signature; a repeat migration was a no-op.
+
+### 8.3 Archive totals against the reference
+
+```
+records 264 (reference 264)          air 24h21m (reference 24h10m, +11 min)
+distance 95.0 mi (reference 108 mi, -13.0 mi)
+photos 983 (reference 749)           video count unknown (reference 459)
+decoded coverage 225/264 (39 pending key)
+```
+
+Unexplained, and one difference points the wrong way, so AirData stays active.
+
+### 8.4 Truth repairs applied to the live root
+
+```
+temperatures: 217 records whose every sample was 0.0 -> unknown
+              7 records with a genuine non-zero maximum kept
+duration:     1 record claiming 191 h -> unknown (all other aggregates unchanged)
+photos:       1.17 billion on one record -> unknown (archive total now 983)
+video:        29 records exceeding their own flight duration -> unknown
+reparse:      equal-weight reparse refreshes metrics; 0 duplicate flights
+```

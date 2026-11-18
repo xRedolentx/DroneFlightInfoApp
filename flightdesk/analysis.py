@@ -13,6 +13,36 @@ EARTH_R_M = 6371008.8
 DEFAULT_MAX_GAP_S = 10.0
 MAX_PLAUSIBLE_SPEED_MPS = 60.0
 
+# A value beyond these limits is not a reading. A corrupt or
+# version-mismatched details block can yield a 191-hour duration or a
+# 128 km/s speed; those become unknown instead of entering a record.
+PLAUSIBLE_LIMITS = {
+    "duration_s": 43200.0,          # 12 h
+    "recorder_duration_s": 43200.0,
+    "airborne_time_s": 43200.0,
+    "total_distance_m": 500000.0,    # 500 km
+    "path_length_m": 500000.0,
+    "max_home_distance_m": 500000.0,
+    "max_height_m": 1500.0,
+    "max_altitude_m": 9000.0,
+    "max_h_speed_mps": 100.0,        # 360 km/h
+}
+
+
+def drop_implausible(m: "FlightMetrics") -> None:
+    """Clear measured values that cannot be a flight reading, and say so."""
+    for field_name, limit in PLAUSIBLE_LIMITS.items():
+        value = getattr(m, field_name, None)
+        if value is None:
+            continue
+        try:
+            implausible = float(value) > limit
+        except (TypeError, ValueError):
+            implausible = True
+        if implausible:
+            setattr(m, field_name, None)
+            m.flags.append("implausible_" + field_name)
+
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     p1, p2 = math.radians(lat1), math.radians(lat2)
@@ -77,6 +107,8 @@ def compute_metrics(
         m.max_height_m = details.get("max_height_m")
         m.max_h_speed_mps = details.get("max_h_speed_mps")
         m.flags.append("no_samples")
+        drop_implausible(m)
+        m.flags = sorted(set(m.flags))
         return m
 
     times = [float(s["t"]) for s in clean]
@@ -194,9 +226,15 @@ def compute_metrics(
         m.battery_start_pct = float(charges[0])
         m.battery_end_pct = float(charges[-1])
     temps = [float(s["battery_c"]) for s in clean if s.get("battery_c") is not None]
-    if temps:
+    # Some logs report 0 for every sample instead of omitting the field. A
+    # flight that never moves off exactly 0.0 is not reporting a temperature,
+    # so leave it unknown rather than turning it into a reading. A genuinely
+    # freezing flight varies around zero and is kept.
+    if temps and any(abs(t) > 1e-9 for t in temps):
         m.battery_temp_max_c = max(temps)
         m.battery_temp_min_c = min(temps)
+    elif temps:
+        m.flags.append("battery_temp_absent")
     signals = [float(s["signal"]) for s in clean if s.get("signal") is not None]
     if signals:
         m.signal_min = min(signals)
@@ -218,6 +256,7 @@ def compute_metrics(
         m.flags.append("missing_signal")
     if not alts and not heights:
         m.flags.append("missing_altitude")
+    drop_implausible(m)
     m.flags = sorted(set(m.flags))
     return m
 

@@ -158,6 +158,26 @@ def _parse_details_bytes(b: bytes, version: int) -> dict[str, Any] | None:
     }
 
 
+PHOTO_LIMIT = 100000
+VIDEO_TIME_LIMIT_S = 21600  # six hours, the longest plausible single flight
+
+
+def bound_media(details: dict[str, Any]) -> dict[str, Any]:
+    """Photo counts and video seconds come from a fixed-layout block that is
+    not identical in every format version. An impossible value is absence,
+    not a count: 1.1 billion photos must never reach a total."""
+    for key, limit in (("photo_num", PHOTO_LIMIT), ("video_time_s", VIDEO_TIME_LIMIT_S)):
+        value = details.get(key)
+        if value is None:
+            continue
+        try:
+            if int(value) < 0 or int(value) > limit:
+                details[key] = None
+        except (TypeError, ValueError):
+            details[key] = None
+    return details
+
+
 def _aux_info(path: Path) -> tuple[bytes, int] | None:
     """Read the v13+ Auxiliary Info block at offset 100 (XOR, no key)."""
     try:
@@ -474,7 +494,7 @@ def parse_file(path: Path, root: Path, keychain_json: list | None = None) -> Par
         return ParseOutcome(
             version=version,
             status="decoded",
-            details=merged,
+            details=bound_media(merged),
             samples=samples,
             meta=meta,
         )
@@ -516,7 +536,7 @@ def parse_file(path: Path, root: Path, keychain_json: list | None = None) -> Par
     return ParseOutcome(
         version=version,
         status="decoded",
-        details=merged,
+        details=bound_media(merged),
         samples=samples,
         meta=meta,
     )

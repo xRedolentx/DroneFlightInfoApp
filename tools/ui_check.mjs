@@ -10,9 +10,15 @@ const zipPath = process.argv[4] || "";
 mkdirSync(outDir, { recursive: true });
 
 const targets = await fetch(`http://127.0.0.1:${debugPort}/json`).then((r) => r.json());
-const page = targets.find((t) => t.type === "page");
+// A fresh Edge profile can expose its own pages (sync confirmation, new tab)
+// beside the app. Attach to the loopback app page, never to the first page
+// that happens to be listed, or every check silently fails.
+const pages = targets.filter((t) => t.type === "page");
+const isLoopbackApp = (url) => /^http:\/\/127\.0\.0\.1(:\d+)?\//.test(url || "");
+const page = pages.find((t) => isLoopbackApp(t.url)) || (pages.length === 1 ? pages[0] : null);
 if (!page) {
-  console.error("FAIL no page target");
+  console.error("FAIL no loopback app page target (saw: " +
+    pages.map((t) => t.url).join(", ") + ")");
   process.exit(1);
 }
 const ws = new WebSocket(page.webSocketDebuggerUrl);
@@ -89,11 +95,16 @@ async function goto(hash) {
   await new Promise((r) => setTimeout(r, 900));
 }
 
+// Drive whichever app instance the browser is already on. The port is not
+// fixed: a scratch root runs on its own port, and hardcoding one silently
+// pointed every check at a dead origin.
+const appOrigin = new URL(page.url).origin;
+
 // --- desktop dashboard -----------------------------------------------------
 await call("Emulation.setDeviceMetricsOverride", {
   width: 1536, height: 1000, deviceScaleFactor: 1, mobile: false,
 });
-await call("Page.navigate", { url: "http://127.0.0.1:8787/" });
+await call("Page.navigate", { url: `${appOrigin}/` });
 await waitFor("!!document.querySelector('.flight-list li a')", 20000);
 check("dashboard renders flight rows",
   await evaluate("document.querySelectorAll('.flight-list li a').length > 0"));

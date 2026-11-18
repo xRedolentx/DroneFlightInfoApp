@@ -38,6 +38,23 @@ DATE_RANGE_RE = re.compile(
 DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 CAPTURED_RE = re.compile(r"captured\s*:?\s*(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
 REPORTED_RE = re.compile(r"(\d+)\s+historical\s+service\s+events", re.IGNORECASE)
+# A heading such as "## Completed / skipped service history (21 records)".
+HEADING_TOTAL_RE = re.compile(
+    r"\(\s*(\d+)\s+(?:historical\s+)?(?:service\s+)?(?:events?|records?|rows?)\s*\)",
+    re.IGNORECASE,
+)
+# Counter cells written without unit words ("188/100, 1,018/1,000").
+PAIR_ONLY_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*/\s*(\d[\d,]*(?:\.\d+)?)")
+LAST_DATE_RE = re.compile(r"\(\s*(?:last|at)\s*(\d{4}-\d{2}-\d{2})\s*\)", re.IGNORECASE)
+BATTERY_LISTED_RE = re.compile(r"(\d+)\s+listed", re.IGNORECASE)
+BATTERY_READABLE_RE = re.compile(r"(\d+)\s+readable", re.IGNORECASE)
+SERIAL_LIKE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]{5,}")
+
+RULE_COLUMNS = ("basic", "extended", "full")
+# Counting order observed in the capture itself: an aircraft rule publishes
+# flights then minutes; a battery rule publishes charges first, then flights,
+# then air minutes.
+POSITIONAL_ORDERS = {2: ("flights", "minutes"), 3: ("charges", "flights", "minutes")}
 
 
 def norm_header(value: str) -> str:
@@ -125,6 +142,104 @@ def section_kind(heading: str) -> str:
     if "aircraft" in h or "drone" in h:
         return "aircraft_equipment"
     return "other"
+
+
+def table_kind(headers: list[str], heading: str) -> str:
+    """Shape beats heading. AirData files a per-item rule grid
+    (Item | Basic | Extended | Full) under a heading that mentions service
+    status; that grid is a captured baseline, never a list of service events."""
+    hset = set(headers)
+    rule_cols = [c for c in RULE_COLUMNS if c in hset]
+    if rule_cols and "date" not in hset and "rule" not in hset:
+        other = hset - set(RULE_COLUMNS)
+        if other <= {"item", "name", "aircraft", "battery", "equipment", "serial", "sn"}:
+            return "snapshot_grid"
+    return section_kind(heading)
+
+
+def parse_positional_counters(cell: str) -> list[dict[str, Any]]:
+    """Read a counter cell that carries no unit words positionally.
+
+    Two pairs are flights then minutes; three pairs are charges, flights then
+    minutes. The capture's own neighbouring columns (Chg, Logs, Air and the
+    rule limits 20/200 and 160/1600) are what establish that order.
+    """
+    pairs = PAIR_ONLY_RE.findall(cell or "")
+    if not pairs:
+        return []
+    order = POSITIONAL_ORDERS.get(len(pairs))
+    if order is None:
+        return parse_counters(cell)
+    out: list[dict[str, Any]] = []
+    for metric, (value_s, limit_s) in zip(order, pairs):
+        try:
+            value = float(value_s.replace(",", ""))
+        except ValueError:
+            continue
+        limit = None
+        if limit_s:
+            try:
+                limit = float(limit_s.replace(",", ""))
+            except ValueError:
+                limit = None
+        out.append({
+            "metric": metric,
+            "value": value,
+            "limit": limit,
+            "unit": "minutes" if metric == "minutes" else metric,
+            "rounded": 0 if "." in value_s else 1,
+            "raw": f"{value_s}/{limit_s}",
+        })
+    return out
+
+
+def _baseline_text(cell: str) -> str:
+    m = LAST_DATE_RE.search(cell or "")
+    return m.group(1) if m else ""
+
+
+def _looks_like_serial(value: str) -> bool:
+    v = (value or "").strip()
+    return bool(SERIAL_LIKE_RE.fullmatch(v)) and any(c.isdigit() for c in v) \
+        and any(c.isalpha() for c in v)
+
+
+def _norm_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+
+
+def match_inventory(name: str, inventory: list[tuple[str, str]]) -> str | None:
+    """Resolve one service reference to one inventory entry, only when the
+    evidence is unambiguous.
+
+    Evidence accepted: an exact name; a four-character serial tail; or one
+    normalised name containing the other ("Mavic 2 Pro" against
+    "DJI Mavic 2 Pro"). Several candidates mean the reference stays
+    unresolved instead of being guessed.
+    """
+    low = (name or "").strip().lower()
+    if not low:
+        return None
+    exact = [entry for entry, _ in inventory if entry.strip().lower() == low]
+    if len(exact) == 1:
+        return exact[0]
+    if _looks_like_serial(name):
+        tail = low[-4:]
+        hits = {
+            entry for entry, serial in inventory
+            if (len(entry) >= 4 and tail in entry.lower())
+            or (len(serial) >= 4 and tail == serial.lower()[-4:])
+        }
+        return hits.pop() if len(hits) == 1 else None
+    target = _norm_name(name)
+    if len(target) < 8:
+        return None
+    hits = {
+        entry for entry, _ in inventory
+        if len(_norm_name(entry)) >= 8
+        and (_norm_name(entry) in target or target in _norm_name(entry))
+    }
+    return hits.pop() if len(hits) == 1 else None
 
 
 def normalize_rule(value: str) -> str | None:
@@ -259,11 +374,24 @@ class CaptureDoc:
     services: list[ServiceRow] = field(default_factory=list)
     reported_total: int | None = None
     temperature_placeholder: bool = False
+    battery_listed: int | None = None
+    battery_readable: int | None = None
+    placeholders_added: int = 0
+    reference_only_aircraft: int = 0
+    references_resolved: int = 0
     warnings: list[str] = field(default_factory=list)
 
     @property
     def resolved_services(self) -> int:
         return sum(1 for s in self.services if s.resolved)
+
+    @property
+    def reporting_gap(self) -> int | None:
+        """Records the capture claims minus rows it actually carries. Never
+        closed by inventing the difference."""
+        if self.reported_total is None:
+            return None
+        return self.reported_total - len(self.services)
 
     @property
     def grouped_services(self) -> int:
@@ -288,7 +416,7 @@ def parse_capture(text: str) -> CaptureDoc:
     )
 
     for table in parse_tables(text):
-        kind = section_kind(table["heading"])
+        kind = table_kind(table["headers"], table["heading"])
         rows = table["rows"]
         if kind in ("aircraft_equipment", "historical_equipment", "battery_equipment"):
             eq_kind = "battery" if kind == "battery_equipment" else "aircraft"
@@ -331,6 +459,35 @@ def parse_capture(text: str) -> CaptureDoc:
                     else (doc.historical_aircraft if archived_row else doc.current_aircraft)
                 )
                 target.append(item)
+                if eq_kind == "battery":
+                    # The battery table publishes this item's own rule counters
+                    # in its Basic and Full columns.
+                    for code in RULE_COLUMNS:
+                        cell = row.get(code, "")
+                        counters = parse_positional_counters(cell)
+                        if not counters:
+                            continue
+                        doc.snapshots.append(SnapshotRow(
+                            equipment_name=item.name, serial=item.serial, rule=code,
+                            counters=counters, status="",
+                            baseline_text=_baseline_text(cell),
+                        ))
+        elif kind == "snapshot_grid":
+            for row in rows:
+                name = pick(row, "item", "aircraft", "battery", "equipment", "name")
+                serial = pick(row, "serial", "sn")
+                if not name and not serial:
+                    continue
+                for code in RULE_COLUMNS:
+                    cell = row.get(code, "")
+                    counters = parse_positional_counters(cell)
+                    if not counters:
+                        continue
+                    doc.snapshots.append(SnapshotRow(
+                        equipment_name=(name or "").strip(), serial=serial.strip(),
+                        rule=code, counters=counters, status="",
+                        baseline_text=_baseline_text(cell),
+                    ))
         elif kind == "snapshot":
             for row in rows:
                 rule = normalize_rule(pick(row, "rule", "rule set", "maintenance rule"))
@@ -351,11 +508,12 @@ def parse_capture(text: str) -> CaptureDoc:
             for row in rows:
                 equipment_cell = pick(row, "equipment", "equipment name", "aircraft",
                                       "battery", "item")
-                rule_cell = pick(row, "rule", "rule set", "maintenance rule")
+                rule_cell = pick(row, "rule", "rule set", "maintenance rule", "service")
                 date_raw = pick(row, "date", "when", "performed", "service date")
                 counter_text = pick(row, "counter", "counters", "reading")
                 operator = pick(row, "operator", "technician", "by")
                 notes = pick(row, "notes", "note", "comments", "comment")
+                status_cell = pick(row, "status", "state")
                 equipment_names = split_multi(equipment_cell)
                 rules = [normalize_rule(r) for r in split_multi(rule_cell)]
                 rules = [r for r in rules if r]
@@ -373,7 +531,8 @@ def parse_capture(text: str) -> CaptureDoc:
                     and not rng
                 )
                 low = (notes + " " + date_raw).lower()
-                if "skip" in low:
+                status_low = (status_cell or "").lower()
+                if "skip" in low or "skip" in status_low:
                     service_kind = "skipped"
                 elif "reference only" in low or "pre-purchase" in low or "not yet owned" in low:
                     service_kind = "reference"
@@ -381,6 +540,8 @@ def parse_capture(text: str) -> CaptureDoc:
                     service_kind = "oneoff"
                 else:
                     service_kind = "completed"
+                if "(reset)" in status_low and service_kind == "skipped":
+                    notes = (notes + " Skipped with reset.").strip()
                 raw_wording = " | ".join(str(v) for v in row.values())
                 key_material = "|".join([
                     occurred or "", ended or "", equipment_cell, rule_cell,
@@ -402,6 +563,103 @@ def parse_capture(text: str) -> CaptureDoc:
                     group_key=external_key if not resolved else "",
                     external_key=external_key,
                 ))
+    # A heading can carry the claimed total when the prose does not:
+    # "## Completed / skipped service history (21 records)".
+    if doc.reported_total is None:
+        for line in text.splitlines():
+            if not line.lstrip().startswith("#"):
+                continue
+            found = HEADING_TOTAL_RE.search(line)
+            if found:
+                doc.reported_total = int(found.group(1))
+                break
+
+    # The inventory can list more batteries than it can read. Keep the
+    # unreadable remainder as identified placeholders so the inventory totals
+    # what the capture says it has, and keep those placeholders out of
+    # reminders. No serial, model or reading is invented for them.
+    listed = BATTERY_LISTED_RE.search(text)
+    readable = BATTERY_READABLE_RE.search(text)
+    if listed:
+        doc.battery_listed = int(listed.group(1))
+    if readable:
+        doc.battery_readable = int(readable.group(1))
+    if doc.battery_listed is not None and doc.battery_listed > len(doc.batteries):
+        unreadable = doc.battery_listed - len(doc.batteries)
+        for index in range(unreadable):
+            doc.batteries.append(EquipmentRow(
+                kind="battery",
+                name=f"Unreadable battery {index + 1} of {unreadable} (locked details)",
+                locked=True, placeholder=True, status="unreadable",
+                notes="Listed in the capture but not readable; kept out of reminders.",
+            ))
+        doc.placeholders_added = unreadable
+        doc.warnings.append(
+            f"{unreadable} of {doc.battery_listed} listed batteries are not readable; "
+            f"added as identified placeholders so the inventory totals {doc.battery_listed}"
+        )
+
+    known_names = {
+        row.name.strip().lower()
+        for row in doc.current_aircraft + doc.historical_aircraft + doc.batteries
+        if row.name.strip()
+    }
+    inventory = [
+        (row.name.strip(), (row.serial or "").strip())
+        for row in doc.current_aircraft + doc.historical_aircraft + doc.batteries
+        if row.name.strip()
+    ]
+    for service in doc.services:
+        names: list[str] = []
+        for raw_name in service.equipment_names:
+            low = raw_name.strip().lower()
+            if low in known_names:
+                names.append(raw_name)
+                continue
+            match = match_inventory(raw_name, inventory)
+            if match and match.strip().lower() != low:
+                names.append(match)
+                doc.references_resolved += 1
+            else:
+                names.append(raw_name)
+        service.equipment_names = names
+
+    # Aircraft that appear only in the service history are real history, so
+    # keep them as archived equipment instead of dropping or inventing them.
+    referenced: dict[str, str] = {}
+    for service in doc.services:
+        if len(service.equipment_names) != 1:
+            # A grouped row names several items at once; turning those names
+            # into equipment would be invention, so the row stays grouped.
+            continue
+        raw_name = service.equipment_names[0]
+        name = raw_name.strip()
+        low = name.lower()
+        if not low or low in known_names or _looks_like_serial(name):
+            continue
+        referenced.setdefault(low, name)
+    for low, name in referenced.items():
+        doc.historical_aircraft.append(EquipmentRow(
+            kind="aircraft", name=name, archived=True, status="archived",
+            notes="Service reference only; not present in the flight-log inventory.",
+        ))
+        known_names.add(low)
+        doc.reference_only_aircraft += 1
+    if doc.reference_only_aircraft:
+        doc.warnings.append(
+            f"{doc.reference_only_aircraft} aircraft appear only in the service history; "
+            "kept as archived equipment and excluded from reminders"
+        )
+    loose = sum(
+        1 for service in doc.services
+        for name in service.equipment_names if _looks_like_serial(name)
+    )
+    if loose:
+        doc.warnings.append(
+            f"{loose} service rows reference a serial that is not in the inventory; "
+            "kept unresolved"
+        )
+
     if doc.reported_total is not None and doc.reported_total != len(doc.services):
         doc.warnings.append(
             f"capture reports {doc.reported_total} events; {len(doc.services)} distinguishable rows parsed"
@@ -602,8 +860,12 @@ def preview_capture(conn: sqlite3.Connection, doc: CaptureDoc) -> dict[str, Any]
         "already_applied": existing_snapshot is not None,
         "current_aircraft": len(doc.current_aircraft),
         "historical_aircraft": len(doc.historical_aircraft),
+        "reference_only_aircraft": doc.reference_only_aircraft,
         "batteries": len(doc.batteries),
+        "battery_listed": doc.battery_listed,
+        "battery_readable": doc.battery_readable,
         "placeholders": sum(1 for b in doc.batteries if b.placeholder),
+        "placeholders_added": doc.placeholders_added,
         "equipment_new": equipment_new,
         "rules": sum(
             1
@@ -614,7 +876,9 @@ def preview_capture(conn: sqlite3.Connection, doc: CaptureDoc) -> dict[str, Any]
         "service_events": len(doc.services),
         "resolved_services": doc.resolved_services,
         "grouped_services": doc.grouped_services,
+        "references_resolved": doc.references_resolved,
         "reported_total": doc.reported_total,
+        "reporting_gap": doc.reporting_gap,
         "warnings": doc.warnings,
         "service_rows": service_rows,
     }
@@ -676,6 +940,19 @@ def apply_capture(conn: sqlite3.Connection, doc: CaptureDoc, source_label: str) 
             "serial_links WHERE serial=flights.battery_sn) "
             "WHERE battery_equipment_id IS NULL AND battery_sn IS NOT NULL "
             "AND EXISTS(SELECT 1 FROM serial_links WHERE serial=flights.battery_sn)"
+        )
+
+        # An import that ran before this capture already stored its flights but
+        # could not link them to batteries, so their readings are missing.
+        # Backfill them here so import-then-capture and capture-then-import
+        # leave the same readings behind.
+        conn.execute(
+            "INSERT OR IGNORE INTO battery_readings(battery_id,flight_id,at,charge_pct,"
+            "temp_c,cycles,voltage,source,temp_missing) "
+            "SELECT f.battery_equipment_id, f.id, f.start_time_utc, f.battery_start_pct, "
+            "f.battery_temp_max_c, NULL, NULL, 'log', 0 FROM flights f "
+            "WHERE f.battery_equipment_id IS NOT NULL AND f.battery_start_pct IS NOT NULL "
+            "AND NOT EXISTS(SELECT 1 FROM battery_readings b WHERE b.flight_id=f.id)"
         )
 
         # snapshot header

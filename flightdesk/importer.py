@@ -167,6 +167,21 @@ def _store_telemetry(conn, flight_id: int, samples, metrics, source: str) -> Non
     )
 
 
+def _plausible_video_seconds(details: dict, duration_s: float | None) -> int | None:
+    """Video time cannot exceed the time actually flown (plus a margin for a
+    clip that starts just before takeoff). A larger figure is a parse artefact."""
+    value = details.get("video_time_s")
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if duration_s is not None and seconds > float(duration_s) + 600.0:
+        return None
+    return int(seconds)
+
+
 def _flight_values(
     outcome: ParseOutcome,
     metrics,
@@ -211,9 +226,10 @@ def _flight_values(
         metrics.battery_temp_min_c,
         metrics.signal_min,
         details.get("photo_num"),
-        details.get("video_time_s"),
+        _plausible_video_seconds(details, metrics.duration_s),
         "log_details"
-        if (details.get("photo_num") is not None or details.get("video_time_s") is not None)
+        if (details.get("photo_num") is not None
+            or _plausible_video_seconds(details, metrics.duration_s) is not None)
         else None,
         metrics.sample_count,
         metrics.gap_count,
@@ -259,8 +275,7 @@ def _update_flight_metrics(
             path_length_m=?, max_home_distance_m=?, max_height_m=?, max_altitude_m=?,
             max_h_speed_mps=?, home_lat=?, home_lon=?, home_alt_m=?,
             battery_start_pct=?, battery_end_pct=?, battery_temp_max_c=?,
-            battery_temp_min_c=?, signal_min=?, photo_count=COALESCE(?,photo_count),
-            video_time_s=COALESCE(?,video_time_s),
+            battery_temp_min_c=?, signal_min=?, photo_count=?, video_time_s=?,
             media_source=CASE WHEN ? IS NOT NULL OR ? IS NOT NULL THEN 'log_details' ELSE media_source END,
             sample_count=?, gap_count=?, metrics_source=?, parser_version=?,
             aircraft_equipment_id=COALESCE(aircraft_equipment_id,?),
@@ -291,9 +306,9 @@ def _update_flight_metrics(
             metrics.battery_temp_min_c,
             metrics.signal_min,
             details.get("photo_num"),
-            details.get("video_time_s"),
+            _plausible_video_seconds(details, metrics.duration_s),
             details.get("photo_num"),
-            details.get("video_time_s"),
+            _plausible_video_seconds(details, metrics.duration_s),
             metrics.sample_count,
             metrics.gap_count,
             _metrics_source(outcome),
@@ -329,6 +344,18 @@ def _insert_or_link_flight(
 
     candidate = db.one(conn, "SELECT * FROM flights WHERE fingerprint=? LIMIT 1", (fp,))
     match = "fingerprint" if candidate is not None else "new"
+    # A raw file that is already linked keeps its flight. Otherwise a metrics
+    # correction that changes the fingerprint would make a reparse look like a
+    # brand new flight and duplicate the record.
+    if candidate is None:
+        linked_flight = db.one(
+            conn, "SELECT flight_id FROM flight_files WHERE raw_file_id=? LIMIT 1", (raw_id,)
+        )
+        if linked_flight is not None:
+            candidate = db.one(conn, "SELECT * FROM flights WHERE id=?",
+                               (int(linked_flight["flight_id"]),))
+            if candidate is not None:
+                match = "existing"
     if candidate is None and (aircraft_sn or aircraft_name):
         rows = db.all_rows(
             conn,
@@ -370,7 +397,7 @@ def _insert_or_link_flight(
                 candidate = row
                 match = "weak"
 
-    if candidate is not None and match in ("fingerprint", "strong"):
+    if candidate is not None and match in ("fingerprint", "strong", "existing"):
         flight_id = int(candidate["id"])
         conn.execute(
             "INSERT OR IGNORE INTO flight_files(flight_id,raw_file_id,role,evidence_json,linked_at) "
@@ -383,12 +410,17 @@ def _insert_or_link_flight(
                 now,
             ),
         )
-        if outcome.samples and len(outcome.samples) <= int(candidate["sample_count"] or 0):
+        stored_samples = int(candidate["sample_count"] or 0)
+        if outcome.samples and len(outcome.samples) < stored_samples:
+            # A poorer parse must never replace a richer one.
             return flight_id, False, match
-        if (not outcome.samples) and int(candidate["sample_count"] or 0) > 0:
+        if (not outcome.samples) and stored_samples > 0:
             return flight_id, False, match
         if (not outcome.samples) and not outcome.details:
             return flight_id, False, match
+        # Equal weight is enough to refresh: this is the path a reparse takes
+        # when a parser improves, and it must backfill the same logical flight
+        # instead of keeping figures computed by the old parser.
         _update_flight_metrics(conn, flight_id, details, metrics, outcome, start_utc, filename_time)
         return flight_id, False, match
 

@@ -305,6 +305,29 @@ class FailureTest(TempCase):
         self.assertEqual(again.totals["already_imported"], 1)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0], 1)
 
+    def test_reparse_backfills_metrics_on_the_same_flight(self) -> None:
+        """A parser improvement reaches stored flights through reparse, so an
+        equal-weight reparse has to refresh the metrics of the flight it
+        matches rather than returning early with the old numbers."""
+        self.import_bytes(log_bytes(version=11), "FlightRecord_2026-08-11_[21-53-20].txt")
+        flight = db.one(self.conn, "SELECT * FROM flights")
+        with db.tx(self.conn):
+            # A stale fingerprint is the hard case: the corrected metrics no
+            # longer reproduce it, and the same raw file must still resolve to
+            # the flight it is already linked to.
+            self.conn.execute(
+                "UPDATE flights SET duration_s=1.0, path_length_m=999.0, fingerprint='stale' "
+                "WHERE id=?",
+                (flight["id"],))
+        raw = db.one(self.conn, "SELECT id FROM raw_files LIMIT 1")
+        result = Importer(self.root, self.conn).reparse_raw(int(raw["id"]))
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["new_flight"])
+        after = db.one(self.conn, "SELECT * FROM flights WHERE id=?", (flight["id"],))
+        self.assertAlmostEqual(after["duration_s"], flight["duration_s"], places=3)
+        self.assertAlmostEqual(after["path_length_m"], flight["path_length_m"], places=3)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

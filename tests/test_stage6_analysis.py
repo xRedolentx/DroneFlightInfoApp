@@ -88,6 +88,30 @@ class MetricTest(unittest.TestCase):
         self.assertIsNone(m.signal_min)
         self.assertIsNone(m.battery_temp_max_c)
 
+    def test_all_zero_temperature_is_unknown_not_a_reading(self) -> None:
+        # Some logs write 0 for every sample instead of omitting the field.
+        samples = [sample(0, 45.0, 9.0, height=10, temp=0.0),
+                   sample(10, 45.0001, 9.0, height=12, temp=0.0)]
+        m = compute_metrics(samples, {})
+        self.assertIsNone(m.battery_temp_max_c)
+        self.assertIsNone(m.battery_temp_min_c)
+        self.assertIn("battery_temp_absent", m.flags)
+
+    def test_genuine_freezing_temperature_is_kept(self) -> None:
+        samples = [sample(0, 45.0, 9.0, height=10, temp=-0.4),
+                   sample(10, 45.0001, 9.0, height=12, temp=0.3)]
+        m = compute_metrics(samples, {})
+        self.assertAlmostEqual(m.battery_temp_max_c, 0.3)
+        self.assertAlmostEqual(m.battery_temp_min_c, -0.4)
+        self.assertNotIn("battery_temp_absent", m.flags)
+
+    def test_no_samples_still_rejects_an_impossible_duration(self) -> None:
+        # The details-only path must apply the same plausibility limits.
+        m = compute_metrics([], {"total_time_s": 687808.0})
+        self.assertIn("no_samples", m.flags)
+        self.assertIsNone(m.duration_s)
+        self.assertIn("implausible_duration_s", m.flags)
+
     def test_no_samples_falls_back_to_details_and_says_so(self) -> None:
         m = compute_metrics([], {"total_time_s": 302.0, "total_distance_m": 46.9,
                                  "max_height_m": 45.1})
@@ -95,6 +119,20 @@ class MetricTest(unittest.TestCase):
         self.assertEqual(m.duration_s, 302.0)
         self.assertEqual(m.total_distance_m, 46.9)
         self.assertIsNone(m.path_length_m)
+
+    def test_implausible_measurements_become_unknown(self) -> None:
+        # A corrupt details block once produced a 191-hour flight.
+        m = compute_metrics([sample(0, 45.0, 9.0, height=10, speed=5.0)],
+                            {"total_time_s": 687808.0})
+        self.assertIsNone(m.duration_s)
+        self.assertIn("implausible_duration_s", m.flags)
+        fast = compute_metrics([sample(0, 45.0, 9.0, height=10, speed=128216.0)], {})
+        self.assertIsNone(fast.max_h_speed_mps)
+        self.assertIn("implausible_max_h_speed_mps", fast.flags)
+        normal = compute_metrics([sample(0, 45.0, 9.0, height=10, speed=12.0)],
+                                 {"total_time_s": 302.0})
+        self.assertAlmostEqual(normal.duration_s, 302.0)
+        self.assertAlmostEqual(normal.max_h_speed_mps, 12.0)
 
     def test_duration_kinds_stay_separate(self) -> None:
         samples = [sample(0, 45.0, 9.0, height=0, motor=False),
@@ -124,6 +162,26 @@ class UnitsTest(TempCase):
         self.assertEqual(m.duration_s, 302.0)
         self.assertEqual(m.max_height_m, 45.1)
         self.assertEqual(m.battery_temp_max_c, 28.0)
+
+
+class MediaBoundTest(unittest.TestCase):
+    def test_impossible_media_counts_are_absent(self) -> None:
+        from flightdesk.parser_adapter import bound_media
+
+        # Values read from the fixed-layout block are not trusted blindly.
+        junk = bound_media({"photo_num": 1167682604, "video_time_s": 145269191227033339})
+        self.assertIsNone(junk["photo_num"])
+        self.assertIsNone(junk["video_time_s"])
+        sane = bound_media({"photo_num": 42, "video_time_s": 300})
+        self.assertEqual(sane, {"photo_num": 42, "video_time_s": 300})
+        self.assertIsNone(bound_media({"photo_num": "n/a"})["photo_num"])
+
+    def test_video_time_cannot_exceed_flight_time(self) -> None:
+        from flightdesk.importer import _plausible_video_seconds
+
+        self.assertEqual(_plausible_video_seconds({"video_time_s": 240}, 302.0), 240)
+        self.assertIsNone(_plausible_video_seconds({"video_time_s": 43200}, 302.0))
+        self.assertEqual(_plausible_video_seconds({"video_time_s": 240}, None), 240)
 
 
 if __name__ == "__main__":

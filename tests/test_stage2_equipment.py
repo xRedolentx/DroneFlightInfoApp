@@ -5,11 +5,15 @@ import io
 import re
 import unittest
 
-from support import (TempCase, apply_capture, base_time, capture_text, equipment_id,
-                     log_bytes, status_for)
+from support import (GRID_CAPTURE_FIXTURE, TempCase, apply_capture, base_time, capture_text,
+                     equipment_id, log_bytes, status_for)
 
 from flightdesk import capture, db, maintenance
 from flightdesk.importer import Importer
+
+
+def grid_capture_text() -> str:
+    return GRID_CAPTURE_FIXTURE.read_text(encoding="utf-8")
 
 
 class CaptureParseTest(TempCase):
@@ -311,7 +315,118 @@ class OwnerEditTest(TempCase):
                                  ("SYN-BAT-1001",)))
 
 
+class GridShapedCaptureTest(TempCase):
+    """The real capture files rule counters in a per-item grid and inside the
+    battery table, under headings that never say "snapshot". These checks pin
+    that shape so a real capture cannot migrate as all-unknown counters."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.doc = capture.parse_capture(grid_capture_text())
+
+    def test_inventory_and_snapshots_are_recognised(self) -> None:
+        self.assertEqual(len(self.doc.current_aircraft), 3)
+        self.assertEqual(len(self.doc.historical_aircraft), 1)
+        self.assertEqual(len(self.doc.batteries), 3)
+        self.assertEqual(sum(1 for b in self.doc.batteries if b.placeholder), 1)
+        self.assertEqual(len(self.doc.snapshots), 13)
+        self.assertEqual(sum(len(s.counters) for s in self.doc.snapshots), 30)
+
+    def test_grid_rows_are_baselines_not_service_events(self) -> None:
+        # Three grid rows used to arrive as three phantom service events.
+        self.assertEqual(len(self.doc.services), 6)
+        self.assertEqual(self.doc.reported_total, 6)
+        self.assertEqual(self.doc.reporting_gap, 0)
+
+    def test_aircraft_cell_is_flights_then_minutes(self) -> None:
+        row = next(s for s in self.doc.snapshots
+                   if s.equipment_name == "Ridge - Nova 5" and s.rule == "basic")
+        self.assertEqual({c["metric"]: c["value"] for c in row.counters},
+                         {"flights": 14.0, "minutes": 150.0})
+        self.assertEqual(row.baseline_text, "2025-11-02")
+
+    def test_battery_cell_is_charges_flights_then_minutes(self) -> None:
+        row = next(s for s in self.doc.snapshots
+                   if s.equipment_name == "Bat-Nova5-A" and s.rule == "basic")
+        self.assertEqual({c["metric"]: c["value"] for c in row.counters},
+                         {"charges": 18.0, "flights": 14.0, "minutes": 150.0})
+
+    def test_status_column_decides_skipped(self) -> None:
+        kinds = [s.kind for s in self.doc.services]
+        self.assertEqual(kinds.count("skipped"), 1)
+        self.assertEqual(kinds.count("completed"), 5)
+
+    def test_grouped_rows_stay_grouped(self) -> None:
+        self.assertEqual(self.doc.resolved_services, 4)
+        self.assertEqual(self.doc.grouped_services, 2)
+
+    def test_serial_reference_resolves_to_the_battery(self) -> None:
+        self.assertEqual(self.doc.references_resolved, 1)
+        linked = [s for s in self.doc.services if s.equipment_names == ["Bat-Nova5-A"]]
+        self.assertEqual(len(linked), 1)
+
+    def test_reference_only_aircraft_is_archived(self) -> None:
+        self.assertEqual([a.name for a in self.doc.historical_aircraft],
+                         ["Old Ridge - Kite Prime"])
+        self.assertTrue(self.doc.historical_aircraft[0].archived)
+
+    def test_baselines_reach_the_rules(self) -> None:
+        capture.apply_capture(self.conn, self.doc, "grid fixture")
+        extended = status_for(self.conn, "Ridge - Nova 5", "extended")
+        self.assertEqual(extended["status"], "due_soon")
+        self.assertEqual([c["value"] for c in extended["counters"]
+                          if c["metric"] == "flights"], [88.0])
+        basic = status_for(self.conn, "Ridge - Nova 5S", "basic")
+        self.assertEqual(basic["status"], "due")
+        self.assertEqual(basic["fired_metric"], "flights")
+        self.assertEqual(status_for(self.conn, "Bat-Nova5-A", "basic")["status"], "due_soon")
+        self.assertEqual(status_for(self.conn, "Bat-Nova5-B", "basic")["status"], "due")
+
+    def test_placeholder_and_archived_stay_out_of_reminders(self) -> None:
+        capture.apply_capture(self.conn, self.doc, "grid fixture")
+        names = {s["equipment_name"] for s in maintenance.all_statuses(self.conn)}
+        self.assertFalse(any("Unreadable battery" in n for n in names))
+        placeholder = db.one(
+            self.conn, "SELECT * FROM equipment WHERE name LIKE 'Unreadable battery%'")
+        self.assertEqual(placeholder["placeholder"], 1)
+        self.assertIsNone(db.one(self.conn, "SELECT id FROM rules WHERE equipment_id=?",
+                                 (placeholder["id"],)))
+        archived = db.one(self.conn,
+                          "SELECT archived FROM equipment WHERE name='Old Ridge - Kite Prime'")
+        self.assertEqual(archived["archived"], 1)
+
+    def test_repeat_apply_is_a_no_op(self) -> None:
+        first = capture.apply_capture(self.conn, self.doc, "grid fixture")
+        services = self.conn.execute("SELECT COUNT(*) FROM services").fetchone()[0]
+        second = capture.apply_capture(self.conn, self.doc, "grid fixture")
+        self.assertTrue(second["already_applied"])
+        self.assertEqual(first["snapshot_counters"], 30)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM services").fetchone()[0],
+                         services)
+
+    def test_import_before_capture_backfills_battery_readings(self) -> None:
+        """A flight imported before the capture cannot be linked to a battery,
+        so its reading is never stored. Applying the capture afterwards has to
+        leave the same readings as the reverse order does."""
+        now = db.now_utc()
+        with db.tx(self.conn):
+            self.conn.execute(
+                "INSERT INTO flights(identity_status,battery_sn,start_time_utc,"
+                "duration_s,battery_start_pct,created_at,updated_at) "
+                "VALUES('authoritative',?,?,?,?,?,?)",
+                ("SYN-BAT-1001", "2026-08-11T21:53:20+00:00", 302.0, 94.0, now, now),
+            )
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM battery_readings").fetchone()[0], 0)
+        capture.apply_capture(self.conn, self.doc, "grid fixture")
+        battery = equipment_id(self.conn, "Bat-Nova5-A")
+        rows = db.all_rows(
+            self.conn, "SELECT * FROM battery_readings WHERE battery_id=?", (battery,))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["charge_pct"], 94.0)
+        self.assertEqual(rows[0]["source"], "log")
+
+
 if __name__ == "__main__":
     unittest.main()
-
 

@@ -20,6 +20,9 @@ from flightdesk.paths import ensure_layout  # noqa: E402
 from flightdesk.synth import filename_time, make_log_bytes, make_v13_keychain_log  # noqa: E402
 
 CAPTURE_FIXTURE = ROOT / "fixtures" / "synthetic" / "AirData-Equipment-Capture-SYNTHETIC.md"
+GRID_CAPTURE_FIXTURE = (
+    ROOT / "fixtures" / "synthetic" / "AirData-Equipment-Capture-GRID-SYNTHETIC.md"
+)
 
 
 class TempRoot:
