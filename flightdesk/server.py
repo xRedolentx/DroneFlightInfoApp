@@ -22,6 +22,9 @@ from .importer import Importer
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 MAX_BODY = 512 * 1024 * 1024
+UPLOAD_LIMIT_FILE = 512 * 1024 * 1024
+UPLOAD_LIMIT_ZIP = 2 * 1024 * 1024 * 1024
+STREAMED_UPLOAD_PATH = "/api/import/upload"
 ROUTES: dict[tuple[str, re.Pattern], Callable] = {}
 
 
@@ -433,7 +436,43 @@ def api_import_history(ctx: Ctx) -> None:
 def _batch_response(ctx: Ctx, batch) -> None:
     payload = batch.as_dict()
     payload["state"] = views.state(ctx.conn)
+    codes: dict[str, int] = {}
+    for item in payload.get("items") or []:
+        code = item.get("code")
+        if code:
+            codes[code] = codes.get(code, 0) + 1
+    payload["codes"] = codes
     _send_json(ctx.handler, payload)
+
+
+def _stream_body_to(temp_dir: Path, handler, limit: int) -> tuple[Path | None, str | None]:
+    """Copy the request body to a temp file without holding it in memory."""
+    length_raw = handler.headers.get("Content-Length")
+    try:
+        length = int(length_raw or 0)
+    except ValueError:
+        return None, "bad_length"
+    if length <= 0:
+        return None, "empty_body"
+    if length > limit:
+        return None, "body_too_large"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    target = temp_dir / f"upload-{os.getpid()}-{time.time_ns()}.part"
+    remaining = length
+    try:
+        with open(target, "wb") as fh:
+            while remaining > 0:
+                chunk = handler.rfile.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    return None, "upload_interrupted"
+                fh.write(chunk)
+                remaining -= len(chunk)
+            fh.flush()
+            os.fsync(fh.fileno())
+    except OSError:
+        target.unlink(missing_ok=True)
+        return None, "write_failed"
+    return target, None
 
 
 @route("POST", r"/api/import/upload")
@@ -450,6 +489,16 @@ def api_import_upload(ctx: Ctx) -> None:
     if not name:
         _send_json(ctx.handler, {"ok": False, "code": "bad_filename"}, 400)
         return
+    is_zip = name.lower().endswith(".zip")
+    if not is_zip and not archive.is_flight_filename(name):
+        _send_json(ctx.handler, {"ok": False, "code": "not_a_flight_log"}, 400)
+        return
+    temp, error = _stream_body_to(ctx.app.root / "tmp", ctx.handler,
+                                  UPLOAD_LIMIT_ZIP if is_zip else UPLOAD_LIMIT_FILE)
+    if temp is None:
+        status = 413 if error == "body_too_large" else 400
+        _send_json(ctx.handler, {"ok": False, "code": error}, status)
+        return
     kind = "manual"
     low = member_path.lower()
     if "controller" in low:
@@ -457,23 +506,16 @@ def api_import_upload(ctx: Ctx) -> None:
     elif "flight_logs" in low:
         kind = "archive"
     importer = Importer(ctx.app.root, ctx.conn)
-    if name.lower().endswith(".zip"):
-        staging = ctx.app.root / "tmp" / f"upload-{os.getpid()}-{time.time_ns()}.zip"
-        staging.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            staging.write_bytes(ctx.body)
-            batch = importer.import_zip(staging)
-        finally:
-            staging.unlink(missing_ok=True)
-    else:
-        if not archive.is_flight_filename(name):
-            _send_json(ctx.handler, {"ok": False, "code": "not_a_flight_log"}, 400)
-            return
-        import io
-        batch = importer.import_stream(
-            io.BytesIO(ctx.body), name, source_kind=kind,
-            source_label="Drag and drop", member_path=member_path,
-        )
+    try:
+        if is_zip:
+            batch = importer.import_zip(temp)
+        else:
+            batch = importer.import_single(
+                temp, source_kind=kind, display_name=name,
+                member_path=member_path, source_label="Drag and drop",
+            )
+    finally:
+        temp.unlink(missing_ok=True)
     _batch_response(ctx, batch)
 
 
@@ -938,7 +980,13 @@ class Handler(BaseHTTPRequestHandler):
             self._reject(403, "session_required")
             return
         try:
-            body = self._read_body()
+            # The upload route streams its own body to disk; reading it here
+            # would double the memory cost of a large handoff ZIP.
+            if path == STREAMED_UPLOAD_PATH and method == "POST":
+                body = b""
+                self.close_connection = True
+            else:
+                body = self._read_body()
         except ValueError:
             self._reject(413, "body_too_large")
             return

@@ -37,6 +37,18 @@ Keychain decoding uses `flightdesk-decode`, built locally from `shim/` against
 - ZIP handling rejects `..` and absolute members, oversized members and
   symlinks; macOS metadata is ignored. Folder walk never follows symlinks.
 - Damaged and parser-failing files are retained with a category, no flight.
+- **ZIP import is exercised end to end in the browser** (65-check run): a
+  handoff ZIP is attached through the real `Choose ZIP` input, every eligible
+  member is reported, the summary survives a page refresh, a repeat import adds
+  nothing, and a non-ZIP file produces a stated reason instead of silence.
+- Container rules: duplicate member names are accepted (the content hash
+  dedupes), escaping or absolute paths, symlinks, encrypted entries and
+  oversized members are rejected before extraction, and macOS metadata is
+  skipped.
+- Container rules: duplicate member names are accepted (the content hash
+  dedupes), escaping or absolute paths, symlinks, encrypted entries and
+  oversized members are rejected before extraction, and macOS metadata is
+  skipped.
 - **Not verified:** the supplied 264/5-file archive and the table totals
   (269 files, 7/222/40 by version) — those inputs are not on this machine. Run
   `python tools\diag.py "<folder-or-zip>"` locally; it prints only counts by
@@ -69,7 +81,7 @@ Keychain decoding uses `flightdesk-decode`, built locally from `shim/` against
 
 ### Stage 3 · Screens — **verified in a real browser (Edge, headless via CDP)**
 
-- `node tools/ui_check.mjs` drives the running app: **45/45 checks pass**,
+- `node tools/ui_check.mjs` drives the running app: **65/65 checks pass**,
   including an assertion that no request leaves loopback;
   covering list width ratio (312/1158 px), three-column records, filters
   applying to list and tiles together, filter persistence, flight → detail,
@@ -176,9 +188,10 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 120 automated tests, all passing (`python -m flightdesk selftest`).
-- 45 scripted browser checks, all passing (including the no-egress and privacy
-  assertions).
+- 126 automated tests, all passing (`python -m flightdesk selftest`).
+- 65 scripted browser checks, all passing (including the no-egress and privacy
+  assertions, a real ZIP import through the picker, and the equipment-capture
+  preview/apply gate).
 - 13-step backup/restore rehearsal, all passing.
 
 Exact commands and outputs are in `VERIFICATION.md`.

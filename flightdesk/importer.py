@@ -651,11 +651,17 @@ class Importer:
         self.finish_batch(result)
         return result
 
-    def import_single(self, path: Path, *, source_kind: str = "manual") -> BatchResult:
+    def import_single(self, path: Path, *, source_kind: str = "manual",
+                      display_name: str | None = None,
+                      member_path: str | None = None,
+                      source_label: str = "Single file") -> BatchResult:
+        """Import one file. display_name keeps the owner's real filename when the
+        bytes arrived as a stream with a temporary path."""
         path = Path(path)
-        if path.suffix.lower() == ".zip":
+        name = display_name or path.name
+        if (display_name is None) and path.suffix.lower() == ".zip":
             return self.import_zip(path)
-        batch_id = self.begin_batch("Single file", source_kind)
+        batch_id = self.begin_batch(source_label, source_kind)
         result = BatchResult(batch_id=batch_id)
         if not path.is_file():
             self._item(result, None, "needs_attention", "not_a_file")
@@ -664,10 +670,10 @@ class Importer:
         with open(path, "rb") as fh:
             self._ingest(
                 fh,
-                path.name,
+                name,
                 source_kind=source_kind,
-                source_label="Single file",
-                member_path=path.name,
+                source_label=source_label,
+                member_path=member_path or name,
                 result=result,
             )
         self.finish_batch(result)

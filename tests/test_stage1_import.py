@@ -184,6 +184,20 @@ class ContainerTest(TempCase):
         batch = self.imp.import_zip(zpath)
         self.assertEqual(batch.totals["discovered"], 1)
 
+    def test_duplicate_member_names_are_accepted(self) -> None:
+        # Real exports can contain the same member path twice. Both byte
+        # streams are legal; the content hash dedupes them, not the path.
+        zpath = self.root / "dup.zip"
+        with zipfile.ZipFile(zpath, "w") as zf:
+            zf.writestr("flight_logs/FlightRecord_2026-08-11_[21-53-20].txt", log_bytes(11))
+            zf.writestr("flight_logs/FlightRecord_2026-08-11_[21-53-20].txt", log_bytes(11))
+        batch = self.imp.import_zip(zpath)
+        self.assertNotEqual(batch.note, "zip_unsafe")
+        self.assertEqual(batch.totals["discovered"], 2)
+        self.assertEqual(batch.totals["new"], 1)
+        self.assertEqual(batch.totals["already_imported"], 1)
+        self.assertEqual(self.counts()["flights"], 1)
+
     def test_escaping_member_is_rejected(self) -> None:
         zpath = build_zip(self.root / "evil.zip", {
             "../outside.txt": log_bytes(11),

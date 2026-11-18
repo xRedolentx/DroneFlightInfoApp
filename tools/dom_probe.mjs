@@ -5,7 +5,9 @@ const port = process.argv[2] || "9222";
 const expression = process.argv[3] || "document.title";
 
 const list = await fetch(`http://127.0.0.1:${port}/json`).then((r) => r.json());
-const page = list.find((t) => t.type === "page") || list[0];
+// Edge may open extra pages (sync dialog, first-run). Always prefer the app.
+const page = list.find((t) => t.type === "page" && /^http:\/\/127\.0\.0\.1/.test(t.url || ""))
+  || list.find((t) => t.type === "page");
 if (!page) {
   console.error("no page target");
   process.exit(1);

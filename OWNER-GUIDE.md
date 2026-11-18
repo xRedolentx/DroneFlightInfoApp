@@ -16,9 +16,9 @@ data**. Demo data is fake and stays labelled `SYNTHETIC` in the header.
 ## 2. Import your AirData archive (manual)
 
 1. Go to **Import**.
-2. Drop the original handoff **ZIP** onto the drop area, or press
-   **Choose folder** and pick your extracted `data` folder, or **Choose files**
-   for a single DJI TXT.
+2. Press **Choose ZIP…** and pick the original handoff ZIP (or drag it onto the
+   drop area). **Choose folder…** takes an extracted `data` folder; **Choose
+   files…** takes individual DJI TXT files.
 3. Read the four result counts: **New files / Already imported / Awaiting DJI /
    Needs attention**.
    - *Already imported* is normal on a second pass. The same bytes are never
@@ -112,9 +112,22 @@ plus a redacted mode that omits serials and coordinates.
 
 ```powershell
 python -m flightdesk selftest      # the full test suite
+python tools\make_synthetic_handoff.py out.zip   # an invented ZIP to try
 python tools\rehearse.py           # end-to-end import → backup → restore
 python tools\diag.py "<folder>"    # counts only, no filenames
 ```
+
+### If a file choice seems to do nothing
+
+The batch summary appears directly under the three buttons. If it says a ZIP
+could not be read, the download is probably not a real ZIP (some are
+self-extracting `.exe` files) — extract it first, then use **Choose folder…**.
+If a card says *Nothing was imported from that file*, the reason is written
+underneath it.
+
+The three buttons read the file in your browser and post it to the local server;
+they never depend on a Windows dialog. The *Use the Windows dialog instead* link
+is only a fallback for browsers without folder uploads.
 
 `tools\diag.py` is the only command meant for real data: it prints counts by
 source, format version and status, and never prints a filename, path or serial.

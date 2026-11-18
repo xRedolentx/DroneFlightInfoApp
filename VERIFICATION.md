@@ -9,7 +9,7 @@ filenames, serials, coordinates or raw stderr were ever printed.
 
 ```
 > python -m flightdesk selftest
-{"ok": true, "tests": 120, "failures": 0, "errors": 0, "skipped": 0}
+{"ok": true, "tests": 126, "failures": 0, "errors": 0, "skipped": 0}
 ```
 
 Groups:
@@ -70,8 +70,21 @@ video count is not invented.
 ...
 PASS arrow keys move between flights :: 6 -> 12
 PASS privacy mode actually hides a serial :: hidden
+PASS ZIP upload shows a batch summary
+PASS every eligible member is accounted for :: discovered=7 eligible=7 total=9
+PASS import summary survives the page refresh
+PASS a repeated ZIP import adds no files :: 0
+PASS a bad ZIP says why nothing was imported
+PASS capture preview reports counts
+PASS ZIP upload shows a batch summary
+PASS every eligible member is accounted for :: discovered=7 eligible=7 total=9
+PASS non-log ZIP members are excluded from the batch :: 7 of 9
+PASS import summary survives the page refresh
+PASS a repeated ZIP import adds no files :: 0
+PASS a bad ZIP says why nothing was imported
+PASS capture preview reports counts
 PASS no request left loopback
-SUMMARY_FINAL PASS checks=45 failures=0
+SUMMARY_FINAL PASS checks=65 failures=0
 ```
 
 Coverage: dashboard geometry, filters applying to list and tiles together,

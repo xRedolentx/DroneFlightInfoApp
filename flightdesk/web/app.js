@@ -7,7 +7,8 @@
   var toastEl = document.getElementById("toast");
   var modalEl = document.getElementById("modal");
   var state = { app: null, filters: {}, flight: null, section: "overview", cursor: null,
-                playing: false, metric: "power", mobileView: "list" };
+                playing: false, metric: "power", mobileView: "list",
+                lastImport: null, lastImportStatus: "", lastImportTone: "" };
 
   // ------------------------------------------------------------------ utils
 
@@ -1389,11 +1390,19 @@
         '<p class="small muted">Single DJI TXT files, an AirData export folder, or the original ' +
         "ZIP. Originals are archived before anything is indexed.</p>" +
         '<div class="row" style="justify-content:center;margin-top:10px">' +
-        '<button type="button" class="primary" id="pick-files">Choose files</button>' +
-        '<button type="button" class="secondary" id="pick-folder">Choose folder</button>' +
-        '<button type="button" class="secondary" id="pick-zip">Choose ZIP</button></div></div>' +
+        '<button type="button" class="primary" id="pick-files">Choose files…</button>' +
+        '<button type="button" class="secondary" id="pick-zip">Choose ZIP…</button>' +
+        '<button type="button" class="secondary" id="pick-folder">Choose folder…</button>' +
+        "</div>" +
+        '<p class="tiny faint" style="margin-top:8px">Files are read in this browser and ' +
+        'posted only to this local server. <button type="button" class="link" ' +
+        'id="pick-windows">Use the Windows dialog instead</button></p></div>' +
         '<div class="progress" id="progress"><span></span></div>' +
-        '<div id="batch-result"></div>' +
+        '<div id="import-status" class="small muted" role="status" aria-live="polite" ' +
+        'style="margin-top:6px' +
+        (state.lastImportTone === "bad" ? ";color:var(--red)" : "") + '">' +
+        esc(state.lastImportStatus || "") + "</div>" +
+        '<div id="batch-result">' + renderBatchSummary(state.lastImport) + "</div>" +
         '<div class="row" style="margin-top:12px"><label class="small muted" for="import-pilot">' +
         'Pilot for new flights</label><select id="import-pilot" style="max-width:200px">' +
         (state.app.pilots.length ? state.app.pilots : ["No pilots yet"]).map(function (p) {
@@ -1465,48 +1474,121 @@
       }).join("") + "</tbody></table>";
   }
 
+  var importing = false;
+
   function wireImport() {
     var drop = document.getElementById("drop");
     var progress = document.querySelector("#progress > span");
     function setProgress(frac) {
       if (progress) progress.style.width = Math.round(frac * 100) + "%";
     }
-    async function postFile(file, member) {
-      var headers = { "X-FD-Filename": encodeURIComponent(file.name),
-                      "X-FD-Member": encodeURIComponent(member || file.name),
-                      "Content-Type": "application/octet-stream" };
-      return fetch("/api/import/upload", {
-        method: "POST", headers: Object.assign({ "X-FD-Token": TOKEN }, headers),
-        body: file, credentials: "same-origin",
-      }).then(function (res) { return res.json(); });
+    function busy(on, label, tone) {
+      importing = on;
+      ["pick-files", "pick-zip", "pick-folder", "pick-windows"].forEach(function (id) {
+        var b = document.getElementById(id);
+        if (b) b.disabled = on;
+      });
+      if (label !== undefined) setImportStatus(label, tone);
+    }
+    async function postFile(item) {
+      var file = item.file;
+      var headers = {
+        "X-FD-Filename": encodeURIComponent(file.name),
+        "X-FD-Member": encodeURIComponent(item.member || file.name),
+        "Content-Type": "application/octet-stream",
+      };
+      var response;
+      try {
+        response = await fetch("/api/import/upload", {
+          method: "POST", headers: Object.assign({ "X-FD-Token": TOKEN }, headers),
+          body: file, credentials: "same-origin",
+        });
+      } catch (err) {
+        return { ok: false, code: "upload_failed" };
+      }
+      var text = await response.text();
+      var payload;
+      try {
+        payload = JSON.parse(text);
+      } catch (err) {
+        payload = { ok: false, code: "internal_error" };
+      }
+      payload.http_status = response.status;
+      return payload;
+    }
+    function summarise(result) {
+      var totals = result.totals || {};
+      if (result.note || result.code) {
+        return "Nothing was imported from that file.";
+      }
+      var parts = [];
+      if (totals.new_flight) parts.push(totals.new_flight + " new flight(s)");
+      if (totals.new) parts.push(totals.new + " new file(s)");
+      if (totals.already_imported) parts.push(totals.already_imported + " already imported");
+      if (totals.awaiting_dji) parts.push(totals.awaiting_dji + " awaiting the DJI key");
+      if (totals.needs_attention) parts.push(totals.needs_attention + " need attention");
+      return parts.length ? "Done: " + parts.join(", ") + "." : "Done: nothing new.";
     }
     async function handleFiles(items) {
-      var results = { new: 0, already_imported: 0, awaiting_dji: 0, needs_attention: 0,
-                      unsupported: 0, discovered: 0, batches: [] };
+      if (importing) { toast("An import is already running"); return; }
+      if (!items.length) return;
+      busy(true, "Reading " + items.length + " file(s)\u2026", "warn");
+      var totals = { discovered: 0, new: 0, new_flight: 0, already_imported: 0,
+                     awaiting_dji: 0, unsupported: 0, needs_attention: 0 };
+      var codes = {};
+      var failed = [];
+      var notes = [];
       for (var i = 0; i < items.length; i++) {
         setProgress(i / items.length);
-        var item = items[i];
-        var res;
-        try {
-          res = await postFile(item.file, item.member);
-        } catch (e) {
-          res = { ok: false, code: "upload_failed" };
-        }
+        setImportStatus("Reading file " + (i + 1) + " of " + items.length + "\u2026", "warn");
+        var res = await postFile(items[i]);
         if (res && res.totals) {
           Object.keys(res.totals).forEach(function (k) {
-            if (k === "new_flight") return;
-            if (results[k] === undefined) results[k] = 0;
-            results[k] += res.totals[k];
+            totals[k] = (totals[k] || 0) + (res.totals[k] || 0);
           });
-          results.batches.push(res);
-        } else if (res && res.code) {
-          results.needs_attention += 1;
-          results.batches.push(res);
+          Object.keys(res.codes || {}).forEach(function (k) {
+            codes[k] = (codes[k] || 0) + res.codes[k];
+          });
+          if (res.note) notes.push(res.note);
+        } else {
+          totals.discovered += 1;
+          totals.needs_attention += 1;
+          var code = (res && res.code) || "internal_error";
+          codes[code] = (codes[code] || 0) + 1;
+          failed.push(items[i].file.name);
         }
       }
       setProgress(1);
-      showBatch(results);
-      refreshState().then(function () { renderImport(); });
+      var result = { totals: totals, codes: codes, note: notes[0] || null,
+                     failed_files: failed };
+      var status = summarise(result);
+      rememberImport(result, status, (result.note || failed.length) ? "bad" : "");
+      busy(false, status, state.lastImportTone);
+      showBatch(result);
+      refreshState().then(function () { renderImport(); })
+        .catch(function () { /* the summary is already on screen */ });
+    }
+    function browserInput(options) {
+      var input = document.createElement("input");
+      input.type = "file";
+      input.multiple = true;
+      if (options.id) input.id = options.id;
+      if (options.accept) input.accept = options.accept;
+      if (options.directory) {
+        input.webkitdirectory = true;
+        input.setAttribute("directory", "");
+        input.setAttribute("mozdirectory", "");
+      }
+      input.style.display = "none";
+      document.body.appendChild(input);
+      input.addEventListener("change", function () {
+        var items = Array.prototype.slice.call(input.files).map(function (f) {
+          return { file: f, member: f.webkitRelativePath || f.name };
+        });
+        input.value = "";
+        if (items.length) handleFiles(items);
+      });
+      return input;
     }
     function collectFromDataTransfer(dt) {
       var items = [];
@@ -1563,42 +1645,45 @@
         });
       });
       drop.addEventListener("keydown", function (e) {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault();
-          document.getElementById("pick-files").click(); }
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          var b = document.getElementById("pick-files");
+          if (b) b.click();
+        }
       });
     }
+    var filesInput = browserInput({ id: "import-input-files", accept: ".txt,.zip" });
+    var zipInput = browserInput({ id: "import-input-zip", accept: ".zip,application/zip" });
+    var folderInput = browserInput({ id: "import-input-folder", directory: true });
     var pickFiles = document.getElementById("pick-files");
-    if (pickFiles) {
-      var input = document.createElement("input");
-      input.type = "file"; input.multiple = true; input.accept = ".txt,.zip";
-      input.style.display = "none";
-      document.body.appendChild(input);
-      pickFiles.addEventListener("click", function () { input.click(); });
-      input.addEventListener("change", function () {
-        var items = Array.prototype.slice.call(input.files).map(function (f) {
-          return { file: f, member: f.webkitRelativePath || f.name };
-        });
-        if (items.length) handleFiles(items);
-        input.value = "";
-      });
-    }
+    if (pickFiles) pickFiles.addEventListener("click", function () { filesInput.click(); });
+    var pickZip = document.getElementById("pick-zip");
+    if (pickZip) pickZip.addEventListener("click", function () { zipInput.click(); });
     var pickFolder = document.getElementById("pick-folder");
-    if (pickFolder) pickFolder.addEventListener("click", function () {
+    if (pickFolder) pickFolder.addEventListener("click", function () { folderInput.click(); });
+    // Optional fallback: a dialog owned by the local server process. It is
+    // kept for browsers without folder uploads, and it says so when it no-ops.
+    var pickWindows = document.getElementById("pick-windows");
+    if (pickWindows) pickWindows.addEventListener("click", function () {
+      if (importing) return;
+      busy(true, "Waiting for the Windows dialog\u2026 if you do not see it, check the taskbar.",
+           "warn");
       api("/api/import/path", { method: "POST", body: { pick: "folder" } })
         .then(function (res) {
-          if (res.cancelled) return;
-          showBatch(res.totals || {});
+          if (res.cancelled) {
+            busy(false, "The Windows dialog returned nothing. Use the buttons above instead.",
+                 "warn");
+            return;
+          }
+          rememberImport(res, summarise(res), "");
+          busy(false, state.lastImportStatus, "");
+          showBatch(res);
           refreshState().then(function () { renderImport(); });
-        }).catch(function (e) { toast("Folder import failed: " + e.message); });
-    });
-    var pickZip = document.getElementById("pick-zip");
-    if (pickZip) pickZip.addEventListener("click", function () {
-      api("/api/import/path", { method: "POST", body: { pick: "file" } })
-        .then(function (res) {
-          if (res.cancelled) return;
-          showBatch(res.totals || {});
-          refreshState().then(function () { renderImport(); });
-        }).catch(function (e) { toast("Import failed: " + e.message); });
+        })
+        .catch(function (e) {
+          busy(false, "Windows dialog unavailable (" + e.message + "). Use the buttons above.",
+               "bad");
+        });
     });
     var seed = document.getElementById("seed-demo");
     if (seed) seed.addEventListener("click", function () {
@@ -1631,25 +1716,119 @@
     });
   }
 
-  function showBatch(totals) {
-    var host = document.getElementById("batch-result");
-    if (!host) return;
+  var IMPORT_REASONS = {
+    zip_unsafe: "The ZIP was rejected before anything was imported: a member path would " +
+      "escape the archive, or a member is not allowed (symlink, encrypted entry or bad path).",
+    archive_size_bound: "The ZIP is larger than the safety limit, so it was rejected. " +
+      "Nothing was imported from it.",
+    zip_unreadable: "That file could not be read as a ZIP. If it is an .exe self-extractor, " +
+      "extract it first, then use Choose folder.",
+    no_eligible_files: "No DJI flight logs were found inside. Flight Desk only takes " +
+      "FlightRecord_*.txt and DJIFlightRecord_*.txt, and it ignores .DAT, .json and " +
+      "system files.",
+    not_a_flight_log: "That file is not a DJI flight log. Pick a FlightRecord_*.txt, a " +
+      "DJIFlightRecord_*.txt, or the handoff ZIP.",
+    upload_interrupted: "The upload stopped before the whole file arrived. Nothing was " +
+      "imported; try again.",
+    body_too_large: "The file is larger than this build accepts in one upload.",
+    write_failed: "The file could not be written to the local temp folder. Check free space.",
+    disk_full: "There is not enough free disk space to archive the original. Nothing was " +
+      "indexed for that file.",
+    internal_error: "The local server hit an unexpected error. Nothing was half-imported; " +
+      "check the import history and try again.",
+    upload_failed: "The browser could not reach the local server. Is Flight Desk still running?",
+    bad_filename: "The browser sent a file name the server could not read.",
+    empty_body: "The browser sent an empty file.",
+  };
+
+  function renderBatchSummary(result) {
+    if (!result) {
+      return '<div class="empty" style="padding:14px 8px"><p class="small muted">' +
+        "No batch yet. Choose the handoff ZIP (or a folder of logs) above; the result " +
+        "appears here and stays while you move around the app.</p></div>";
+    }
+    var totals = result.totals || {};
     var labels = [["discovered", "Discovered"], ["new_flight", "New flights"],
                   ["new", "New files"], ["already_imported", "Already imported"],
                   ["awaiting_dji", "Awaiting DJI"], ["needs_attention", "Needs attention"]];
-    host.innerHTML = '<div class="result-grid">' + labels.map(function (pair) {
+    var html = '<div class="result-grid">' + labels.map(function (pair) {
       return '<div class="result-cell"><div class="n">' + (totals[pair[0]] || 0) +
         '</div><div class="l">' + pair[1] + "</div></div>";
     }).join("") + "</div>";
-    if ((totals.unsupported || 0) > 0) {
-      host.innerHTML += '<div class="notice warn small" style="margin-top:10px">Some files use a ' +
-        "format this adapter cannot decode. They are kept; nothing was counted as zero.</div>";
+    var note = result.note || result.code;
+    var reason = note ? IMPORT_REASONS[note] : null;
+    if (reason) {
+      html += '<div class="notice bad small" style="margin-top:10px"><b>Nothing was imported ' +
+        "from that file.</b> " + esc(reason) + "</div>";
+    } else if (note) {
+      html += '<div class="notice warn small" style="margin-top:10px">Import note: ' +
+        esc(note) + "</div>";
+    }
+    var codes = result.codes || {};
+    var failedFiles = result.failed_files || [];
+    if (failedFiles.length) {
+      html += '<div class="notice warn small" style="margin-top:10px">' +
+        failedFiles.length + " file(s) could not be read: " +
+        esc(failedFiles.slice(0, 4).join(", ")) +
+        (failedFiles.length > 4 ? ", and more" : "") + "</div>";
+    }
+    if ((totals.unsupported || 0) > 0 || codes.unsupported) {
+      html += '<div class="notice warn small" style="margin-top:10px">Some files use a format ' +
+        "this adapter cannot decode. They are kept; nothing was counted as zero.</div>";
     }
     if ((totals.needs_attention || 0) > 0) {
-      host.innerHTML += '<div class="notice warn small" style="margin-top:10px">' +
-        "Some files need attention. Retry from the import history after fixing the cause; " +
-        "a retry never duplicates an accepted file.</div>";
+      html += '<div class="notice warn small" style="margin-top:10px">Some files need ' +
+        "attention. Retry from the import history after fixing the cause; a retry never " +
+        "duplicates an accepted file.</div>";
     }
+    if ((totals.new_flight || 0) > 0) {
+      html += '<div class="row" style="margin-top:10px"><button type="button" ' +
+        'class="primary" data-go="#/flights">Show the new flights</button></div>';
+    }
+    return html;
+  }
+
+  function rememberImport(result, status, tone) {
+    state.lastImport = result || null;
+    state.lastImportStatus = status || "";
+    state.lastImportTone = tone || "";
+    try {
+      if (result) {
+        sessionStorage.setItem("fd.lastImport", JSON.stringify(result));
+        sessionStorage.setItem("fd.lastImportStatus", state.lastImportStatus);
+        sessionStorage.setItem("fd.lastImportTone", state.lastImportTone);
+      } else {
+        sessionStorage.removeItem("fd.lastImport");
+        sessionStorage.removeItem("fd.lastImportStatus");
+        sessionStorage.removeItem("fd.lastImportTone");
+      }
+    } catch (err) { /* private mode: the summary simply does not persist */ }
+  }
+
+  function restoreImport() {
+    try {
+      var raw = sessionStorage.getItem("fd.lastImport");
+      if (!raw) return;
+      state.lastImport = JSON.parse(raw);
+      state.lastImportStatus = sessionStorage.getItem("fd.lastImportStatus") || "";
+      state.lastImportTone = sessionStorage.getItem("fd.lastImportTone") || "";
+    } catch (err) {
+      state.lastImport = null;
+    }
+  }
+
+  function showBatch(result) {
+    var host = document.getElementById("batch-result");
+    if (!host) return;
+    host.innerHTML = renderBatchSummary(result);
+    bindGo(host);
+  }
+
+  function setImportStatus(text, tone) {
+    var el = document.getElementById("import-status");
+    if (!el) return;
+    el.textContent = text || "";
+    el.style.color = tone === "bad" ? "var(--red)" : (tone === "warn" ? "var(--amber)" : "");
   }
 
   // --------------------------------------------------------------- settings
@@ -1727,12 +1906,25 @@
               exportButton("Reconciliation CSV", "/api/export/recon.csv",
                 "FlightDesk-reconciliation.csv") + "</div>" +
               '<div id="recon-out" style="margin-top:12px"></div>') +
-            section("Damage capture", '<p class="small muted">Parse an equipment capture ' +
+            section("Equipment capture", '<p class="small muted">Parse an equipment capture ' +
               "(markdown headings and pipe tables). Preview first: it shows what is individually " +
               "resolved and what stays grouped.</p>" +
-              '<div class="row" style="margin-top:10px"><button type="button" class="secondary" ' +
-              'id="capture-preview">Preview a capture…</button>' +
-              '<button type="button" class="secondary" id="capture-apply">Apply…</button></div>' +
+              '<div class="field" style="margin-top:10px"><label for="capture-path">Capture file</label>' +
+              '<div class="row"><input id="capture-path" type="text" readonly ' +
+              'placeholder="No file chosen" style="flex:1;min-width:220px">' +
+              '<button type="button" class="secondary" id="capture-choose">Choose file…</button>' +
+              '</div></div>' +
+              '<div class="row" style="margin-top:10px">' +
+              '<button type="button" class="secondary" id="capture-preview">Preview</button>' +
+              '<button type="button" class="primary" id="capture-apply" disabled>Apply previewed ' +
+              'capture</button></div>' +
+              '<details style="margin-top:10px"><summary class="small muted">Or paste the ' +
+              'capture text</summary>' +
+              '<div class="field" style="margin-top:8px"><label for="capture-text">Capture text' +
+              '</label><textarea id="capture-text" rows="8" ' +
+              'placeholder="Paste the markdown capture here"></textarea></div>' +
+              '<div class="row" style="margin-top:6px"><button type="button" class="secondary" ' +
+              'id="capture-preview-text">Preview pasted text</button></div></details>' +
               '<div id="capture-out" style="margin-top:12px"></div>') +
             section("Privacy and data root", '<p class="small muted">Data root: <code>' +
               esc(state.app.db_path.replace(/\\[^\\]+$/, "")) + "</code></p>" +
@@ -1930,31 +2122,113 @@
           }).join(" · ") + "</div>";
       });
     });
-    var capPrev = document.getElementById("capture-preview");
-    if (capPrev) capPrev.addEventListener("click", function () {
-      api("/api/capture/preview", { method: "POST", body: { pick: true } }).then(function (res) {
-        if (res.cancelled) return;
-        document.getElementById("capture-out").innerHTML = res.ok
-          ? '<div class="notice small">' + res.equipment_new + " new equipment · " +
-            res.current_aircraft + " current aircraft · " + res.historical_aircraft +
-            " historical · " + res.batteries + " batteries (" + res.placeholders +
-            " placeholder) · " + res.service_events + " service rows (" + res.resolved_services +
-            " individually resolved, " + res.grouped_services + " grouped)" +
-            (res.already_applied ? " · already applied" : "") + "</div>"
-          : '<div class="notice bad small">' + esc(res.code) + "</div>";
-      });
+    var captureFile = "";
+    var capturePreviewed = false;
+    var captureInput = document.createElement("input");
+    captureInput.type = "file";
+    captureInput.id = "capture-input";
+    captureInput.accept = ".md,.markdown,.txt";
+    captureInput.style.display = "none";
+    document.body.appendChild(captureInput);
+    var captureChoose = document.getElementById("capture-choose");
+    if (captureChoose) captureChoose.addEventListener("click", function () {
+      captureInput.click();
     });
+    captureInput.addEventListener("change", function () {
+      var file = captureInput.files && captureInput.files[0];
+      var pathBox = document.getElementById("capture-path");
+      if (!file) return;
+      captureFile = file.name;
+      capturePreviewed = false;
+      if (pathBox) pathBox.value = file.name + " (" + Math.max(1, Math.round(file.size / 1024)) +
+        " KB)";
+      var applyBtn = document.getElementById("capture-apply");
+      if (applyBtn) applyBtn.disabled = true;
+      setCaptureOut("File chosen. Press Preview to check what will be imported.");
+    });
+    function setCaptureOut(html, tone) {
+      var out = document.getElementById("capture-out");
+      if (!out) return;
+      out.innerHTML = tone === "bad"
+        ? '<div class="notice bad small">' + esc(html) + "</div>"
+        : (tone === "raw" ? html : '<div class="notice small">' + esc(html) + "</div>");
+    }
+    async function readCaptureText() {
+      var pasted = document.getElementById("capture-text");
+      if (pasted && pasted.value.trim()) return pasted.value;
+      if (!captureFile) return null;
+      var file = captureInput.files && captureInput.files[0];
+      if (!file) return null;
+      return await file.text();
+    }
+    async function previewCapture() {
+      var text = await readCaptureText();
+      if (text === null) {
+        setCaptureOut("Choose the capture file first, or paste its text.", "bad");
+        return;
+      }
+      setCaptureOut("Reading the capture…");
+      try {
+        var res = await api("/api/capture/preview", { method: "POST", body: { text: text } });
+        if (!res.ok) { setCaptureOut("Could not read that capture: " + res.code, "bad"); return; }
+        capturePreviewed = true;
+        var applyBtn = document.getElementById("capture-apply");
+        if (applyBtn) applyBtn.disabled = false;
+        var rows = [
+          [res.current_aircraft, "current aircraft"],
+          [res.historical_aircraft, "historical aircraft (archived)"],
+          [res.batteries, "battery entries"],
+          [res.placeholders, "placeholders"],
+          [res.service_events, "historical service rows"],
+          [res.resolved_services, "individually resolved"],
+          [res.grouped_services, "kept as groups"],
+        ];
+        var html = '<div class="result-grid">' + rows.map(function (pair) {
+          return '<div class="result-cell"><div class="n">' + pair[0] +
+            '</div><div class="l">' + pair[1] + "</div></div>";
+        }).join("") + "</div>";
+        if (res.already_applied) {
+          html += '<div class="notice small" style="margin-top:10px">This exact capture is ' +
+            "already applied. Applying again would change nothing.</div>";
+        }
+        if (res.warnings && res.warnings.length) {
+          html += '<div class="notice warn small" style="margin-top:10px">' +
+            esc(res.warnings.join(" \u00b7 ")) + "</div>";
+        }
+        html += '<div class="notice small" style="margin-top:10px">Grouped rows keep the ' +
+          "capture's wording and are never split into invented per-item records.</div>";
+        setCaptureOut(html, "raw");
+      } catch (err) {
+        setCaptureOut("Preview failed: " + err.message, "bad");
+      }
+    }
+    var capPrev = document.getElementById("capture-preview");
+    if (capPrev) capPrev.addEventListener("click", previewCapture);
+    var capPrevText = document.getElementById("capture-preview-text");
+    if (capPrevText) capPrevText.addEventListener("click", previewCapture);
     var capApply = document.getElementById("capture-apply");
-    if (capApply) capApply.addEventListener("click", function () {
-      api("/api/capture/apply", { method: "POST", body: { pick: true } }).then(function (res) {
-        if (res.cancelled) return;
-        document.getElementById("capture-out").innerHTML = res.already_applied
-          ? '<div class="notice small">Already applied; nothing changed.</div>'
-          : '<div class="notice small">Applied: ' + res.equipment_created + " equipment, " +
+    if (capApply) capApply.addEventListener("click", async function () {
+      if (!capturePreviewed) {
+        setCaptureOut("Preview the capture before applying it.", "bad");
+        return;
+      }
+      var text = await readCaptureText();
+      if (text === null) return;
+      setCaptureOut("Applying…");
+      try {
+        var res = await api("/api/capture/apply",
+          { method: "POST", body: { text: text, label: captureFile || "Pasted capture" } });
+        if (res.already_applied) {
+          setCaptureOut("Already applied; nothing changed.");
+        } else {
+          setCaptureOut("Applied: " + res.equipment_created + " equipment, " +
             res.rules_created + " rules, " + res.services_inserted + " services (" +
-            res.grouped_services + " kept grouped).</div>";
-        refreshState().then(function () {});
-      }).catch(function (e) { toast("Apply failed: " + e.message); });
+            res.grouped_services + " kept grouped).");
+        }
+        refreshState().then(function () { renderSettings(); });
+      } catch (err) {
+        setCaptureOut("Apply failed: " + err.message, "bad");
+      }
     });
     var real = document.getElementById("real-toggle");
     if (real) real.addEventListener("click", function () {
@@ -2129,8 +2403,15 @@
     }
   });
 
+  restoreImport();
+
   refreshState().then(function () {
-    if (!state.app.flights && !state.app.demo_seeded) {
+    var bootParts = parseHash().parts;
+    var atFlights = bootParts.length === 0 ||
+      (bootParts[0] === "flights" && !bootParts[1]);
+    // A deep link (for example #/import) is an explicit request: render it
+    // rather than replacing it with the first-run welcome panel.
+    if (!state.app.flights && !state.app.demo_seeded && atFlights) {
       // first run: offer the synthetic demo rather than an empty screen
       view.innerHTML = '<div class="panel" style="max-width:720px;margin:40px auto">' +
         '<div class="panel-head"><h2>Welcome to Flight Desk</h2></div>' +

@@ -71,7 +71,6 @@ def iter_zip_members(
 ) -> Iterator[tuple[str, zipfile.ZipInfo]]:
     """Yield safe, eligible, non-directory members. Metadata is skipped."""
     total = 0
-    seen: set[str] = set()
     count = 0
     for info in zf.infolist():
         count += 1
@@ -85,9 +84,9 @@ def iter_zip_members(
             raise
         if any(_is_metadata(p) for p in norm.split("/")):
             continue
-        if norm in seen:
-            raise ZipUnsafe("duplicate normalized member")
-        seen.add(norm)
+        # Duplicate member names are legal in ZIP (and appear in real exports).
+        # Every entry is processed; the content hash is what dedupes, so two
+        # same-named members with different bytes both survive.
         mode = (info.external_attr >> 16) & 0o170000
         if mode == 0o120000:
             raise ZipUnsafe("symlink member")

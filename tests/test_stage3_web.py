@@ -235,6 +235,79 @@ class ApiTest(ServerCase):
         self.assertEqual(second["totals"]["already_imported"], 1)
         self.assertEqual(second["totals"]["new"], 0)
 
+    def _upload(self, name: str, data: bytes) -> tuple[int, dict]:
+        headers = {
+            "X-FD-Filename": __import__("urllib.parse").parse.quote(name),
+            "X-FD-Member": __import__("urllib.parse").parse.quote(name),
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(len(data)),
+        }
+        status, payload = self.request("POST", "/api/import/upload", data, extra=headers)
+        return status, json.loads(payload)
+
+    def _zip_bytes(self, entries: dict) -> bytes:
+        import io
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, data in entries.items():
+                zf.writestr(name, data)
+        return buf.getvalue()
+
+    def test_zip_upload_reports_each_member(self) -> None:
+        from support import log_bytes
+        payload = self._zip_bytes({
+            "data/extracted/flight_logs/DJIFlightRecord_2027-05-01_[10-00-00].txt":
+                log_bytes(11, days=400),
+            "data/extracted/flight_logs/DJIFlightRecord_2027-05-02_[10-00-00].txt":
+                log_bytes(8, days=401),
+            "data/controller-test/DJIFlightRecord_2027-04-01_[10-00-00].txt":
+                log_bytes(11, days=390, aircraft="air3s"),
+            "__MACOSX/._junk": b"x",
+        })
+        status, body = self._upload("handoff.zip", payload)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["totals"]["discovered"], 3)
+        self.assertEqual(body["totals"]["new"], 3)
+        self.assertEqual(body["totals"]["new_flight"], 3)
+
+    def test_non_zip_named_zip_is_explained(self) -> None:
+        status, body = self._upload("handoff.zip", b"definitely not a zip")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["note"], "zip_unreadable")
+        self.assertEqual(body["totals"]["new"], 0)
+        self.assertIn("zip_unreadable", body["codes"])
+
+    def test_zip_without_flight_logs_is_explained(self) -> None:
+        payload = self._zip_bytes({"data/extracted/readme.md": b"nothing here"})
+        status, body = self._upload("empty.zip", payload)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["note"], "no_eligible_files")
+        self.assertEqual(body["totals"]["discovered"], 0)
+
+    def test_zip_with_escaping_member_imports_nothing(self) -> None:
+        from support import log_bytes
+        payload = self._zip_bytes({"../escape.txt": log_bytes(11, days=420)})
+        status, body = self._upload("evil.zip", payload)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["note"], "zip_unsafe")
+        self.assertEqual(body["totals"]["new"], 0)
+
+    def test_second_upload_of_the_same_zip_is_idempotent(self) -> None:
+        from support import log_bytes
+        payload = self._zip_bytes({
+            "data/extracted/flight_logs/DJIFlightRecord_2027-06-01_[10-00-00].txt":
+                log_bytes(11, days=500),
+        })
+        first_status, first = self._upload("one.zip", payload)
+        self.assertEqual(first_status, 200)
+        self.assertEqual(first["totals"]["new"], 1)
+        second_status, second = self._upload("one.zip", payload)
+        self.assertEqual(second_status, 200)
+        self.assertEqual(second["totals"]["new"], 0)
+        self.assertEqual(second["totals"]["already_imported"], 1)
+        self.assertEqual(second["totals"]["new_flight"], 0)
+
     def test_rejects_non_flight_upload(self) -> None:
         headers = {"X-FD-Filename": "notes.txt", "X-FD-Member": "notes.txt",
                    "Content-Length": "3"}

@@ -2,10 +2,11 @@
 // DevTools protocol. Prints one PASS/FAIL line per check and writes screenshots.
 // Everything stays on this machine.
 //   node tools/ui_check.mjs [port] [outdir]
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 
 const debugPort = process.argv[2] || "9222";
 const outDir = process.argv[3] || "ui-shots";
+const zipPath = process.argv[4] || "";
 mkdirSync(outDir, { recursive: true });
 
 const targets = await fetch(`http://127.0.0.1:${debugPort}/json`).then((r) => r.json());
@@ -309,19 +310,193 @@ check("CSV export is refused without the session header", exportResult.blocked =
 check("redacted export also downloads", exportResult.redacted === 200);
 check("export is served as CSV", /text\/csv/.test(exportResult.type), exportResult.type);
 
-const refImage = await evaluate(`(async () => {
-  const token = document.querySelector('meta[name=fd-token]').content;
-  const path = ${JSON.stringify(process.argv[4] || "")};
-  if (!path) return 'no-path';
-  const res = await fetch('/api/local-image?path=' + encodeURIComponent(path) +
-    '/stage3-01-flights-1536.png', { headers: { 'X-FD-Token': token } });
-  return res.status + ':' + (res.headers.get('Content-Type') || '');
-})()`);
-if (refImage === "no-path") {
-  console.log("SKIP local reference image (no screenshot dir supplied)");
-} else {
+{
+  // Write a tiny local PNG so this check never depends on another one.
+  const refFile = `${outDir}/reference-probe.png`;
+  writeFileSync(refFile, Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
+    "base64"));
+  const refImage = await evaluate(`(async () => {
+    const token = document.querySelector('meta[name=fd-token]').content;
+    const path = ${JSON.stringify(refFile)};
+    const withHeader = await fetch('/api/local-image?path=' + encodeURIComponent(path),
+      { headers: { 'X-FD-Token': token } });
+    const without = await fetch('/api/local-image?path=' + encodeURIComponent(path));
+    return {
+      status: withHeader.status,
+      type: withHeader.headers.get('Content-Type') || '',
+      blocked: without.status,
+    };
+  })()`);
   check("local reference image is served with the session header",
-    String(refImage).startsWith("200:image/png"), String(refImage));
+    refImage.status === 200 && /image\/png/.test(refImage.type), JSON.stringify(refImage));
+  check("local reference image is refused without the session header",
+    refImage.blocked === 403, String(refImage.blocked));
+}
+
+// --- import: real ZIP through the real picker -------------------------------
+if (!zipPath) {
+  console.log("SKIP import checks (no synthetic ZIP path supplied)");
+} else {
+  await goto("#/import");
+  await waitFor("!!document.getElementById('import-input-zip')", 20000);
+  check("import page renders its pickers",
+    await evaluate("!!document.getElementById('import-input-files') && " +
+      "!!document.getElementById('import-input-folder')"));
+
+  async function uploadZip(path) {
+    const doc = await call("DOM.getDocument", { depth: -1 });
+    const node = await call("DOM.querySelector", {
+      nodeId: doc.result.root.nodeId, selector: "#import-input-zip",
+    });
+    await call("DOM.setFileInputFiles", { files: [path], nodeId: node.result.nodeId });
+    await evaluate(`(() => { const i = document.getElementById('import-input-zip');
+      i.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  }
+
+  await uploadZip(zipPath);
+  const appeared = await waitFor(
+    "document.querySelectorAll('#batch-result .result-cell').length >= 6", 60000);
+  check("ZIP upload shows a batch summary", appeared);
+  const firstSummary = await evaluate(
+    "document.getElementById('batch-result').innerText.replace(/\\s+/g, ' ').trim()");
+  const discovered = await evaluate(`(() => {
+    const cells = [...document.querySelectorAll('#batch-result .result-cell')];
+    const cell = cells.find(c => /Discovered/.test(c.innerText));
+    return cell ? Number(cell.querySelector('.n').textContent) : -1;
+  })()`);
+  // Count *eligible* members from the ZIP's central directory: DJI flight
+  // logs only. macOS metadata and non-log files must be excluded, not counted.
+  let expectedMembers = -1;
+  let totalMembers = -1;
+  try {
+    const zipBytes = readFileSync(zipPath);
+    const names = [];
+    for (let i = 0; i + 46 <= zipBytes.length; i++) {
+      if (zipBytes.readUInt32LE(i) !== 0x02014b50) continue;
+      const nameLen = zipBytes.readUInt16LE(i + 28);
+      names.push(zipBytes.toString("utf8", i + 46, i + 46 + nameLen));
+    }
+    totalMembers = names.length;
+    expectedMembers = names.filter((name) => {
+      const base = name.split("/").pop() || "";
+      const parts = name.split("/");
+      if (parts.some((p) => p === "__MACOSX" || p.startsWith("._"))) return false;
+      return /^(D?JI)?FlightRecord_.*\.txt$/i.test(base);
+    }).length;
+  } catch (err) {
+    expectedMembers = -1;
+  }
+  check("every eligible member is accounted for",
+    expectedMembers > 0 ? discovered === expectedMembers : discovered > 0,
+    `discovered=${discovered} eligible=${expectedMembers} total=${totalMembers}`);
+  if (totalMembers > expectedMembers) {
+    check("non-log ZIP members are excluded from the batch",
+      discovered < totalMembers, `${discovered} of ${totalMembers}`);
+  }
+  const counts = await evaluate(`(() => {
+    const out = {};
+    [...document.querySelectorAll('#batch-result .result-cell')].forEach((cell) => {
+      const label = cell.querySelector('.l').textContent.trim();
+      out[label] = Number(cell.querySelector('.n').textContent);
+    });
+    return out;
+  })()`);
+  const freshFlights = counts["New flights"] || 0;
+  const newFiles = counts["New files"] || 0;
+  const repeats = counts["Already imported"] || 0;
+  check("summary names the outcome",
+    newFiles > 0 || repeats > 0, firstSummary.slice(0, 120));
+  check("new files imply new flights when the archive was empty",
+    freshFlights <= newFiles && (freshFlights > 0 || repeats > 0),
+    JSON.stringify(counts));
+  check("repeat files never create flights",
+    repeats === 0 || freshFlights === 0, JSON.stringify(counts));
+  const firstWasFresh = freshFlights > 0;
+
+  await new Promise((r) => setTimeout(r, 2500));
+  const laterSummary = await evaluate(
+    "document.getElementById('batch-result').innerText.replace(/\\s+/g, ' ').trim()");
+  check("import summary survives the page refresh",
+    laterSummary.length > 0 && laterSummary === firstSummary,
+    laterSummary.slice(0, 80));
+  if (firstWasFresh) {
+    check("summary links to the new flights",
+      await evaluate("!!document.querySelector('#batch-result [data-go=\"#/flights\"]')"));
+  } else {
+    console.log("SKIP new-flights link (this ZIP was already imported in an earlier run)");
+  }
+
+  await uploadZip(zipPath);
+  await waitFor("document.querySelectorAll('#batch-result .result-cell').length >= 6", 60000);
+  await new Promise((r) => setTimeout(r, 1800));
+  const secondNew = await evaluate(`(() => {
+    const cells = [...document.querySelectorAll('#batch-result .result-cell')];
+    const cell = cells.find(c => /New files/.test(c.innerText));
+    return cell ? Number(cell.querySelector('.n').textContent) : -1;
+  })()`);
+  // On a fresh root the first pass imported everything, so the repeat adds
+  // nothing; on an already-seeded root the first pass was itself the repeat.
+  check("a repeated ZIP import adds no files", secondNew === 0, String(secondNew));
+
+  const badZip = `${outDir}/not-a-zip.zip`;
+  writeFileSync(badZip, Buffer.from("this is not a zip archive at all", "utf8"));
+  await uploadZip(badZip);
+  const refused = await waitFor(
+    "/Nothing was imported/.test(document.getElementById('batch-result').innerText)",
+    30000);
+  check("a bad ZIP says why nothing was imported", refused,
+    (await evaluate("document.getElementById('batch-result').innerText")).slice(0, 120)
+      .replace(/\s+/g, " "));
+}
+
+// --- equipment capture through the real file input --------------------------
+{
+  await goto("#/settings");
+  await waitFor("!!document.getElementById('capture-choose')", 20000);
+  check("equipment capture offers a real chooser",
+    await evaluate("!!document.getElementById('capture-input')"));
+  check("apply is disabled until a preview exists",
+    await evaluate("document.getElementById('capture-apply').disabled"));
+
+  const captureDoc = await call("DOM.getDocument", { depth: -1 });
+  const captureNode = await call("DOM.querySelector", {
+    nodeId: captureDoc.result.root.nodeId, selector: "#capture-input",
+  });
+  await call("DOM.setFileInputFiles", {
+    files: [`${process.cwd()}/fixtures/synthetic/AirData-Equipment-Capture-SYNTHETIC.md`],
+    nodeId: captureNode.result.nodeId,
+  });
+  await evaluate(`(() => { const i = document.getElementById('capture-input');
+    i.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  await new Promise((r) => setTimeout(r, 600));
+  check("chosen capture file name is shown",
+    await evaluate("/AirData-Equipment-Capture/.test(" +
+      "document.getElementById('capture-path').value)"));
+  check("apply is still disabled before preview",
+    await evaluate("document.getElementById('capture-apply').disabled"));
+  await evaluate("document.getElementById('capture-preview').click(); true");
+  const previewed = await waitFor(
+    "document.querySelectorAll('#capture-out .result-cell').length >= 6", 30000);
+  check("capture preview reports counts", previewed,
+    (await evaluate("document.getElementById('capture-out').innerText")).slice(0, 100)
+      .replace(/\s+/g, " "));
+  check("capture preview separates resolved from grouped rows",
+    await evaluate("/individually resolved/.test(document.getElementById('capture-out').innerText)")
+      || await evaluate("/kept as groups/.test(document.getElementById('capture-out').innerText)"));
+  check("apply becomes available after preview",
+    await evaluate("!document.getElementById('capture-apply').disabled"));
+}
+
+// --- folder picker is browser-owned ----------------------------------------
+{
+  await goto("#/import");
+  await waitFor("!!document.getElementById('import-input-folder')", 20000);
+  check("folder chooser is browser-owned",
+    await evaluate(`(() => {
+      const i = document.getElementById('import-input-folder');
+      return !!i && (i.webkitdirectory === true || i.hasAttribute('directory'));
+    })()`));
 }
 
 // --- empty state -----------------------------------------------------------
