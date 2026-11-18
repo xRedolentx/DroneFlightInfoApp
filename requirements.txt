@@ -1,0 +1,18 @@
+# Flight Desk runtime dependencies
+#
+# The application itself uses only the Python standard library:
+#   * Python 3.11+ (built and tested on 3.12.10, Windows 11)
+#   * SQLite (bundled with CPython)
+#   * Windows PowerShell 5.1 (bundled) for the read-only MTP collector
+#
+# External components are pinned artifacts, not packages:
+#   * dji-log 0.5.7 CLI  - pinned upstream release binary
+#       https://github.com/lvauvillier/dji-log-parser/releases/download/
+#       v0.5.7/dji-log-x86_64-pc-windows-msvc.zip
+#       SHA-256 C036D9314BDFA72A9C13E93B956CCA89747637C4D5C2A0CABED64A7544242DFD
+#   * flightdesk-decode   - local build of shim/ against dji-log-parser =0.5.7
+#
+# Development-only (not required to run the app):
+#   dulwich==0.22.8       # local Git commits when git.exe is unavailable
+#
+# No other third-party runtime packages are required.

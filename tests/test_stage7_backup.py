@@ -1,0 +1,174 @@
+"""Stage 7: backup, restore rehearsal, exports and reconciliation stability."""
+from __future__ import annotations
+
+import io
+import os
+import sqlite3
+import tempfile
+import unittest
+from pathlib import Path
+
+from support import TempCase, apply_capture, base_time, log_bytes
+
+from flightdesk import backup, db, report
+from flightdesk.paths import ensure_layout
+
+
+class BackupTest(TempCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.imp.import_stream(io.BytesIO(log_bytes(11)), "DJIFlightRecord_2026-08-11_[21-53-20].txt",
+                               source_kind="archive", source_label="test")
+        apply_capture(self.conn)
+        self.dest = Path(tempfile.mkdtemp(prefix="fd-backup-"))
+
+    def tearDown(self) -> None:
+        super().tearDown()
+        import shutil
+        shutil.rmtree(self.dest, ignore_errors=True)
+
+    def test_backup_validates_and_restores_into_a_new_root(self) -> None:
+        result = backup.create_backup(self.conn, self.root, self.dest, "unit test")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["counts"]["raw_files"], 1)
+        validation = backup.validate_backup(Path(result["path"]))
+        self.assertTrue(validation["ok"], validation["errors"])
+        target = Path(tempfile.mkdtemp(prefix="fd-restore-")) / "restored"
+        restored = backup.restore_backup(Path(result["path"]), target)
+        self.assertTrue(restored["ok"], restored)
+        conn = db.init_db(target / "flightdesk.sqlite3")
+        try:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM raw_files").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM services").fetchone()[0], 21)
+            fk = conn.execute("PRAGMA foreign_key_check").fetchall()
+            self.assertEqual(fk, [])
+        finally:
+            conn.close()
+        import shutil
+        shutil.rmtree(target.parent, ignore_errors=True)
+
+    def test_restore_refuses_the_live_root(self) -> None:
+        from unittest import mock
+        result = backup.create_backup(self.conn, self.root, self.dest)
+        self.assertTrue(result["ok"])
+        with mock.patch("flightdesk.paths.default_data_root", return_value=Path(self.root)):
+            attempt = backup.restore_backup(Path(result["path"]), Path(self.root))
+        self.assertFalse(attempt["ok"])
+        self.assertEqual(attempt["code"], "refuses_live_root")
+
+    def test_restore_refuses_a_populated_target(self) -> None:
+        result = backup.create_backup(self.conn, self.root, self.dest)
+        attempt = backup.restore_backup(Path(result["path"]), Path(self.root))
+        self.assertFalse(attempt["ok"])
+        self.assertEqual(attempt["code"], "target_not_empty")
+
+    def test_cloud_sync_destination_requires_confirmation(self) -> None:
+        cloud = self.dest / "OneDrive" / "backups"
+        refused = backup.create_backup(self.conn, self.root, cloud)
+        self.assertFalse(refused["ok"])
+        self.assertEqual(refused["code"], "cloud_sync_destination")
+        allowed = backup.create_backup(self.conn, self.root, cloud, allow_cloud=True)
+        self.assertTrue(allowed["ok"])
+        self.assertTrue(allowed["warnings"])
+
+    def test_interrupted_backup_leaves_no_lock(self) -> None:
+        lock = self.root / "tmp" / "backup.lock"
+        lock.write_text("12345", encoding="utf-8")
+        blocked = backup.create_backup(self.conn, self.root, self.dest)
+        self.assertFalse(blocked["ok"])
+        self.assertEqual(blocked["code"], "backup_in_progress")
+        lock.unlink()
+        ok = backup.create_backup(self.conn, self.root, self.dest)
+        self.assertTrue(ok["ok"])
+        self.assertFalse(lock.exists())
+
+    def test_corrupted_backup_is_rejected(self) -> None:
+        result = backup.create_backup(self.conn, self.root, self.dest)
+        path = Path(result["path"])
+        data = bytearray(path.read_bytes())
+        data[-200:-100] = b"\x00" * 100
+        broken = self.dest / "broken.zip"
+        broken.write_bytes(bytes(data))
+        validation = backup.validate_backup(broken)
+        self.assertFalse(validation["ok"])
+        self.assertTrue(validation["errors"])
+
+    def test_manifest_records_hashes_and_schema(self) -> None:
+        import json
+        import zipfile
+        result = backup.create_backup(self.conn, self.root, self.dest)
+        with zipfile.ZipFile(result["path"]) as zf:
+            manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+        self.assertEqual(manifest["app"], "FlightDesk")
+        self.assertFalse(manifest["key_included"])
+        self.assertEqual(len(manifest["archive"]), 1)
+        self.assertTrue(manifest["archive"][0]["sha256"])
+
+    def test_backup_with_watcher_state_present(self) -> None:
+        from flightdesk import usb
+        usb.set_watcher(self.conn, True, 60)
+        result = backup.create_backup(self.conn, self.root, self.dest)
+        self.assertTrue(result["ok"])
+
+
+class ReconciliationTest(TempCase):
+    def test_groups_stay_separate_and_do_not_silently_zero(self) -> None:
+        self.imp.import_stream(io.BytesIO(log_bytes(11, photos=7, video=30)),
+                               "DJIFlightRecord_2026-08-11_[21-53-20].txt",
+                               source_kind="archive", source_label="archive")
+        self.imp.import_stream(io.BytesIO(log_bytes(11, days=20, aircraft="air3s")),
+                               "DJIFlightRecord_2026-08-31_[21-53-20].txt",
+                               source_kind="extras", source_label="controller")
+        data = report.reconciliation(self.conn)
+        self.assertEqual(data["groups"]["archive"]["raw_files"], 1)
+        self.assertEqual(data["groups"]["supplied_controller"]["raw_files"], 1)
+        self.assertEqual(data["groups"]["combined"]["raw_files"], 2)
+        # synthetic data must never claim a match against the real archive
+        self.assertFalse(data["real_inputs_selected"])
+        self.assertIsNone(data["signed_differences"])
+        self.assertEqual(data["groups"]["archive"]["photos"], 7)
+        self.assertIsNone(data["groups"]["archive"]["videos_count"])
+
+    def test_history_reference_stays_stable_after_new_imports(self) -> None:
+        self.imp.import_stream(io.BytesIO(log_bytes(11)),
+                               "DJIFlightRecord_2026-08-11_[21-53-20].txt",
+                               source_kind="archive", source_label="archive")
+        first = report.reconciliation(self.conn)
+        self.assertIsNotNone(first["baseline"])
+        self.imp.import_stream(io.BytesIO(log_bytes(11, days=30, aircraft="mini3")),
+                               "DJIFlightRecord_2026-09-10_[21-53-20].txt",
+                               source_kind="archive", source_label="archive")
+        second = report.reconciliation(self.conn)
+        self.assertEqual(first["baseline"], second["baseline"])
+        self.assertEqual(second["baseline_delta"]["raw_files"], 1)
+
+    def test_pending_file_is_reported_not_counted_as_zero(self) -> None:
+        from flightdesk.synth import make_v13_metadata_log
+        self.imp.import_stream(io.BytesIO(make_v13_metadata_log(start=base_time(3))),
+                               "DJIFlightRecord_2026-08-14_[21-53-20].txt",
+                               source_kind="archive", source_label="archive")
+        data = report.reconciliation(self.conn)
+        self.assertEqual(data["excluded"]["pending_key"], 1)
+        self.assertEqual(data["groups"]["archive"]["decoded"], 0)
+        self.assertEqual(data["groups"]["archive"]["decoded_coverage"], 0.0)
+
+    def test_exports_mark_fields_and_redaction_removes_identifiers(self) -> None:
+        self.imp.import_stream(io.BytesIO(log_bytes(11)),
+                               "DJIFlightRecord_2026-08-11_[21-53-20].txt",
+                               source_kind="archive", source_label="archive")
+        full = report.flights_csv(self.conn)
+        redacted = report.flights_csv(self.conn, redact=True)
+        self.assertIn("SYN-M2P-0001", full)
+        self.assertNotIn("SYN-M2P-0001", redacted)
+        self.assertIn("aircraft", redacted)
+        eq_full = report.equipment_csv(self.conn)
+        eq_red = report.equipment_csv(self.conn, redact=True)
+        self.assertNotIn("SYN-BAT-1001", eq_red)
+        svc = report.services_csv(self.conn)
+        self.assertIn("service_id", svc.splitlines()[0])
+        text = report.report_csv(report.reconciliation(self.conn, persist=False))
+        self.assertIn("combined", text)
+
+
+if __name__ == "__main__":
+    unittest.main()

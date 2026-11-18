@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="fd-token" content="__FD_TOKEN__">
+<title>__FD_APP__</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body data-privacy="off" data-units="metric">
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <span class="brand-name">Flight Desk</span>
+    <span class="brand-tag" data-testid="data-mode">local</span>
+  </div>
+  <nav class="mainnav" aria-label="Main">
+    <a href="#/flights" data-nav="flights">Flights</a>
+    <a href="#/equipment" data-nav="equipment">Batteries &amp; drones</a>
+    <a href="#/maintenance/upcoming" data-nav="maintenance">Maintenance</a>
+    <a href="#/import" data-nav="import">Import</a>
+    <a href="#/settings" data-nav="settings">Settings</a>
+  </nav>
+  <div class="topbar-tools">
+    <button type="button" class="ghost" id="unit-toggle" title="Switch units">Metric</button>
+    <button type="button" class="ghost" id="privacy-toggle" aria-pressed="false"
+            title="Hide identifying fields and route geometry">Privacy</button>
+  </div>
+</header>
+
+<main id="main" class="shell">
+  <div id="view" class="view" aria-live="polite"></div>
+</main>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<div id="modal" class="modal" hidden></div>
+
+<script src="/assets/charts.js"></script>
+<script src="/assets/track.js"></script>
+<script src="/assets/app.js"></script>
+</body>
+</html>

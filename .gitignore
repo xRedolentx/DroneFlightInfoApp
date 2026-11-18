@@ -1,0 +1,24 @@
+# Build artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+shim/target/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Local or private data — never versioned
+data/
+*.zip
+*.txt.bak
+screenshots/
+exports/
+backups/
+ui-shots/
+server.json
+*.log
+
+# Keep the fixtures and the build spec
+!fixtures/synthetic/*.md
+!FlightDesk-DeepSeek-Build.md
+!requirements.txt
