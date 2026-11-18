@@ -1,0 +1,125 @@
+# Flight Desk — owner guide
+
+Short, plain English. Everything here runs on this laptop only.
+
+## 1. Install and first start
+
+1. Install **Python 3.11 or newer** once, from
+   <https://www.python.org/downloads/windows/>. Tick *Add python.exe to PATH*.
+2. Double-click **`FlightDesk.cmd`** in this folder.
+3. The browser opens at `http://127.0.0.1:8765`. Your data root is created at
+   `%LOCALAPPDATA%\FlightDesk\data` on first start.
+
+The first screen has two buttons: **Import my logs** and **Explore invented demo
+data**. Demo data is fake and stays labelled `SYNTHETIC` in the header.
+
+## 2. Import your AirData archive (manual)
+
+1. Go to **Import**.
+2. Drop the original handoff **ZIP** onto the drop area, or press
+   **Choose folder** and pick your extracted `data` folder, or **Choose files**
+   for a single DJI TXT.
+3. Read the four result counts: **New files / Already imported / Awaiting DJI /
+   Needs attention**.
+   - *Already imported* is normal on a second pass. The same bytes are never
+     stored twice.
+   - *Awaiting DJI* means an encrypted (v13/v14) log. Its date, aircraft and
+     duration are already shown; only the detailed records need your key.
+   - *Needs attention* means the file is kept but could not be decoded. The
+     reason is a short category on the Import page.
+
+Nothing is written to your data until the original bytes have been hashed and
+saved. If the disk fills up, the import stops with that message and does not
+half-add a flight.
+
+## 3. Bring in your maintenance history
+
+1. **Settings → Damage capture → Preview a capture…**
+2. Pick your `AirData-Equipment-Capture-20261117.md`.
+3. Check the preview: how many aircraft, batteries, placeholders, and how many
+   service rows are individually resolved versus kept as groups.
+4. Press **Apply…** only when that looks right.
+
+Applying twice is safe — the second attempt reports *already applied*. Grouped
+rows (two batteries on one line, a date range, two rules in one cell) are kept
+exactly as captured and shown under *Needs clarification*. They are never split
+into invented per-item records.
+
+## 4. Set up your DJI key (only for encrypted logs)
+
+1. **Settings → DJI key**.
+2. Paste your DJI developer key (developer.dji.com → your app → SDK key) and
+   press **Save key**.
+3. Press **Decode pending**.
+
+What happens: Flight Desk sends exactly one request, to DJI's official
+keychain endpoint, with the key in a request header. The key is stored with
+Windows DPAPI for your user account — never in the database, a backup, a URL or
+a process argument. Each decoded log's keychain is cached against that file's
+hash, so later launches work offline.
+
+**After a Windows reinstall or a new machine** the DPAPI protection no longer
+applies. Re-enter the key; if the DJI app was deleted, create a new one at
+developer.dji.com. Nothing is lost — the raw logs are still in your archive.
+
+## 5. Copy logs off a controller (USB)
+
+1. Power the controller and connect it. On the controller, choose **file
+   transfer** mode.
+2. **Settings → USB controllers → Check controllers now**.
+3. Read the result: scanned / new / duplicates / attention.
+
+Under the hood this reads only `DJIFlightRecord_*.txt` (Smart Controller) and
+`FlightRecord_*.txt` (DJI RC 2) from the two documented folders. It never writes
+to the controller, and a half-finished copy is discarded and retried rather than
+imported.
+
+Optional: tick **Start at logon** to install one per-user task so a plugged-in
+controller is noticed while the browser is closed. It is reversible on the same
+screen.
+
+## 6. Day-to-day: flights and maintenance
+
+- **Flights** — filter by date, drone, battery, pilot or tag. The tiles and the
+  cards always show the same filtered set. Click a record, or use ← / → to walk
+  between flights without losing the filter.
+- **Maintenance → Upcoming** — grouped into Batteries and Aircraft. Each card
+  says which counter fired (e.g. *188 / 100 flights*) and which service set the
+  baseline. Press **Complete** or **Skip** with a note; **Undo** reverses it and
+  leaves an audit trail. A one-off job does not reset a rule unless you link it.
+- **Unknown** on a counter means the capture never published that number. It is
+  never treated as zero.
+
+## 7. Back up, and rehearse recovery
+
+1. **Settings → Create backup…** and choose a folder **outside**
+   OneDrive/Dropbox/Google Drive (Flight Desk warns you if it is inside one).
+2. A backup is one file: the database snapshot plus every archived original plus
+   a hash manifest.
+3. **Rehearse:** **Restore into a new root…** — pick the ZIP and a new empty
+   folder. It verifies every hash and the database's references before saying
+   success. You can then choose *Use restored copy on restart*; your current
+   data root is left untouched.
+
+Do this rehearsal before you cancel AirData.
+
+## 8. Exports
+
+**Settings → Backup and export** gives you flights, equipment and services CSV,
+plus a redacted mode that omits serials and coordinates.
+
+## 9. If you want to check the app itself
+
+```powershell
+python -m flightdesk selftest      # the full test suite
+python tools\rehearse.py           # end-to-end import → backup → restore
+python tools\diag.py "<folder>"    # counts only, no filenames
+```
+
+`tools\diag.py` is the only command meant for real data: it prints counts by
+source, format version and status, and never prints a filename, path or serial.
+
+## 10. Removing Flight Desk
+
+Delete this folder and `%LOCALAPPDATA%\FlightDesk`. If you enabled the logon
+watcher, untick it first so the scheduled task is removed too.

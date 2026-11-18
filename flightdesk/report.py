@@ -175,7 +175,14 @@ def reconciliation(conn: sqlite3.Connection, *, persist: bool = True) -> dict[st
     summaries["combined"] = _summary(raws, flights)
 
     real_inputs = bool(db.get_setting(conn, "real_inputs_selected", False))
-    data_mode = db.get_setting(conn, "data_mode", "synthetic" if db.get_setting(conn, "demo_seeded") else "unknown")
+    data_mode = db.get_setting(conn, "data_mode")
+    if not data_mode:
+        if db.get_setting(conn, "demo_seeded", False):
+            data_mode = "synthetic"
+        elif raws:
+            data_mode = "unknown"
+        else:
+            data_mode = "empty"
     reference = reference_record(conn)
     expected = dict(ARCHIVE_EXPECTED)
     measured = summaries["archive"]

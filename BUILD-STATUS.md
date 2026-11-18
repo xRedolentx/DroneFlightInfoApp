@@ -156,6 +156,24 @@ Keychain decoding uses `flightdesk-decode`, built locally from `shim/` against
 - **Pending Kevin:** decide cutover. Keep AirData active while any material
   difference is unexplained.
 
+## Release gate
+
+| Item | Verdict | Evidence | Next human action |
+|---|---|---|---|
+| Fresh install + restart | **Verified** | Fresh empty root serves the app; `data_mode=empty`, 0 counts; launcher returns HTTP 200; restart keeps data | none |
+| Archive inventory (269 files) | **Pending Kevin** | Synthetic ZIP/table shapes verified; real archive absent here | Run `python tools\diag.py "<handoff zip>"`; expect 7/222/40 versions and 269 distinct hashes |
+| Decoded totals (264 · 24h10m · 108 mi) | **Pending Kevin** | Reconciliation groups + signed differences implemented and tested on synthetic data | After import, tick *Mark records as my real inputs* and read the signed difference |
+| Due statuses at handover | **Verified on synthetic capture** | 188/100 + 1018/1000 Due; 19/20 and 16/20 Due soon; battery 30/20 Due | Re-check after applying the real capture |
+| Both real USB devices | **Pending Kevin** | Simulated adapter covers 13 cases incl. interrupted copy and reconnect | Plug each controller in twice; expect zero new records on the second attach |
+| No duplicate imports | **Verified** | Folder, ZIP, renamed duplicate, race and re-scan all add zero | none |
+| Key-cached offline reparse | **Mechanism verified** | DPAPI cache + local decoder produce frames without network | Enter a real key, decode one v14, disconnect, restart, reparse |
+| Working backup recovery | **Verified** | 12 tests + 13-step rehearsal, including corrupted archive and live-root refusal | Do one rehearsal on your real data before cancelling |
+| Video count comparison | **Discrepancy (by design)** | Logs give video seconds, not a count; `videos_count` is null | Supply a video count if AirData shows one |
+
+**Keep AirData active while any material difference is unexplained.** A final
+fresh export/import rehearsal is offered before the February 2027 renewal;
+the cancellation decision is Kevin's.
+
 ## Overall counts
 
 - 120 automated tests, all passing (`python -m flightdesk selftest`).
