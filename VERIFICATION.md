@@ -9,15 +9,16 @@ filenames, serials, coordinates or raw stderr were ever printed.
 
 ```
 > python -m flightdesk selftest
-{"ok": true, "tests": 115, "failures": 0, "errors": 0, "skipped": 0}
+{"ok": true, "tests": 120, "failures": 0, "errors": 0, "skipped": 0}
 ```
 
 Groups:
 
 - `tests/test_stage1_import.py` — 20 checks
 - `tests/test_stage2_equipment.py` — 22 checks
-- `tests/test_stage3_web.py` — 21 checks (HTTP security, API, packaged assets,
-  and a `node --check` parse gate over every browser script)
+- `tests/test_stage3_web.py` — 26 checks (HTTP security, API, packaged assets,
+  a `node --check` parse gate over every browser script, the picker backend, and
+  the controller-scan endpoint returning a clean "no device" on a bare machine)
 - `tests/test_stage4_usb.py` — 13 checks (simulated adapter)
 - `tests/test_stage5_key.py` — 14 checks (exchange shape, DPAPI, offline cache)
 - `tests/test_stage6_analysis.py` — 10 checks

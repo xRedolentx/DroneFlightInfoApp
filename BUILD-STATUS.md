@@ -158,7 +158,7 @@ Keychain decoding uses `flightdesk-decode`, built locally from `shim/` against
 
 ## Overall counts
 
-- 115 automated tests, all passing (`python -m flightdesk selftest`).
+- 120 automated tests, all passing (`python -m flightdesk selftest`).
 - 38 scripted browser checks, all passing (including the no-egress assertion).
 - 13-step backup/restore rehearsal, all passing.
 

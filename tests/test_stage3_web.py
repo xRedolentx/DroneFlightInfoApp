@@ -268,6 +268,51 @@ class ApiTest(ServerCase):
         self.assertIn("devices", data)
         self.assertIn("watcher", data)
 
+    def test_controller_scan_reports_absence_cleanly(self) -> None:
+        result = self.post_json("/api/usb/scan", {})
+        self.assertIn(result["status"], {"no_device", "no_files", "unavailable"})
+        self.assertEqual(result["imported"], 0)
+        self.assertEqual(result["mode"], "physical")
+
+    def test_picker_backend_imports_a_folder_path(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from support import log_bytes
+        with tempfile.TemporaryDirectory(prefix="fd-picker-") as tmp:
+            folder = Path(tmp) / "flight_logs"
+            folder.mkdir()
+            (folder / "DJIFlightRecord_2027-03-04_[09-00-00].txt").write_bytes(
+                log_bytes(11, days=300, aircraft="air3s"))
+            result = self.post_json("/api/import/path", {"path": str(folder)})
+        self.assertEqual(result["totals"]["new"], 1)
+        self.assertEqual(result["totals"]["new_flight"], 1)
+
+    def test_picker_backend_rejects_a_missing_path(self) -> None:
+        status, payload = self.request(
+            "POST", "/api/import/path",
+            json.dumps({"path": "C:/definitely/not/here"}).encode())
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(payload)["code"], "path_not_found")
+
+    def test_capture_preview_and_apply_with_an_explicit_path(self) -> None:
+        from pathlib import Path
+        fixture = (Path(__file__).resolve().parent.parent / "fixtures" / "synthetic" /
+                   "AirData-Equipment-Capture-SYNTHETIC.md")
+        preview = self.post_json("/api/capture/preview", {"path": str(fixture)})
+        self.assertTrue(preview["ok"])
+        self.assertEqual(preview["service_events"], 21)
+        self.assertEqual(preview["grouped_services"], 4)
+        applied = self.post_json("/api/capture/apply", {"path": str(fixture)})
+        self.assertIn("already_applied", applied)
+
+    def test_real_input_toggle_enables_signed_differences(self) -> None:
+        plain = self.post_json("/api/recon/select-real", {"selected": True})
+        self.assertTrue(plain["real_inputs_selected"])
+        self.assertIsNotNone(plain["signed_differences"])
+        back = self.post_json("/api/recon/select-real", {"selected": False})
+        self.assertFalse(back["real_inputs_selected"])
+        self.assertIsNone(back["signed_differences"])
+
 
 if __name__ == "__main__":
     unittest.main()
