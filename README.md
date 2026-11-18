@@ -11,6 +11,9 @@ Everything stays on this machine. There is no login, no telemetry, no hosted
 database, and no request to any external service except the single DJI
 keychain exchange you explicitly trigger with your own developer key.
 
+Start with **`OWNER-GUIDE.md`**. Stage-by-stage status is in `BUILD-STATUS.md`;
+the raw evidence is in `VERIFICATION.md`.
+
 ## Start it
 
 Double-click **`FlightDesk.cmd`** in this folder. It opens
