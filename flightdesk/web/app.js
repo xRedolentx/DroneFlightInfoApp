@@ -813,6 +813,16 @@
         pick: function (s) { return s.signal; } },
     ];
     host.innerHTML = defs.map(function (d) {
+      var present = samples.some(function (s) {
+        var v = d.pick(s);
+        return v !== null && v !== undefined && isFinite(v);
+      });
+      if (!present) {
+        return '<div class="chart-block"><div class="chart-head"><h3>' + esc(d.label) +
+          '</h3><span class="tag">not in this record</span></div>' +
+          '<div class="panel-body tiny faint">The adapter supplies no ' + esc(d.unit) +
+          " values for this flight. Nothing is filled in.</div></div>";
+      }
       return '<div class="chart-block"><div class="chart-head"><h3>' + esc(d.label) +
         '</h3><div class="legend"><span><i style="background:' + d.color + '"></i>' +
         esc(d.unit) + "</span>" +
@@ -822,6 +832,7 @@
     }).join("");
     defs.forEach(function (d) {
       var target = host.querySelector('[data-chart="' + d.key + '"]');
+      if (!target) return;
       window.FDCharts.line(target, {
         times: times,
         series: [{ key: d.key, label: d.label, color: d.color,
@@ -1021,16 +1032,20 @@
             : '<p class="small muted">No charge-cycle history recorded. Charge counters fall back ' +
               "to logged flights and say so.</p>")
           : "") +
-        '<p class="small">Battery health readings: ' + data.readings.length + "</p>" +
-        (data.last_reading ? '<p class="tiny faint">Last reading ' +
+        '<p class="small">' + (e.kind === "battery" ? "Battery health readings: "
+          + data.readings.length : "Linked batteries: " + data.children.length) + "</p>" +
+        (e.kind === "battery" && data.last_reading ? '<p class="tiny faint">Last reading ' +
           esc(dateOnly(data.last_reading.at)) + " · " +
           (data.last_reading.temp_missing ? "temperature missing" :
             (data.last_reading.temp_c !== null
               ? tempUnit(data.last_reading.temp_c).v + " " + tempUnit(data.last_reading.temp_c).u
               : "no temperature")) + "</p>"
-          : '<p class="tiny faint">No battery readings stored.</p>') +
-        (data.children.length ? '<p class="tiny faint">' + data.children.length +
-          " linked item(s)</p>" : "") + "</div></div>" +
+          : '<p class="tiny faint">' + (e.kind === "battery"
+              ? "No battery readings stored." : "No battery is linked to this aircraft yet.") +
+            "</p>") +
+        (e.kind === "aircraft" && data.children.length
+          ? '<p class="tiny faint">' + data.children.length + " linked item(s)</p>" : "") +
+        "</div></div>" +
         '<h3 style="margin:16px 0 8px">Maintenance</h3>' +
         (rules ? '<div class="cards-2">' + rules + "</div>" :
           '<div class="notice small">No maintenance rules apply to this item.</div>') +
@@ -1319,8 +1334,9 @@
         "demo set</button> to explore the screens. It is labelled synthetic everywhere.</div>" +
         "</div></div>" +
         '<div class="panel"><div class="panel-head"><h2>Awaiting DJI key</h2>' +
-        '<button type="button" class="link tiny" id="unlock-all">Unlock with saved key</button>' +
-        "</div>" + pendingTable(data.pending) + "</div>" +
+        '<button type="button" class="link tiny" id="unlock-all">Unlock with saved key' +
+        (state.app.pending_key ? " · " + state.app.pending_key + " waiting" : "") +
+        "</button></div>" + pendingTable(data.pending) + "</div>" +
         '<div class="panel"><div class="panel-head"><h2>Import history</h2></div>' +
         '<table class="data"><thead><tr><th>Started</th><th>Source</th><th>Status</th>' +
         '<th class="num">New</th><th class="num">Already</th><th class="num">Waiting</th>' +
@@ -1792,8 +1808,22 @@
               .then(function (res) {
                 if (res.cancelled) return;
                 if (res.ok) {
-                  toast("Restored and validated · restart to open the restored copy");
-                  closeModal();
+                  toast("Restored and validated · opening the copy needs one more step");
+                  openModal("Restored copy",
+                    "<p class=\"small\">The restore validated: hashes, integrity and foreign " +
+                    "keys all passed. Flight Desk has not switched to it.</p>" +
+                    "<p class=\"small muted\">Switching only changes a pointer; your current " +
+                    "data root is left exactly as it is, so you can switch back.</p>",
+                    [{ label: "Keep current data", cls: "secondary", action: function () {
+                        closeModal(); } },
+                     { label: "Use restored copy on restart", cls: "primary",
+                       action: function () {
+                         return api("/api/backup/activate", { method: "POST", body: {
+                           target: target, confirm: true } }).then(function (out) {
+                           toast(out.ok ? "Restart Flight Desk to open the restored copy"
+                                        : "Could not switch: " + out.code);
+                           closeModal();
+                         }); } }]);
                 } else {
                   toast("Restore failed: " + (res.code || (res.validation || {}).errors));
                 }

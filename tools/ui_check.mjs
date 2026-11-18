@@ -34,6 +34,19 @@ function call(method, params = {}) {
 await new Promise((resolve) => ws.addEventListener("open", resolve));
 await call("Page.enable");
 await call("Runtime.enable");
+await call("Network.enable");
+
+// Every request the page makes must stay on loopback: the offline proof.
+const externalRequests = [];
+ws.addEventListener("message", (event) => {
+  const msg = JSON.parse(event.data);
+  if (msg.method === "Network.requestWillBeSent") {
+    const url = msg.params?.request?.url || "";
+    if (!/^(http:\/\/127\.0\.0\.1|http:\/\/localhost|data:|about:)/.test(url)) {
+      externalRequests.push(url.slice(0, 80));
+    }
+  }
+});
 
 const failures = [];
 let total = 0;
@@ -278,7 +291,10 @@ check("empty state explains the filter result",
   await evaluate("/No flights match/.test(document.body.textContent)"));
 await evaluate(`(() => { const b = document.getElementById('f-clear'); if (b) b.click(); return true; })()`);
 
-console.log(`SUMMARY ${failures.length === 0 ? "PASS" : "FAIL"} checks=${30 - failures.length + failures.length} failures=${failures.length}`);
+console.log(`SUMMARY ${failures.length === 0 ? "PASS" : "FAIL"} checks=${total} failures=${failures.length}`);
+check("no request left loopback", externalRequests.length === 0,
+  externalRequests.slice(0, 3).join(" | "));
 if (failures.length) console.log("FAILED_CHECKS " + failures.join(", "));
+console.log(`SUMMARY_FINAL ${failures.length === 0 ? "PASS" : "FAIL"} checks=${total} failures=${failures.length}`);
 ws.close();
 process.exit(failures.length ? 1 : 0);

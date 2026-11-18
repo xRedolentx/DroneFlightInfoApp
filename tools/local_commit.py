@@ -32,8 +32,8 @@ def main(message: str) -> int:
         "flightdesk/**/*.py", "flightdesk/**/*.js", "flightdesk/**/*.css",
         "flightdesk/**/*.html", "tools/*", "tests/*", "fixtures/**/*.md",
         "shim/Cargo.toml", "shim/Cargo.lock", "shim/src/*.rs",
-        "README.md", "BUILD-STATUS.md", "requirements.txt", ".gitignore",
-        "FlightDesk.cmd", "FlightDesk-DeepSeek-Build.md",
+        "README.md", "BUILD-STATUS.md", "VERIFICATION.md", "requirements.txt",
+        ".gitignore", "FlightDesk.cmd", "FlightDesk-DeepSeek-Build.md",
     ):
         for path in ROOT.glob(pattern):
             if not path.is_file():
