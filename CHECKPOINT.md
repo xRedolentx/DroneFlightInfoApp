@@ -5,7 +5,9 @@ Everything below was verified on this machine today; nothing is aspirational.
 
 ## State at a glance
 
-- Local Git: **14 commits**, head `59dee6cc`; no remote, nothing pushed.
+- Local Git: a linear history on one branch; **no remote and nothing pushed**.
+  Check the tip with `python tools\local_commit.py` (prints the short hash) or by
+  reading `.git/refs/heads/master`.
 - Working tree: clean.
 - `python -m flightdesk selftest` → **130 tests, 0 failures, 0 errors**.
 - `node tools\ui_check.mjs <port> <outdir> <zip>` → **65 checks, 0 failures**.
