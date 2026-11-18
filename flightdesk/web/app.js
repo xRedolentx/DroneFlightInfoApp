@@ -91,6 +91,40 @@
     toast._t = setTimeout(function () { toastEl.classList.remove("on"); }, 3400);
   }
 
+  // Downloads need the session header, which a plain link cannot send. Fetch
+  // the bytes with the header, then hand the browser a local blob URL.
+  function download(path, filename) {
+    return fetch(path, { headers: { "X-FD-Token": TOKEN }, credentials: "same-origin" })
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.blob();
+      })
+      .then(function (blob) {
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 2000);
+        toast("Saved " + filename);
+      })
+      .catch(function (err) { toast("Export failed: " + err.message); });
+  }
+
+  function exportButton(label, path, filename) {
+    return '<button type="button" class="secondary" data-export="' + esc(path) +
+      '" data-filename="' + esc(filename) + '">' + esc(label) + "</button>";
+  }
+
+  function wireExports(root) {
+    root.querySelectorAll("[data-export]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        download(btn.dataset.export, btn.dataset.filename);
+      });
+    });
+  }
+
   // -------------------------------------------------------------------- api
 
   function api(path, options) {
@@ -1664,15 +1698,14 @@
               '<button type="button" class="secondary" id="backup-validate">Validate a backup…</button>' +
               "</div>" +
               '<div class="row" style="margin-top:10px">' +
-              '<a class="secondary" style="padding:6px 12px;border:1px solid var(--line-strong);' +
-              'border-radius:4px" href="/api/export/flights.csv">Flights CSV</a>' +
-              '<a class="secondary" style="padding:6px 12px;border:1px solid var(--line-strong);' +
-              'border-radius:4px" href="/api/export/equipment.csv">Equipment CSV</a>' +
-              '<a class="secondary" style="padding:6px 12px;border:1px solid var(--line-strong);' +
-              'border-radius:4px" href="/api/export/services.csv">Services CSV</a>' +
-              '<a class="secondary" style="padding:6px 12px;border:1px solid var(--line-strong);' +
-              'border-radius:4px" href="/api/export/flights.csv?redact=1">Flights (no locations ' +
-              "or serials)</a></div>" +
+              exportButton("Flights CSV", "/api/export/flights.csv", "FlightDesk-flights.csv") +
+              exportButton("Equipment CSV", "/api/export/equipment.csv",
+                "FlightDesk-equipment.csv") +
+              exportButton("Services CSV", "/api/export/services.csv",
+                "FlightDesk-services.csv") +
+              exportButton("Flights (no locations or serials)",
+                "/api/export/flights.csv?redact=1", "FlightDesk-flights-redacted.csv") +
+              "</div>" +
               (backups.rows.length ? '<table class="data" style="margin-top:12px"><thead><tr>' +
                 "<th>Created</th><th>Status</th><th>Destination</th></tr></thead><tbody>" +
                 backups.rows.map(function (b) {
@@ -1691,8 +1724,8 @@
               "files reported next to totals.</p>" +
               '<div class="row" style="margin-top:10px"><button type="button" class="secondary" ' +
               'id="recon-run">Generate report</button>' +
-              '<a class="secondary" style="padding:6px 12px;border:1px solid var(--line-strong);' +
-              'border-radius:4px" href="/api/export/recon.csv">Download CSV</a></div>' +
+              exportButton("Reconciliation CSV", "/api/export/recon.csv",
+                "FlightDesk-reconciliation.csv") + "</div>" +
               '<div id="recon-out" style="margin-top:12px"></div>') +
             section("Damage capture", '<p class="small muted">Parse an equipment capture ' +
               "(markdown headings and pipe tables). Preview first: it shows what is individually " +
@@ -1712,6 +1745,7 @@
               'border-radius:4px" href="#/compare">Local reference comparison</a></div>') +
             "</div>";
           wireSettings();
+          wireExports(view);
           bindAct(view);
         });
       });
@@ -1971,14 +2005,24 @@
         "values.</p></div></div>";
       var img = document.getElementById("ref-img");
       var status = document.getElementById("ref-status");
-      img.addEventListener("load", function () {
-        status.textContent = "Reference loaded locally · " + img.naturalWidth + " × " +
-          img.naturalHeight + " px";
-      });
-      img.addEventListener("error", function () {
-        status.textContent = "Could not read that image path. Check the file name and type.";
-        img.remove();
-      });
+      // The image endpoint also needs the session header, so fetch it as a blob.
+      fetch(src, { headers: { "X-FD-Token": TOKEN }, credentials: "same-origin" })
+        .then(function (res) {
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          return res.blob();
+        })
+        .then(function (blob) {
+          var url = URL.createObjectURL(blob);
+          img.addEventListener("load", function () {
+            status.textContent = "Reference loaded locally · " + img.naturalWidth + " × " +
+              img.naturalHeight + " px";
+          });
+          img.src = url;
+        })
+        .catch(function () {
+          status.textContent = "Could not read that image path. Check the file name and type.";
+          img.remove();
+        });
     });
   }
 

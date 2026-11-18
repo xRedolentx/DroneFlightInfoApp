@@ -69,7 +69,7 @@ Keychain decoding uses `flightdesk-decode`, built locally from `shim/` against
 
 ### Stage 3 · Screens — **verified in a real browser (Edge, headless via CDP)**
 
-- `node tools/ui_check.mjs` drives the running app: **40/40 checks pass**,
+- `node tools/ui_check.mjs` drives the running app: **45/45 checks pass**,
   including an assertion that no request leaves loopback;
   covering list width ratio (312/1158 px), three-column records, filters
   applying to list and tiles together, filter persistence, flight → detail,
@@ -177,7 +177,7 @@ the cancellation decision is Kevin's.
 ## Overall counts
 
 - 120 automated tests, all passing (`python -m flightdesk selftest`).
-- 40 scripted browser checks, all passing (including the no-egress and privacy
+- 45 scripted browser checks, all passing (including the no-egress and privacy
   assertions).
 - 13-step backup/restore rehearsal, all passing.
 
@@ -189,11 +189,16 @@ Exact commands and outputs are in `VERIFICATION.md`.
    exists on this machine. Every real-data number in the brief is therefore
    unverified here, and the app says so: with `real_inputs_selected = false`
    the reconciliation screen refuses to show a signed difference against the
-   264/24h10m/108mi reference.
+   264/24h10m/108mi reference. The reference itself is now stored as data with
+   its source, scope, precision and date.
 2. **Physical USB and the DJI key are unexercised.** Both are owner tasks.
+   `tools\Collect-DjiLogs.ps1` was executed on this machine with no controller
+   attached and returned a clean `no_device` in 0.3 s, so the script parses and
+   runs; it has never enumerated a real controller.
 3. **Screenshots 01/03/19/20/21–23 comparison** needs Kevin's reference images.
-4. **Video count** is reported as seconds only; the capture gives no video
-   count, so `videos_count` is `null` rather than derived.
+   The in-app comparison page pairs them without uploading.
+4. **Video count** is reported as seconds only. The capture publishes no video
+   count, so `videos_count` stays `null` instead of being derived.
 
 ## Privacy posture (what was never in the transcript)
 

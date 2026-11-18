@@ -291,6 +291,39 @@ await new Promise((r) => setTimeout(r, 500));
 check("mobile detail switch works",
   await evaluate("document.body.dataset.mobileView === 'detail'"));
 
+// --- exports and local reference image (header-authenticated) ---------------
+const exportResult = await evaluate(`(async () => {
+  const token = document.querySelector('meta[name=fd-token]').content;
+  const withHeader = await fetch('/api/export/equipment.csv', { headers: { 'X-FD-Token': token } });
+  const without = await fetch('/api/export/equipment.csv');
+  const redacted = await fetch('/api/export/flights.csv?redact=1', { headers: { 'X-FD-Token': token } });
+  return {
+    ok: withHeader.status,
+    blocked: without.status,
+    redacted: redacted.status,
+    type: withHeader.headers.get('Content-Type') || '',
+  };
+})()`);
+check("CSV export works with the session header", exportResult.ok === 200, JSON.stringify(exportResult));
+check("CSV export is refused without the session header", exportResult.blocked === 403);
+check("redacted export also downloads", exportResult.redacted === 200);
+check("export is served as CSV", /text\/csv/.test(exportResult.type), exportResult.type);
+
+const refImage = await evaluate(`(async () => {
+  const token = document.querySelector('meta[name=fd-token]').content;
+  const path = ${JSON.stringify(process.argv[4] || "")};
+  if (!path) return 'no-path';
+  const res = await fetch('/api/local-image?path=' + encodeURIComponent(path) +
+    '/stage3-01-flights-1536.png', { headers: { 'X-FD-Token': token } });
+  return res.status + ':' + (res.headers.get('Content-Type') || '');
+})()`);
+if (refImage === "no-path") {
+  console.log("SKIP local reference image (no screenshot dir supplied)");
+} else {
+  check("local reference image is served with the session header",
+    String(refImage).startsWith("200:image/png"), String(refImage));
+}
+
 // --- empty state -----------------------------------------------------------
 await goto("#/flights?x=1");
 await evaluate(`(() => { const s = document.getElementById('f-search');
