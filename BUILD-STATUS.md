@@ -286,8 +286,8 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 149 automated tests, all passing (`python -m flightdesk selftest`).
-- 65 scripted browser checks, all passing (including the no-egress and privacy
+- 153 automated tests, all passing (`python -m flightdesk selftest`).
+- 68 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).
 - 13-step backup/restore rehearsal, all passing.

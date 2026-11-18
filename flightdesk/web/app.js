@@ -1853,6 +1853,11 @@
               '<button type="button" class="primary" id="key-save">Save key</button>' +
               '<button type="button" class="secondary" id="key-clear">Remove key</button>' +
               '<button type="button" class="secondary" id="key-unlock-all">Decode pending</button></div>' +
+              '<div class="row" style="margin-top:8px"><button type="button" class="secondary" ' +
+              'id="key-reparse-cache">Re-decode one record from cache</button>' +
+              '<span class="tiny faint">Use with the network off to prove the cached ' +
+              "keychain is enough.</span></div>" +
+              '<div id="key-reparse-out" class="small" style="margin-top:6px"></div>' +
               '<div class="notice small" style="margin-top:10px">Cached keychains are protected ' +
               "by DPAPI, so they survive app restarts on this machine but not a Windows " +
               "reinstall. After a reinstall, re-enter the key — or reauthorize a new app at " +
@@ -1876,6 +1881,12 @@
               'id="backup-now">Create backup…</button>' +
               '<button type="button" class="secondary" id="backup-validate">Validate a backup…</button>' +
               "</div>" +
+              '<div class="field" style="margin-top:10px"><label for="backup-dest">Backup folder' +
+              '</label><div class="row"><input id="backup-dest" type="text" ' +
+              'placeholder="C:\\Users\\you\\FlightDeskBackups" style="flex:1;min-width:220px">' +
+              '<button type="button" class="secondary" id="backup-pick">Choose folder…</button>' +
+              "</div><p class=\"tiny faint\">Type the folder, or use Choose folder. Leave it " +
+              "empty to be asked.</p></div>" +
               '<div class="row" style="margin-top:10px">' +
               exportButton("Flights CSV", "/api/export/flights.csv", "FlightDesk-flights.csv") +
               exportButton("Equipment CSV", "/api/export/equipment.csv",
@@ -1985,6 +1996,22 @@
         refreshState().then(renderSettings);
       });
     });
+    var reparseOne = document.getElementById("key-reparse-cache");
+    if (reparseOne) reparseOne.addEventListener("click", function () {
+      var out = document.getElementById("key-reparse-out");
+      if (out) out.textContent = "Re-decoding from cache…";
+      api("/api/reparse", { method: "POST", body: { scope: "cached" } })
+        .then(function (res) {
+          var text = res.ok
+            ? "Re-decoded a v" + res.version + " record from its cached keychain " +
+              "(no network needed)."
+            : (res.code === "no_cached_keychain"
+                ? "No cached keychain yet \u2014 decode a pending record first."
+                : "Could not re-decode: " + (res.code || res.status));
+          toast(text);
+          if (out) out.textContent = text;
+        });
+    });
     var check = document.getElementById("usb-check");
     if (check) check.addEventListener("click", function () {
       var out = document.getElementById("usb-result");
@@ -2025,9 +2052,20 @@
                 closeModal(); refreshState().then(renderSettings);
               }); } }]);
     });
+    var backupPick = document.getElementById("backup-pick");
+    if (backupPick) backupPick.addEventListener("click", function () {
+      api("/api/pick", { method: "POST", body: { kind: "folder" } }).then(function (res) {
+        if (res.cancelled) return;
+        var input = document.getElementById("backup-dest");
+        if (input && res.path) input.value = res.path;
+        if (!res.path) toast("No folder chosen \u2014 type the path instead");
+      });
+    });
     var backupNow = document.getElementById("backup-now");
     if (backupNow) backupNow.addEventListener("click", function () {
-      api("/api/backup", { method: "POST", body: {} }).then(function (res) {
+      var typed = (document.getElementById("backup-dest") || {}).value || "";
+      api("/api/backup", { method: "POST", body: typed.trim() ? { destination: typed.trim() } : {} })
+        .then(function (res) {
         if (res.cancelled) return;
         if (res.ok) toast("Backup written · " + res.counts.raw_files + " originals verified");
         else if (res.code === "cloud_sync_destination") {
@@ -2044,29 +2082,56 @@
     });
     var validate = document.getElementById("backup-validate");
     if (validate) validate.addEventListener("click", function () {
-      api("/api/backup/validate", { method: "POST", body: {} }).then(function (res) {
-        if (res.cancelled) return;
-        if (res.ok) {
-          toast("Backup validates · " + (res.counts.raw_files || 0) + " originals · schema " +
-            res.schema_version);
-        } else {
-          openModal("Backup failed validation",
-            '<p class="small">' + esc((res.errors || []).join(", ")) + "</p>",
-            [{ label: "Close", cls: "secondary" }]);
-        }
+      openModal("Validate a backup",
+        '<p class="small">Type or choose the backup ZIP. Nothing is restored or changed.</p>' +
+        '<div class="field"><label for="validate-path">Backup file</label>' +
+        '<div class="row"><input id="validate-path" type="text" placeholder="C:\\Users\\you\\FlightDeskBackups\\FlightDesk-backup-....zip" style="flex:1;min-width:220px">' +
+        '<button type="button" class="secondary" id="validate-pick">Choose file…</button></div></div>',
+        [{ label: "Cancel", cls: "secondary" },
+         { label: "Validate", cls: "primary", action: function () {
+            var path = (document.getElementById("validate-path") || {}).value || "";
+            return api("/api/backup/validate", { method: "POST", body: path.trim()
+                ? { path: path.trim() }
+                : {} }).then(function (res) {
+              if (res.cancelled) return;
+              if (res.ok) {
+                toast("Backup validates · " + (res.counts.raw_files || 0) + " originals · schema " +
+                  res.schema_version);
+              } else {
+                openModal("Backup failed validation",
+                  '<p class="small">' + esc((res.errors || []).join(", ")) + "</p>",
+                  [{ label: "Close", cls: "secondary" }]);
+              }
+            }); } }]);
+      var vpick = document.getElementById("validate-pick");
+      if (vpick) vpick.addEventListener("click", function () {
+        api("/api/pick", { method: "POST", body: { kind: "file" } }).then(function (res) {
+          if (res.cancelled) return;
+          var input = document.getElementById("validate-path");
+          if (input && res.path) input.value = res.path;
+          if (!res.path) toast("No file chosen \u2014 type the path instead");
+        });
       });
     });
     var restore = document.getElementById("restore-run");
     if (restore) restore.addEventListener("click", function () {
       openModal("Restore into a new data root",
-        '<p class="small">Pick the backup ZIP, then a new empty folder. The live data root is ' +
-        "never used for this rehearsal.</p>" +
+        '<p class="small">Type or choose the backup ZIP, then a new empty folder. The live ' +
+        "data root is never used for this rehearsal.</p>" +
+        '<div class="field"><label for="restore-source">Backup file</label>' +
+        '<div class="row"><input id="restore-source" type="text" placeholder="C:\\Users\\you\\FlightDeskBackups\\FlightDesk-backup-....zip" style="flex:1;min-width:220px">' +
+        '<button type="button" class="secondary" id="restore-pick">Choose file…</button></div></div>' +
         '<div class="field"><label for="restore-target">New data root</label>' +
-        '<input id="restore-target" type="text" placeholder="C:\\Users\\you\\FlightDeskRestored"></div>',
+        '<input id="restore-target" type="text" placeholder="C:\\Users\\you\\FlightDeskRestored">' +
+        '<div class="row" style="margin-top:6px"><button type="button" class="secondary" ' +
+        'id="restore-target-pick">Choose folder…</button></div></div>',
         [{ label: "Cancel", cls: "secondary" },
          { label: "Choose backup and restore", cls: "primary", action: function () {
             var target = document.getElementById("restore-target").value;
-            return api("/api/backup/restore", { method: "POST", body: { target: target } })
+            var source = (document.getElementById("restore-source") || {}).value || "";
+            return api("/api/backup/restore", { method: "POST", body: source.trim()
+                ? { path: source.trim(), target: target }
+                : { target: target } })
               .then(function (res) {
                 if (res.cancelled) return;
                 if (res.ok) {
@@ -2090,6 +2155,24 @@
                   toast("Restore failed: " + (res.code || (res.validation || {}).errors));
                 }
               }); } }]);
+      var pick = document.getElementById("restore-pick");
+      if (pick) pick.addEventListener("click", function () {
+        api("/api/pick", { method: "POST", body: { kind: "file" } }).then(function (res) {
+          if (res.cancelled) return;
+          var input = document.getElementById("restore-source");
+          if (input && res.path) input.value = res.path;
+          if (!res.path) toast("No file chosen \u2014 type the path instead");
+        });
+      });
+      var targetPick = document.getElementById("restore-target-pick");
+      if (targetPick) targetPick.addEventListener("click", function () {
+        api("/api/pick", { method: "POST", body: { kind: "folder" } }).then(function (res) {
+          if (res.cancelled) return;
+          var input = document.getElementById("restore-target");
+          if (input && res.path) input.value = res.path;
+          if (!res.path) toast("No folder chosen \u2014 type the path instead");
+        });
+      });
     });
     var recon = document.getElementById("recon-run");
     if (recon) recon.addEventListener("click", function () {

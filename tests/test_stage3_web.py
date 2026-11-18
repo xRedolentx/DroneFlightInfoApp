@@ -124,6 +124,15 @@ class StaticAssetTest(unittest.TestCase):
         for name in ("index.html", "app.css", "app.js", "charts.js", "track.js"):
             self.assertTrue((web / name).is_file(), name)
 
+    def test_owner_can_prove_the_cache_offline(self) -> None:
+        # The brief's key check needs a reparse the owner can run; without a
+        # control the check could only be done with a shell command.
+        web = Path(__file__).resolve().parent.parent / "flightdesk" / "web"
+        app_js = (web / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="key-reparse-cache"', app_js)
+        self.assertIn('scope: "cached"', app_js)
+        self.assertIn('id="key-unlock-all"', app_js)
+
     def test_browser_scripts_parse(self) -> None:
         import shutil
         import subprocess
@@ -194,6 +203,13 @@ class ApiTest(ServerCase):
             if len(seen) > 50:
                 break
         self.assertEqual(seen, ids)
+
+    def test_reparse_from_cache_says_when_there_is_no_cache(self) -> None:
+        # On a root with no decoded encrypted record there is nothing cached to
+        # re-decode, and the app must say so rather than fail silently.
+        result = self.post_json("/api/reparse", {"scope": "cached"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "no_cached_keychain")
 
     def test_equipment_and_maintenance_endpoints(self) -> None:
         equipment = self.get_json("/api/equipment")

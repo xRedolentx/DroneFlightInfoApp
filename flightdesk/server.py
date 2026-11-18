@@ -519,6 +519,22 @@ def api_import_upload(ctx: Ctx) -> None:
     _batch_response(ctx, batch)
 
 
+@route("POST", r"/api/pick")
+def api_pick(ctx: Ctx) -> None:
+    """Ask Windows for one path and hand it back without acting on it.
+
+    The owner can then see and edit the path in a text field. A file dialog
+    owned by the server can fail to surface; typing the path must always work.
+    """
+    body = ctx.json_body()
+    kind = "file" if body.get("kind") == "file" else "folder"
+    picked = security.pick_path(kind)
+    if not picked:
+        _send_json(ctx.handler, {"ok": True, "cancelled": True})
+        return
+    _send_json(ctx.handler, {"ok": True, "path": picked})
+
+
 @route("POST", r"/api/import/path")
 def api_import_path(ctx: Ctx) -> None:
     body = ctx.json_body()
@@ -554,6 +570,28 @@ def api_reparse(ctx: Ctx) -> None:
     importer = Importer(ctx.app.root, ctx.conn)
     if isinstance(raw_id, int):
         _send_json(ctx.handler, importer.reparse_raw(raw_id))
+        return
+    if body.get("scope") == "cached":
+        # One bounded check the owner can run with the network off: decode an
+        # encrypted record using only its cached keychain, which is what makes
+        # an offline reparse possible.
+        row = db.one(
+            ctx.conn,
+            "SELECT r.id, r.format_version FROM raw_files r "
+            "JOIN keychains k ON k.raw_sha256=r.sha256 AND k.status='cached' "
+            "WHERE r.format_version>=13 AND r.status='imported' ORDER BY r.id DESC LIMIT 1",
+        )
+        if row is None:
+            _send_json(ctx.handler, {"ok": False, "code": "no_cached_keychain"})
+            return
+        outcome = importer.reparse_raw(int(row["id"]))
+        _send_json(ctx.handler, {
+            "ok": bool(outcome.get("ok")),
+            "version": row["format_version"],
+            "status": outcome.get("status"),
+            "new_flight": outcome.get("new_flight"),
+            "keychain_source": "cache",
+        })
         return
     rows = db.all_rows(ctx.conn, "SELECT id FROM raw_files WHERE status!='imported' LIMIT 500")
     changed = 0

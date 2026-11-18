@@ -3,6 +3,8 @@
 // Everything stays on this machine.
 //   node tools/ui_check.mjs [port] [outdir]
 import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as joinPath } from "node:path";
 
 const debugPort = process.argv[2] || "9222";
 const outDir = process.argv[3] || "ui-shots";
@@ -497,6 +499,26 @@ if (!zipPath) {
       || await evaluate("/kept as groups/.test(document.getElementById('capture-out').innerText)"));
   check("apply becomes available after preview",
     await evaluate("!document.getElementById('capture-apply').disabled"));
+}
+
+// --- a backup runs from a typed folder, not only a native dialog ----------
+{
+  await goto("#/settings");
+  await waitFor("!!document.getElementById('backup-dest')", 20000);
+  check("backup destination can be typed",
+    await evaluate("!!document.getElementById('backup-dest')"));
+  check("backup folder chooser exists as a convenience",
+    await evaluate("!!document.getElementById('backup-pick')"));
+  const backupDir = joinPath(process.env.TEMP || tmpdir(), "flightdesk-uicheck-backups");
+  mkdirSync(backupDir, { recursive: true });
+  await evaluate(`(() => { const i = document.getElementById('backup-dest');
+    i.value = ${JSON.stringify(backupDir)}; return true; })()`);
+  await evaluate("document.getElementById('backup-now').click(); true");
+  const wrote = await waitFor(
+    "fetch('/api/backups').then(r => r.json()).then(d => " +
+    "d.rows.length > 0 && d.rows.some(x => x.status === 'ok'))", 120000);
+  check("backup is written to the typed folder", wrote,
+    String(await evaluate("fetch('/api/backups').then(r=>r.json()).then(d => JSON.stringify(d.rows[0] || {}).slice(0,80))")));
 }
 
 // --- folder picker is browser-owned ----------------------------------------

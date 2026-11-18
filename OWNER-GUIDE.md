@@ -49,8 +49,17 @@ into invented per-item records.
 
 1. **Settings → DJI key**.
 2. Paste your DJI developer key (developer.dji.com → your app → SDK key) and
-   press **Save key**.
-3. Press **Decode pending**.
+   press **Save key**. The badge should change from *no key* to *key stored*.
+3. Press **Decode pending**. The *pending files* count should fall to zero; if
+   it does not, the message tells you which category failed.
+4. **Prove the offline cache.** Close Flight Desk, turn off Wi-Fi, reopen it, and
+   in **Settings → DJI key** press **Re-decode one record from cache**. You
+   should see *Re-decoded a v14 record from its cached keychain (no network
+   needed).* Turn the network back on afterwards.
+
+Until the key is entered, an encrypted record shows its date, aircraft, battery
+serial and duration only. Distance, height, speed and media stay blank rather
+than showing a guess — a partial total always says how many records it covers.
 
 What happens: Flight Desk sends exactly one request, to DJI's official
 keychain endpoint, with the key in a request header. The key is stored with
@@ -92,14 +101,18 @@ screen.
 
 ## 7. Back up, and rehearse recovery
 
-1. **Settings → Create backup…** and choose a folder **outside**
-   OneDrive/Dropbox/Google Drive (Flight Desk warns you if it is inside one).
-2. A backup is one file: the database snapshot plus every archived original plus
-   a hash manifest.
-3. **Rehearse:** **Restore into a new root…** — pick the ZIP and a new empty
-   folder. It verifies every hash and the database's references before saying
-   success. You can then choose *Use restored copy on restart*; your current
-   data root is left untouched.
+1. **Settings → Backup and export**: type the backup folder in the box (or press
+   **Choose folder…**). Use a folder **outside** OneDrive/Dropbox/Google Drive —
+   Flight Desk warns you if it is inside one. Typing the path always works, even
+   if the Windows folder dialog does not appear.
+2. Press **Create backup…**. A backup is one file: the database snapshot plus
+   every archived original plus a hash manifest.
+3. **Validate** with **Validate a backup…** — type or choose the ZIP; it checks
+   hashes without changing anything.
+4. **Rehearse:** **Restore into a new root…** — type or choose the backup ZIP and
+   a new empty folder. It verifies every hash and the database's references
+   before saying success. You can then choose *Use restored copy on restart*;
+   your current data root is left untouched.
 
 Do this rehearsal before you cancel AirData.
 
