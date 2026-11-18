@@ -675,6 +675,39 @@
       ? "—" : value) + "</dd>";
   }
 
+  function serial(value) {
+    if (!value) return "unknown";
+    return '<span class="private">' + esc(value) + "</span>";
+  }
+
+  function batteryTrend(equipment, readings) {
+    if (equipment.kind !== "battery") return "";
+    var ordered = (readings || []).slice().reverse();
+    var temps = ordered.map(function (r) {
+      return r.temp_missing || r.temp_c === null ? null : r.temp_c;
+    });
+    var coverage = temps.filter(function (v) { return v !== null; }).length;
+    if (ordered.length === 0) {
+      return '<p class="tiny faint">No health trend yet: no readings are stored for this pack.</p>';
+    }
+    return '<div class="health-trend"><div class="row between tiny">' +
+      '<span class="faint">Temperature trend</span>' +
+      '<span class="faint">' + coverage + "/" + ordered.length + ' readings</span></div>' +
+      '<div class="spark" data-spark="temp"></div>' +
+      '<div class="tiny faint">Identity: ' + serial(equipment.serial) +
+      ' · temperatures marked missing are gaps, not zeros.</div></div>';
+  }
+
+  function paintSparks(root, readings) {
+    var ordered = (readings || []).slice().reverse();
+    var temps = ordered.map(function (r) {
+      return r.temp_missing || r.temp_c === null ? null : r.temp_c;
+    });
+    root.querySelectorAll('[data-spark="temp"]').forEach(function (node) {
+      window.FDCharts.spark(node, temps, "#b9763b");
+    });
+  }
+
   function equipmentCard(kind, item) {
     if (!item) {
       return '<div class="card-sq"><h3>' + esc(kind) + '</h3><p class="small muted">' +
@@ -1012,7 +1045,8 @@
         '<div class="panel-body">' +
         '<div class="cards-2">' +
         '<div class="card-sq"><h3>Overview</h3><dl class="kv" style="grid-template-columns:110px 1fr">' +
-        kv("Serial", e.serial || "unknown") + kv("Purchased", e.purchase_date || "—") +
+        '<dt>Serial</dt><dd>' + serial(e.serial) + "</dd>" +
+        kv("Purchased", e.purchase_date || "—") +
         kv("Firmware", e.firmware || "—") + kv("State", e.operational_state || "—") +
         kv("Flights", String(fl.length)) + kv("Air time", fmtDuration(airS)) +
         kv("Placeholder", e.placeholder ? "yes" : "no") +
@@ -1032,6 +1066,7 @@
             : '<p class="small muted">No charge-cycle history recorded. Charge counters fall back ' +
               "to logged flights and say so.</p>")
           : "") +
+        batteryTrend(e, data.readings) +
         '<p class="small">' + (e.kind === "battery" ? "Battery health readings: "
           + data.readings.length : "Linked batteries: " + data.children.length) + "</p>" +
         (e.kind === "battery" && data.last_reading ? '<p class="tiny faint">Last reading ' +
@@ -1071,6 +1106,7 @@
           : '<div class="notice small">No service events recorded.</div>') +
         "</div></div>";
       wireRuleActions(host, function () { loadEquipment(id); });
+      paintSparks(host, data.readings);
       bindAct(host);
       applyChrome();
     }).catch(function (err) {

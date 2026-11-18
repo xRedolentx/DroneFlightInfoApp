@@ -21,6 +21,34 @@ ARCHIVE_EXPECTED = {
 }
 
 
+def reference_record(conn: sqlite3.Connection) -> dict[str, Any]:
+    """The AirData comparison the brief supplies, kept as reference data.
+
+    Stored with a source, scope and date so a later session can tell what was
+    compared against what, without treating it as measured data.
+    """
+    stored = db.get_setting(conn, "reference_archive")
+    if stored:
+        return stored
+    record = {
+        "source": "AirData archive, recorded in the build brief",
+        "source_label": "data/extracted/flight_logs (+ data/controller-test)",
+        "scope": "archive",
+        "recorded_at": "2026-11-17",
+        "precision": "displayed air time to the minute; distance to the mile",
+        "files": dict(ARCHIVE_EXPECTED),
+        "by_version": {"v8": 7, "v11": 218, "v14": 39},
+        "controller_extras": {"v11": 4, "v14": 1},
+        "notes": (
+            "Counts files, not distinct flights. Photos and videos are counts only, "
+            "so a video count of 459 is compared only where a counter exists."
+        ),
+    }
+    with db.tx(conn):
+        db.set_setting(conn, "reference_archive", record)
+    return record
+
+
 def _raw_groups(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = db.all_rows(
         conn,
@@ -148,6 +176,7 @@ def reconciliation(conn: sqlite3.Connection, *, persist: bool = True) -> dict[st
 
     real_inputs = bool(db.get_setting(conn, "real_inputs_selected", False))
     data_mode = db.get_setting(conn, "data_mode", "synthetic" if db.get_setting(conn, "demo_seeded") else "unknown")
+    reference = reference_record(conn)
     expected = dict(ARCHIVE_EXPECTED)
     measured = summaries["archive"]
     diffs = None
@@ -187,6 +216,7 @@ def reconciliation(conn: sqlite3.Connection, *, persist: bool = True) -> dict[st
         "generated_at": db.now_utc(),
         "data_mode": data_mode,
         "real_inputs_selected": real_inputs,
+        "reference": reference,
         "expected_archive": expected if real_inputs else {
             **expected, "status": "reference only; select real inputs to compare"
         },

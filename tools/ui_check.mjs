@@ -251,14 +251,24 @@ await evaluate(`(async () => { await fetch('/api/settings', {method:'POST',
 await waitFor("!!document.querySelector('.record')", 20000);
 
 // --- privacy --------------------------------------------------------------
+await goto("#/equipment/battery/9");
+await waitFor("!!document.querySelector('.eq-list li a')");
 await evaluate("document.getElementById('privacy-toggle').click(); true");
-await new Promise((r) => setTimeout(r, 1200));
+await new Promise((r) => setTimeout(r, 1400));
 check("privacy mode hides identifying fields",
   await evaluate("document.body.dataset.privacy === 'on'"));
+const hiddenSerial = await evaluate(`(() => {
+  const el = document.querySelector('.private');
+  if (!el) return 'no-private-node';
+  return getComputedStyle(el).visibility;
+})()`);
+check("privacy mode actually hides a serial", hiddenSerial === 'hidden', String(hiddenSerial));
 check("privacy mode shows a banner",
   await evaluate("getComputedStyle(document.querySelector('.privacy-banner')).display !== 'none'"));
 await evaluate("document.getElementById('privacy-toggle').click(); true");
-await new Promise((r) => setTimeout(r, 1000));
+await new Promise((r) => setTimeout(r, 1200));
+check("privacy mode can be switched back off",
+  await evaluate("document.body.dataset.privacy === 'off'"));
 
 // --- mobile ----------------------------------------------------------------
 await call("Emulation.setDeviceMetricsOverride", {

@@ -69,7 +69,7 @@ Keychain decoding uses `flightdesk-decode`, built locally from `shim/` against
 
 ### Stage 3 · Screens — **verified in a real browser (Edge, headless via CDP)**
 
-- `node tools/ui_check.mjs` drives the running app: **38/38 checks pass**,
+- `node tools/ui_check.mjs` drives the running app: **40/40 checks pass**,
   including an assertion that no request leaves loopback;
   covering list width ratio (312/1158 px), three-column records, filters
   applying to list and tiles together, filter persistence, flight → detail,
@@ -159,7 +159,8 @@ Keychain decoding uses `flightdesk-decode`, built locally from `shim/` against
 ## Overall counts
 
 - 120 automated tests, all passing (`python -m flightdesk selftest`).
-- 38 scripted browser checks, all passing (including the no-egress assertion).
+- 40 scripted browser checks, all passing (including the no-egress and privacy
+  assertions).
 - 13-step backup/restore rehearsal, all passing.
 
 Exact commands and outputs are in `VERIFICATION.md`.

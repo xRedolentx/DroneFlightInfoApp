@@ -51,8 +51,9 @@ PASS second backup is independent
 > node tools\ui_check.mjs <debug-port> <outdir>
 ...
 PASS arrow keys move between flights :: 6 -> 12
+PASS privacy mode actually hides a serial :: hidden
 PASS no request left loopback
-SUMMARY_FINAL PASS checks=38 failures=0
+SUMMARY_FINAL PASS checks=40 failures=0
 ```
 
 Coverage: dashboard geometry, filters applying to list and tiles together,
