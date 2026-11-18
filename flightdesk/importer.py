@@ -816,9 +816,11 @@ class Importer:
                 ),
             )
             new_flight = False
-            linked = db.one(self.conn, "SELECT 1 FROM flight_files WHERE raw_file_id=?", (raw_id,))
+            # A record that is still waiting for the key can still need its
+            # stored fields corrected, so it reparses too. Nothing is lost: a
+            # parse with fewer samples never replaces a richer stored flight.
             if outcome.status == "decoded" or (
-                outcome.status == "pending_key" and outcome.details and linked is None
+                outcome.status == "pending_key" and outcome.details
             ):
                 _, new_flight, _ = _insert_or_link_flight(
                     self.conn,

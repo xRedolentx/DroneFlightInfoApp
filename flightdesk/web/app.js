@@ -2108,6 +2108,14 @@
               (g.photos || "—") + '</td><td class="num">' +
               (g.decoded_coverage * 100).toFixed(0) + "%</td></tr>";
           }).join("") + "</tbody></table>" +
+          // A partial total must not read as a complete one.
+          (groups.archive && groups.archive.distance_records_unknown
+            ? '<div class="notice small" style="margin-top:10px">Distance is known for ' +
+              groups.archive.distance_records_known + " of " +
+              groups.archive.logical_flights + " records; " +
+              groups.archive.distance_records_unknown +
+              " await the DJI key, so the miles above are a partial total.</div>"
+            : "") +
           (data.real_inputs_selected
             ? '<div class="notice small" style="margin-top:10px">Signed differences vs the ' +
               "reference: " + Object.keys(data.signed_differences || {}).map(function (k) {

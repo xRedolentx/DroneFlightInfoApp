@@ -438,6 +438,32 @@ def _run_shim(source: Path, keychain_json: list) -> tuple[dict | None, str | Non
     return data, None
 
 
+# What the v13/v14 metadata block can be trusted to supply without the key.
+# The brief lists date, aircraft, battery serial and duration; anything else
+# read from the encrypted payload is a measurement we cannot verify, and a
+# wrong number recorded as a reading is worse than an absent one.
+METADATA_ONLY_KEYS = (
+    "start_time_utc",
+    "total_time_s",
+    "aircraft_name",
+    "aircraft_sn",
+    "camera_sn",
+    "rc_sn",
+    "battery_sn",
+    "product_type",
+    "app_platform",
+    "app_version",
+)
+
+
+def metadata_only_details(details: dict[str, Any]) -> dict[str, Any]:
+    """Keep identity fields and duration; drop measurements the encrypted
+    payload alone can settle. Measured evidence: 39 real v14 records read this
+    way carried a distance roughly a thousand times too small for their own
+    duration, which silently entered the archive total as near-zero."""
+    return {k: details[k] for k in METADATA_ONLY_KEYS if k in details}
+
+
 def parse_file(path: Path, root: Path, keychain_json: list | None = None) -> ParseOutcome:
     version = detect_version(path)
     meta: dict[str, Any] = {"size_bytes": path.stat().st_size if path.exists() else 0}
@@ -451,7 +477,7 @@ def parse_file(path: Path, root: Path, keychain_json: list | None = None) -> Par
             return ParseOutcome(
                 version=version,
                 status="pending_key",
-                details=details,
+                details=metadata_only_details(details),
                 error_category="encrypted_requires_dji_key",
                 error_detail="records require the official DJI keychain; metadata read without key",
                 meta=meta,
@@ -461,7 +487,7 @@ def parse_file(path: Path, root: Path, keychain_json: list | None = None) -> Par
             return ParseOutcome(
                 version=version,
                 status="pending_key",
-                details=details,
+                details=metadata_only_details(details),
                 error_category=error or "decoder_unavailable",
                 error_detail="keychain present but the local decoder could not produce frames",
                 meta=meta,

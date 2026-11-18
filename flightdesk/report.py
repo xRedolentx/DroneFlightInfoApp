@@ -126,6 +126,10 @@ def _summary(raws: list[dict], flights: list[dict]) -> dict[str, Any]:
     video_s = sum(int(f["video_time_s"]) for f in auth if f["video_time_s"] is not None
                   and f["media_source"] == "log_details")
     metadata_only = sum(1 for f in auth if f["metrics_source"] == "metadata_only")
+    # A pending or undecodable record has no distance. Counting it as zero
+    # would make a partial total look complete, so report the coverage with it.
+    distance_known = sum(1 for f in auth if f["total_distance_m"] is not None)
+    air_known = sum(1 for f in auth if f["duration_s"] is not None)
     return {
         "raw_files": len(raws),
         "distinct_hashes": len({r["sha256"] for r in raws}),
@@ -139,6 +143,10 @@ def _summary(raws: list[dict], flights: list[dict]) -> dict[str, Any]:
         "air_time": _hms(air_s),
         "distance_m": round(distance_m, 2),
         "miles": round(distance_m / MILES_M, 3),
+        "distance_records_known": distance_known,
+        "distance_records_unknown": len(auth) - distance_known,
+        "air_records_known": air_known,
+        "air_records_unknown": len(auth) - air_known,
         "photos": photos,
         "video_seconds": video_s,
         "videos_count": None,

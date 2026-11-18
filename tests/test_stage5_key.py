@@ -12,6 +12,7 @@ from pathlib import Path
 from support import TempCase, base_time
 
 from flightdesk import db, keychain, security
+from flightdesk.importer import Importer
 from flightdesk.synth import make_v13_keychain_log, make_v13_metadata_log
 
 
@@ -150,6 +151,34 @@ class OfflineReparseTest(TempCase):
         self.assertTrue(row["start_time_utc"].startswith("2026-08-13"))
         self.assertAlmostEqual(row["duration_s"], 302.0, places=1)
         self.assertIsNone(row["path_length_m"])
+
+    def test_no_key_does_not_record_unverified_measurements(self) -> None:
+        # Distance, height, speed, position and media live in the encrypted
+        # payload. Without the key they are unknown, never a number that a
+        # total could absorb.
+        self.import_bytes(v13_bytes(4), "DJIFlightRecord_2026-08-15_[21-53-20].txt")
+        row = db.one(self.conn, "SELECT * FROM flights")
+        self.assertEqual(row["metrics_source"], "metadata_only")
+        self.assertAlmostEqual(row["duration_s"], 302.0, places=1)
+        self.assertIsNone(row["total_distance_m"])
+        self.assertIsNone(row["max_height_m"])
+        self.assertIsNone(row["photo_count"])
+        self.assertIsNone(row["video_time_s"])
+        self.assertIsNone(row["home_lat"])
+        self.assertEqual(row["media_source"], None)
+
+    def test_metadata_only_reparse_corrects_a_stored_measurement(self) -> None:
+        self.import_bytes(v13_bytes(5), "DJIFlightRecord_2026-08-16_[21-53-20].txt")
+        flight = db.one(self.conn, "SELECT * FROM flights")
+        with db.tx(self.conn):
+            self.conn.execute("UPDATE flights SET total_distance_m=0.0003 WHERE id=?",
+                              (flight["id"],))
+        raw = db.one(self.conn, "SELECT id FROM raw_files LIMIT 1")
+        result = Importer(self.root, self.conn).reparse_raw(int(raw["id"]))
+        self.assertEqual(result["status"], "pending_key")
+        after = db.one(self.conn, "SELECT * FROM flights WHERE id=?", (flight["id"],))
+        self.assertIsNone(after["total_distance_m"])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0], 1)
 
     def test_cached_keychain_decodes_without_network(self) -> None:
         raw_bytes = v13_bytes(3)

@@ -207,6 +207,13 @@ grouped).
     video seconds may not exceed the flight's own duration plus ten minutes.
     The Media tile now says "flights with video" rather than "video clips",
     because that figure counts flights, not videos.
+  - **Metadata-only records no longer carry unverified measurements.** Without
+    the key, a v13/v14 record keeps its date, aircraft, battery serial and
+    duration; distance, height, speed, position and media become unknown. Real
+    evidence: 39 v14 records were storing a distance ~1000× too small, which
+    entered the archive total as near-zero. The reconciliation now reports
+    distance coverage (225 of 264) rather than presenting a partial total as
+    complete.
   - Backfill works: a reparse now refreshes the metrics of the flight it
     matches (equal weight refreshes, a poorer parse never replaces a richer
     one), and a reparse can no longer create a duplicate flight when a metric
@@ -237,12 +244,25 @@ grouped).
 - CSVs are produced for flights, equipment and services, plus a redacted mode.
 - **Real reconciliation, measured 2026-11-18** against the brief's archive
   reference (264 records · 24h10m · 108 mi): records **264 (match)**; air time
-  **24h21m (+11 min)**; distance **95.0 mi (−13.0 mi)**; photos **983 (reference
-  749)**; video count **unknown** (reference 459). Decoded coverage is **225 of
-  264 records** — the 39 v14 records await the DJI key, so their time and
-  distance are absent from these totals. **The differences are not explained**,
-  and one of them points the wrong way (our air time is higher than the
-  reference although 39 records are unread), so AirData stays active.
+  **24h21m / 1461 min (+11 min, 0.8 %)**; distance **95.0 mi, known for 225 of
+  264 records**; photos **983 (reference 749)**; video count **unknown**
+  (reference 459); decoded coverage **85 %**.
+- **Why distance is partial, not short.** The 39 v14 records previously carried
+  a distance read from the *encrypted* block without the key — roughly a
+  thousandth of the value their own duration implies (median 0.3 m of travel for
+  a 5.8-minute flight), so they added 0.02 km to a 152.9 km archive total while
+  looking like real readings. Metadata-only records now report distance, height,
+  speed, position and media as **unknown**, and the reconciliation states that
+  the miles figure is a partial total. The ~13 mi difference is what those 39
+  records still owe; the key is what settles it.
+- **Air time is the close one.** Metadata does supply v14 duration, so the 24h21m
+  covers all 264 records, not just the 225 decoded ones. The 11-minute gap is
+  0.8 %, consistent with the reference being recorded a few days earlier or with
+  a small displayed-rounding difference; it is not evidence of missing flights,
+  since the record count matches exactly (264).
+- **Photos remain unexplained** (983 against 749). Per-flight photo counts are a
+  different quantity from an AirData media-library count, but that is a
+  hypothesis, not a finding. **Keep AirData active.**
 - **Pending Kevin:** decide cutover. Keep AirData active while any material
   difference is unexplained.
 
@@ -252,7 +272,7 @@ grouped).
 |---|---|---|---|
 | Fresh install + restart | **Verified** | Fresh empty root serves the app; `data_mode=empty`, 0 counts; launcher returns HTTP 200; restart keeps data | none |
 | Archive inventory (269 files) | **Verified 2026-11-18** | `tools\diag.py`: 264 archive (7/218/39) + 5 controller (0/4/1) = **269 distinct, 7/222/40**; re-import added 0 | none |
-| Decoded totals (264 · 24h10m · 108 mi) | **Discrepancy, unexplained** | 264 records match; 24h21m (+11 min); 95.0 mi (−13.0 mi); 983 photos; 39 records undecoded | Enter the DJI key, then re-read the signed difference |
+| Decoded totals (264 · 24h10m · 108 mi) | **Partly explained** | 264 records match; air 24h21m (+11 min, 0.8 %); distance 95.0 mi **known for 225 of 264**, 39 await the key | Enter the DJI key, then re-read the signed difference |
 | Due statuses at handover | **Verified on the real capture** | 188/100 + 1018/1000 Due; 19/20 and 16/20 Due soon; battery 30/20 Due | Re-check after any service record |
 | Both real USB devices | **Pending Kevin** | Simulated adapter covers 13 cases incl. interrupted copy and reconnect | Plug each controller in twice; expect zero new records on the second attach |
 | No duplicate imports | **Verified** | Folder, ZIP, renamed duplicate, race, re-scan and reparse all add zero | none |
