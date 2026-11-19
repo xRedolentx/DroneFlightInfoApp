@@ -127,6 +127,17 @@ node tools\ui_check.mjs <d> <outdir> out.zip
 Note: a probe that hangs on one *specific* flight is a probe problem, not an app
 problem — the same payload serves in ~0.02 s. Verify through the gate and the API.
 
+## When this session resumes
+
+The owner paused at **2026-11-19 16:40 local (23:40 UTC)** and expects to pick up
+at **21:00 local**, which is **2026-11-20 04:00 UTC**.
+
+That matters for cost: 04:00 UTC is the boundary where the 01:00–04:00 peak
+window ends, so the resume is **off-peak** — but only until **06:00 UTC**, which
+is **23:00 local**. Past 23:00 local, the 06:00–10:00 UTC weekday window is
+running and the working-hours rule applies. Do the timezone arithmetic rather
+than assuming the two clocks agree; they do not.
+
 ## Environment facts
 
 - Parser: `dji-log` **0.5.7**, pinned Windows binary at
