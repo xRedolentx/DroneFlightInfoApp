@@ -58,8 +58,8 @@ into invented per-item records.
    needed).* Turn the network back on afterwards.
 
 Until the key is entered, an encrypted record shows its date, aircraft, battery
-serial and duration only. Distance, height, speed and media stay blank rather
-than showing a guess — a partial total always says how many records it covers.
+serial and duration only. Distance, height and speed stay blank rather than
+showing a guess — a partial total always says how many records it covers.
 
 What happens: Flight Desk sends exactly one request, to DJI's official
 keychain endpoint, with the key in a request header. The key is stored with

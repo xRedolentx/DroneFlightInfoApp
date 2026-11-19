@@ -144,7 +144,7 @@ class BackupTest(TempCase):
 
 class ReconciliationTest(TempCase):
     def test_groups_stay_separate_and_do_not_silently_zero(self) -> None:
-        self.imp.import_stream(io.BytesIO(log_bytes(11, photos=7, video=30)),
+        self.imp.import_stream(io.BytesIO(log_bytes(11)),
                                "DJIFlightRecord_2026-08-11_[21-53-20].txt",
                                source_kind="archive", source_label="archive")
         self.imp.import_stream(io.BytesIO(log_bytes(11, days=20, aircraft="air3s")),
@@ -157,8 +157,6 @@ class ReconciliationTest(TempCase):
         # synthetic data must never claim a match against the real archive
         self.assertFalse(data["real_inputs_selected"])
         self.assertIsNone(data["signed_differences"])
-        self.assertEqual(data["groups"]["archive"]["photos"], 7)
-        self.assertIsNone(data["groups"]["archive"]["videos_count"])
 
     def test_history_reference_stays_stable_after_new_imports(self) -> None:
         self.imp.import_stream(io.BytesIO(log_bytes(11)),

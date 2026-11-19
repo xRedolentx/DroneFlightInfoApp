@@ -40,8 +40,6 @@ def build_details(
     rc_sn: str = "SYNRC00000000001",
     battery_sn: str = "SYNBAT0000000001",
     product_type: int = 42,
-    photo_num: int = 0,
-    video_time_s: int = 0,
 ) -> bytes:
     """Build a 380-byte Details block matching the public v0.5.7 layout."""
     if start_time.tzinfo is None:
@@ -65,8 +63,6 @@ def build_details(
     struct.pack_into("<f", b, 123, float(max_height_m))
     struct.pack_into("<f", b, 127, float(max_h_speed))
     struct.pack_into("<f", b, 131, float(max_v_speed))
-    struct.pack_into("<i", b, 135, int(photo_num))
-    struct.pack_into("<q", b, 139, int(video_time_s))
     # moment picture buffers/locations stay zero
     struct.pack_into("<q", b, 243, 0)  # analysis_offset
     struct.pack_into("<f", b, 267, 0.0)  # take_off_altitude
@@ -121,8 +117,6 @@ def default_flight(seed: int = 0) -> dict:
         "camera_sn": "SYNCAM0000000001",
         "rc_sn": "SYNRC00000000001",
         "battery_sn": "SYNBAT0000000001",
-        "photo_num": 3 + seed,
-        "video_time_s": 20 + seed,
     }
 
 

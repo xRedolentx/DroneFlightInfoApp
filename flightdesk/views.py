@@ -17,7 +17,7 @@ FLIGHT_FIELDS = (
     "airborne_time_s", "total_distance_m", "path_length_m", "max_home_distance_m",
     "max_height_m", "max_altitude_m", "max_h_speed_mps", "home_lat", "home_lon",
     "home_alt_m", "battery_start_pct", "battery_end_pct", "battery_temp_max_c",
-    "battery_temp_min_c", "signal_min", "photo_count", "video_time_s", "media_source",
+    "battery_temp_min_c", "signal_min",
     "sample_count", "gap_count", "metrics_source", "parser_version", "excluded_reason",
     "aircraft_equipment_id", "battery_equipment_id", "created_at", "updated_at",
 )
@@ -141,8 +141,6 @@ def flights(conn: sqlite3.Connection, filters: dict[str, Any]) -> dict[str, Any]
     unresolved = [r for r in rows if r["identity_status"] != "authoritative"]
     air_s = sum(float(r["duration_s"] or 0) for r in auth)
     distance_m = sum(float(r["total_distance_m"] or 0) for r in auth)
-    photos = [int(r["photo_count"]) for r in auth if r["photo_count"] is not None]
-    videos = [int(r["video_time_s"]) for r in auth if r["video_time_s"] is not None]
     aircraft = db.all_rows(
         conn,
         "SELECT id,name,archived,placeholder FROM equipment WHERE kind='aircraft' "
@@ -168,9 +166,6 @@ def flights(conn: sqlite3.Connection, filters: dict[str, Any]) -> dict[str, Any]
             "distance_m": round(distance_m, 1),
             "aircraft": len({r["aircraft_sn"] or r["aircraft_name"] for r in auth if r["aircraft_sn"] or r["aircraft_name"]}),
             "batteries": len({r["battery_sn"] for r in auth if r["battery_sn"]}),
-            "photos": sum(photos) if photos else None,
-            "videos": len(videos) if videos else None,
-            "video_seconds": sum(videos) if videos else None,
         },
         "facets": {
             "aircraft": [dict(a) for a in aircraft],

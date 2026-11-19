@@ -87,9 +87,6 @@ CREATE TABLE IF NOT EXISTS flights (
     battery_temp_max_c REAL,
     battery_temp_min_c REAL,
     signal_min REAL,
-    photo_count INTEGER,
-    video_time_s INTEGER,
-    media_source TEXT,
     sample_count INTEGER DEFAULT 0,
     gap_count INTEGER DEFAULT 0,
     metrics_source TEXT,
@@ -357,10 +354,32 @@ def connect(path: Path | str, readonly: bool = False) -> sqlite3.Connection:
 def init_db(path: Path | str) -> sqlite3.Connection:
     conn = connect(path)
     conn.executescript(SCHEMA)
+    _retire_media_columns(conn)
     current = conn.execute("PRAGMA user_version").fetchone()[0]
     if current != SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version={int(SCHEMA_VERSION)}")
     return conn
+
+
+def _retire_media_columns(conn: sqlite3.Connection) -> None:
+    """Drop the photo/video columns from databases created before they were
+    removed from the product.
+
+    Photo and video counts were never reliable — the reference claimed more
+    files than it held — and they were the least useful field in the app, so
+    they are gone rather than left as dead columns a later reader would trust.
+    Idempotent: a fresh database never has them.
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(flights)")}
+    for column in ("photo_count", "video_time_s", "media_source"):
+        if column in existing:
+            try:
+                conn.execute(f"ALTER TABLE flights DROP COLUMN {column}")
+            except sqlite3.Error:
+                # Older SQLite, or the column is referenced by an index/view.
+                # Leaving it is safe: nothing reads it any more.
+                pass
+    conn.commit()
 
 
 @contextlib.contextmanager

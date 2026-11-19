@@ -16,7 +16,6 @@ def sample(t, lat=None, lon=None, height=None, alt=None, speed=None, battery=Non
         "signal": signal, "gps_num": 12, "gps_level": 4, "on_ground": not motor,
         "motor_on": motor, "home_lat": home[0], "home_lon": home[1],
         "home_alt_m": 100.0, "voltage": 15.5, "cells": None,
-        "is_photo": False, "is_video": False,
     }
 
 
@@ -134,25 +133,6 @@ class MetricTest(unittest.TestCase):
         self.assertAlmostEqual(normal.duration_s, 302.0)
         self.assertAlmostEqual(normal.max_h_speed_mps, 12.0)
 
-    def test_media_flags_count_segments_not_frames(self) -> None:
-        # "Recording now" is a state. Counting every frame reported 159,592
-        # "video events" on the real archive; a rising edge is one segment.
-        samples = [
-            sample(0, 45.0, 9.0, height=5),
-            sample(1, 45.0, 9.0, height=5),
-            sample(2, 45.0, 9.0, height=5),
-            sample(3, 45.0, 9.0, height=5),
-        ]
-        for i, flag in ((1, True), (2, True), (3, False)):
-            samples[i]["is_video"] = flag
-        samples[0]["is_video"] = True
-        m = compute_metrics(samples, {})
-        self.assertEqual(m.media_video_events, 1)
-        still = [sample(i, 45.0, 9.0, height=5) for i in range(4)]
-        for i in range(4):
-            still[i]["is_photo"] = True
-        self.assertEqual(compute_metrics(still, {}).media_photo_events, 1)
-
     def test_duration_kinds_stay_separate(self) -> None:
         samples = [sample(0, 45.0, 9.0, height=0, motor=False),
                    sample(60, 45.0, 9.0, height=0, motor=False),
@@ -181,26 +161,6 @@ class UnitsTest(TempCase):
         self.assertEqual(m.duration_s, 302.0)
         self.assertEqual(m.max_height_m, 45.1)
         self.assertEqual(m.battery_temp_max_c, 28.0)
-
-
-class MediaBoundTest(unittest.TestCase):
-    def test_impossible_media_counts_are_absent(self) -> None:
-        from flightdesk.parser_adapter import bound_media
-
-        # Values read from the fixed-layout block are not trusted blindly.
-        junk = bound_media({"photo_num": 1167682604, "video_time_s": 145269191227033339})
-        self.assertIsNone(junk["photo_num"])
-        self.assertIsNone(junk["video_time_s"])
-        sane = bound_media({"photo_num": 42, "video_time_s": 300})
-        self.assertEqual(sane, {"photo_num": 42, "video_time_s": 300})
-        self.assertIsNone(bound_media({"photo_num": "n/a"})["photo_num"])
-
-    def test_video_time_cannot_exceed_flight_time(self) -> None:
-        from flightdesk.importer import _plausible_video_seconds
-
-        self.assertEqual(_plausible_video_seconds({"video_time_s": 240}, 302.0), 240)
-        self.assertIsNone(_plausible_video_seconds({"video_time_s": 43200}, 302.0))
-        self.assertEqual(_plausible_video_seconds({"video_time_s": 240}, None), 240)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,7 @@
 """Check reconciliation arithmetic against known synthetic inputs.
 
 Three archive flights of exactly 10 air minutes and 1 mile each, plus one
-controller extra. The archive view must report 3 files, 30 minutes, 3 miles,
-and must not invent a video count.
+controller extra. The archive view must report 3 files, 30 minutes and 3 miles.
 """
 from __future__ import annotations
 
@@ -35,8 +34,6 @@ def main() -> int:
                 start=start + dt.timedelta(days=index),
                 duration_s=600.0,
                 distance_m=1609.344,
-                photo_num=10,
-                video_time_s=30,
             )),
             f"DJIFlightRecord_{index}.txt",
             source_kind="archive",
@@ -56,8 +53,6 @@ def main() -> int:
         ("archive flights", archive["logical_flights"], 3),
         ("archive air minutes", round(archive["air_minutes"], 3), 30.0),
         ("archive miles", round(archive["miles"], 3), 3.0),
-        ("archive photos", archive["photos"], 30),
-        ("video count stays unknown", archive["videos_count"], None),
         ("controller extra counted separately",
          data["groups"]["supplied_controller"]["raw_files"], 1),
         ("combined", data["groups"]["combined"]["raw_files"], 4),

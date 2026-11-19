@@ -53,8 +53,6 @@ def main() -> int:
                 duration_s=302.0 + index * 60,
                 distance_m=46.9 + index * 90,
                 max_height_m=45.1 + index * 5,
-                photo_num=index * 3,
-                video_time_s=index * 8,
             )
             (source / filename_time(start + dt.timedelta(days=index * 5),
                                     "DJIFlightRecord")).write_bytes(data)

@@ -110,7 +110,9 @@ await call("Page.navigate", { url: `${appOrigin}/` });
 await waitFor("!!document.querySelector('.flight-list li a')", 20000);
 check("dashboard renders flight rows",
   await evaluate("document.querySelectorAll('.flight-list li a').length > 0"));
-check("four summary tiles", await evaluate("document.querySelectorAll('.tile').length === 4"));
+check("three summary tiles", await evaluate("document.querySelectorAll('.tile').length === 3"));
+check("media counts are gone from the dashboard",
+  await evaluate("!/\\bphotos?\\b|video clips/i.test(document.getElementById('tiles').innerText)"));
 check("three-column records at 1536",
   await evaluate("getComputedStyle(document.querySelector('.records')).gridTemplateColumns.split(' ').length === 3"),
   await evaluate("getComputedStyle(document.querySelector('.records')).gridTemplateColumns"));

@@ -76,8 +76,6 @@ class FlightMetrics:
     gap_count: int = 0
     gaps: list[dict[str, Any]] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
-    media_photo_events: int = 0
-    media_video_events: int = 0
 
 
 def _median(values: list[float]) -> float:
@@ -248,17 +246,6 @@ def compute_metrics(
     if speeds and m.max_h_speed_mps is None:
         m.max_h_speed_mps = max(speeds)
 
-    # "Photo taken" and "recording now" are states, not events. Counting every
-    # frame that carries the flag reported 159,592 "video events" on the real
-    # archive. A rising edge is a segment that actually started.
-    m.media_photo_events = sum(
-        1 for i, s in enumerate(clean)
-        if s.get("is_photo") and not (i and clean[i - 1].get("is_photo"))
-    )
-    m.media_video_events = sum(
-        1 for i, s in enumerate(clean)
-        if s.get("is_video") and not (i and clean[i - 1].get("is_video"))
-    )
     if not speeds:
         m.flags.append("missing_speed")
     if not signals:

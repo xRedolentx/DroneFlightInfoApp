@@ -105,8 +105,6 @@ def _parse_details_bytes(b: bytes, version: int) -> dict[str, Any] | None:
         max_height = struct.unpack_from("<f", b, 123)[0]
         max_h_speed = struct.unpack_from("<f", b, 127)[0]
         max_v_speed = struct.unpack_from("<f", b, 131)[0]
-        photo_num = struct.unpack_from("<i", b, 135)[0]
-        video_time = struct.unpack_from("<q", b, 139)[0]
         takeoff_alt = struct.unpack_from("<f", b, 267)[0]
         product_type = b[271]
         aircraft_name = _cstr(b[280:312])
@@ -143,8 +141,6 @@ def _parse_details_bytes(b: bytes, version: int) -> dict[str, Any] | None:
         "max_height_m": max_height if math.isfinite(max_height) else None,
         "max_h_speed_mps": sane_pos(max_h_speed),
         "max_v_speed_mps": sane_pos(max_v_speed),
-        "photo_num": max(0, int(photo_num)) if photo_num >= 0 else None,
-        "video_time_s": max(0, int(video_time)) if video_time >= 0 else None,
         "takeoff_altitude_m": takeoff_alt if math.isfinite(takeoff_alt) else None,
         "product_type": int(product_type),
         "aircraft_name": aircraft_name or None,
@@ -156,9 +152,6 @@ def _parse_details_bytes(b: bytes, version: int) -> dict[str, Any] | None:
         "app_version": app_version,
     }
 
-
-PHOTO_LIMIT = 100000
-VIDEO_TIME_LIMIT_S = 21600  # six hours, the longest plausible single flight
 
 # v13 and v14 record the flight's total distance in kilometres; v6-v12 record
 # metres. Measured from the archive itself: for v8 and v11 the log's own figure
@@ -182,22 +175,6 @@ def distance_metres(value: Any, version: int | None) -> float | None:
     if version is not None and version >= DISTANCE_IN_KM_FROM_VERSION:
         metres *= 1000.0
     return metres
-
-
-def bound_media(details: dict[str, Any]) -> dict[str, Any]:
-    """Photo counts and video seconds come from a fixed-layout block that is
-    not identical in every format version. An impossible value is absence,
-    not a count: 1.1 billion photos must never reach a total."""
-    for key, limit in (("photo_num", PHOTO_LIMIT), ("video_time_s", VIDEO_TIME_LIMIT_S)):
-        value = details.get(key)
-        if value is None:
-            continue
-        try:
-            if int(value) < 0 or int(value) > limit:
-                details[key] = None
-        except (TypeError, ValueError):
-            details[key] = None
-    return details
 
 
 def _aux_info(path: Path) -> tuple[bytes, int] | None:
@@ -379,8 +356,6 @@ def sample_from_frame(frame: dict) -> dict | None:
         "home_alt_m": _num(home.get("altitude")),
         "voltage": _num(battery.get("voltage")),
         "cells": battery.get("cellVoltages") if isinstance(battery.get("cellVoltages"), list) else None,
-        "is_photo": bool((frame.get("camera") or {}).get("isPhoto")),
-        "is_video": bool((frame.get("camera") or {}).get("isVideo")),
     }
 
 
@@ -534,10 +509,6 @@ def parse_file(path: Path, root: Path, keychain_json: list | None = None) -> Par
         merged["aircraft_sn"] = merged.get("aircraft_sn") or details_json.get("aircraftSn")
         merged["camera_sn"] = merged.get("camera_sn") or details_json.get("cameraSn")
         merged["rc_sn"] = merged.get("rc_sn") or details_json.get("rcSn")
-        if merged.get("photo_num") is None and details_json.get("photoNum") is not None:
-            merged["photo_num"] = int(details_json["photoNum"])
-        if merged.get("video_time_s") is None and details_json.get("videoTime") is not None:
-            merged["video_time_s"] = int(details_json["videoTime"])
         samples = []
         for frame in data.get("frames") or []:
             if isinstance(frame, dict):
@@ -547,7 +518,7 @@ def parse_file(path: Path, root: Path, keychain_json: list | None = None) -> Par
         return ParseOutcome(
             version=version,
             status="decoded",
-            details=bound_media(merged),
+            details=merged,
             samples=samples,
             meta=meta,
         )
@@ -576,10 +547,6 @@ def parse_file(path: Path, root: Path, keychain_json: list | None = None) -> Par
     merged["aircraft_sn"] = merged.get("aircraft_sn") or details_json.get("aircraftSn")
     merged["camera_sn"] = merged.get("camera_sn") or details_json.get("cameraSn")
     merged["rc_sn"] = merged.get("rc_sn") or details_json.get("rcSn")
-    if merged.get("photo_num") is None and details_json.get("photoNum") is not None:
-        merged["photo_num"] = int(details_json["photoNum"])
-    if merged.get("video_time_s") is None and details_json.get("videoTime") is not None:
-        merged["video_time_s"] = int(details_json["videoTime"])
     samples = []
     for frame in data.get("frames") or []:
         if isinstance(frame, dict):
@@ -589,7 +556,7 @@ def parse_file(path: Path, root: Path, keychain_json: list | None = None) -> Par
     return ParseOutcome(
         version=version,
         status="decoded",
-        details=bound_media(merged),
+        details=merged,
         samples=samples,
         meta=meta,
     )

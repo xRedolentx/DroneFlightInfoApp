@@ -170,7 +170,9 @@ button.ghost[aria-pressed="true"] {
 
 .tiles {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* Three tiles: flights, air time, distance. Auto-fit keeps them from
+     stretching oddly if a fourth measure is ever added back. */
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 14px;
 }

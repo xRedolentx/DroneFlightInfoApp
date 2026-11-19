@@ -167,21 +167,6 @@ def _store_telemetry(conn, flight_id: int, samples, metrics, source: str) -> Non
     )
 
 
-def _plausible_video_seconds(details: dict, duration_s: float | None) -> int | None:
-    """Video time cannot exceed the time actually flown (plus a margin for a
-    clip that starts just before takeoff). A larger figure is a parse artefact."""
-    value = details.get("video_time_s")
-    if value is None:
-        return None
-    try:
-        seconds = float(value)
-    except (TypeError, ValueError):
-        return None
-    if duration_s is not None and seconds > float(duration_s) + 600.0:
-        return None
-    return int(seconds)
-
-
 def _flight_values(
     outcome: ParseOutcome,
     metrics,
@@ -225,12 +210,6 @@ def _flight_values(
         metrics.battery_temp_max_c,
         metrics.battery_temp_min_c,
         metrics.signal_min,
-        details.get("photo_num"),
-        _plausible_video_seconds(details, metrics.duration_s),
-        "log_details"
-        if (details.get("photo_num") is not None
-            or _plausible_video_seconds(details, metrics.duration_s) is not None)
-        else None,
         metrics.sample_count,
         metrics.gap_count,
         _metrics_source(outcome),
@@ -249,11 +228,11 @@ FLIGHT_INSERT = """INSERT INTO flights(
     duration_s,recorder_duration_s,airborne_time_s,total_distance_m,path_length_m,
     max_home_distance_m,max_height_m,max_altitude_m,max_h_speed_mps,
     home_lat,home_lon,home_alt_m,battery_start_pct,battery_end_pct,
-    battery_temp_max_c,battery_temp_min_c,signal_min,photo_count,video_time_s,
-    media_source,sample_count,gap_count,metrics_source,parser_version,
+    battery_temp_max_c,battery_temp_min_c,signal_min,
+    sample_count,gap_count,metrics_source,parser_version,
     fingerprint,aircraft_equipment_id,battery_equipment_id,excluded_reason,
     tags_json,created_at,updated_at
-) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) """
 
 
 def _update_flight_metrics(
@@ -275,8 +254,7 @@ def _update_flight_metrics(
             path_length_m=?, max_home_distance_m=?, max_height_m=?, max_altitude_m=?,
             max_h_speed_mps=?, home_lat=?, home_lon=?, home_alt_m=?,
             battery_start_pct=?, battery_end_pct=?, battery_temp_max_c=?,
-            battery_temp_min_c=?, signal_min=?, photo_count=?, video_time_s=?,
-            media_source=CASE WHEN ? IS NOT NULL OR ? IS NOT NULL THEN 'log_details' ELSE media_source END,
+            battery_temp_min_c=?, signal_min=?,
             sample_count=?, gap_count=?, metrics_source=?, parser_version=?,
             aircraft_equipment_id=COALESCE(aircraft_equipment_id,?),
             battery_equipment_id=COALESCE(battery_equipment_id,?), updated_at=?
@@ -305,10 +283,6 @@ def _update_flight_metrics(
             metrics.battery_temp_max_c,
             metrics.battery_temp_min_c,
             metrics.signal_min,
-            details.get("photo_num"),
-            _plausible_video_seconds(details, metrics.duration_s),
-            details.get("photo_num"),
-            _plausible_video_seconds(details, metrics.duration_s),
             metrics.sample_count,
             metrics.gap_count,
             _metrics_source(outcome),

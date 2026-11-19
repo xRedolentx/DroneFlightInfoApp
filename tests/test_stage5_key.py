@@ -162,10 +162,7 @@ class OfflineReparseTest(TempCase):
         self.assertAlmostEqual(row["duration_s"], 302.0, places=1)
         self.assertIsNone(row["total_distance_m"])
         self.assertIsNone(row["max_height_m"])
-        self.assertIsNone(row["photo_count"])
-        self.assertIsNone(row["video_time_s"])
         self.assertIsNone(row["home_lat"])
-        self.assertEqual(row["media_source"], None)
 
     def test_metadata_only_reparse_corrects_a_stored_measurement(self) -> None:
         self.import_bytes(v13_bytes(5), "DJIFlightRecord_2026-08-16_[21-53-20].txt")

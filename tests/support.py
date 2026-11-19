@@ -51,11 +51,10 @@ def base_time(days: int = 0, minutes: int = 0) -> dt.datetime:
 def log_bytes(version: int = 11, *, days: int = 0, aircraft: str = "mavic2",
               battery: str | None = None, duration: float = 302.0,
               distance: float = 46.9, height: float = 45.1,
-              photos: int = 0, video: int = 0) -> bytes:
+              ) -> bytes:
     return make_log_bytes(
         version=version, start=base_time(days), aircraft=aircraft, battery_sn=battery,
         duration_s=duration, distance_m=distance, max_height_m=height,
-        photo_num=photos, video_time_s=video,
     )
 
 

@@ -16,8 +16,6 @@ ARCHIVE_EXPECTED = {
     "files": 264,
     "air_minutes": 24 * 60 + 10,
     "miles": 108.0,
-    "photos": 749,
-    "videos": 459,
 }
 
 
@@ -29,6 +27,12 @@ def reference_record(conn: sqlite3.Connection) -> dict[str, Any]:
     """
     stored = db.get_setting(conn, "reference_archive")
     if stored:
+        # Records written before media was dropped still carry photo and video
+        # figures. Strip them on read so no caller compares a quantity the app
+        # no longer measures.
+        if isinstance(stored.get("files"), dict):
+            for key in ("photos", "videos"):
+                stored["files"].pop(key, None)
         return stored
     record = {
         "source": "AirData archive, recorded in the build brief",
@@ -40,8 +44,8 @@ def reference_record(conn: sqlite3.Connection) -> dict[str, Any]:
         "by_version": {"v8": 7, "v11": 218, "v14": 39},
         "controller_extras": {"v11": 4, "v14": 1},
         "notes": (
-            "Counts files, not distinct flights. Photos and videos are counts only, "
-            "so a video count of 459 is compared only where a counter exists."
+            "Counts files, not distinct flights. Media counts are no longer part of "
+            "this comparison: the reference reports fewer media files than it claims."
         ),
     }
     with db.tx(conn):
@@ -121,10 +125,6 @@ def _summary(raws: list[dict], flights: list[dict]) -> dict[str, Any]:
     unresolved = [f for f in flights if f["identity_status"] == "unresolved"]
     air_s = sum(float(f["duration_s"] or 0) for f in auth)
     distance_m = sum(float(f["total_distance_m"] or 0) for f in auth)
-    photos = sum(int(f["photo_count"]) for f in auth if f["photo_count"] is not None
-                 and f["media_source"] == "log_details")
-    video_s = sum(int(f["video_time_s"]) for f in auth if f["video_time_s"] is not None
-                  and f["media_source"] == "log_details")
     metadata_only = sum(1 for f in auth if f["metrics_source"] == "metadata_only")
     # A pending or undecodable record has no distance. Counting it as zero
     # would make a partial total look complete, so report the coverage with it.
@@ -147,9 +147,6 @@ def _summary(raws: list[dict], flights: list[dict]) -> dict[str, Any]:
         "distance_records_unknown": len(auth) - distance_known,
         "air_records_known": air_known,
         "air_records_unknown": len(auth) - air_known,
-        "photos": photos,
-        "video_seconds": video_s,
-        "videos_count": None,
         "decoded_coverage": round(
             (sum(1 for r in raws if r["status"] == "imported") / len(raws)) if raws else 0.0, 4
         ),
@@ -200,12 +197,6 @@ def reconciliation(conn: sqlite3.Connection, *, persist: bool = True) -> dict[st
             "files": measured["raw_files"] - expected["files"],
             "air_minutes": round(measured["air_minutes"] - expected["air_minutes"], 3),
             "miles": round(measured["miles"] - expected["miles"], 3),
-            # Photos are deliberately not compared. The reference reports fewer
-            # actual media files than it claims photos, so its figure and ours
-            # describe different things; a signed difference would assert a
-            # relationship that has not been established.
-            "photos": None,
-            "videos": None,
         }
     excluded = {
         "pending_key": sum(1 for r in raws if r["status"] == "pending_key"),
@@ -249,12 +240,6 @@ def reconciliation(conn: sqlite3.Connection, *, persist: bool = True) -> dict[st
             "source_label": snapshot["source_label"] if snapshot else None,
         },
         "semantics": {
-            "photos": (
-                "sum of the per-flight DJI details capture count. Not a file count: the "
-                "AirData reference reports fewer files than it claims, so the two figures "
-                "describe different things and no signed difference is claimed for them."
-            ),
-            "videos": "video count unavailable from details; video seconds only",
             "air_minutes": "from DJI details total time; track-derived airborne time is separate",
             "distance": "from DJI details total distance; path length is separate",
         },
@@ -275,8 +260,6 @@ def reconciliation(conn: sqlite3.Connection, *, persist: bool = True) -> dict[st
                 "raw_files": measured["raw_files"],
                 "air_minutes": measured["air_minutes"],
                 "miles": measured["miles"],
-                "photos": measured["photos"],
-                "video_seconds": measured["video_seconds"],
             }
             with db.tx(conn):
                 conn.execute(
@@ -303,7 +286,7 @@ def report_csv(report: dict[str, Any]) -> str:
     for group, summary in report.get("groups", {}).items():
         for key in ("raw_files", "distinct_hashes", "decoded", "logical_flights",
                     "unresolved_flights", "metadata_only_flights", "air_minutes",
-                    "air_time", "distance_m", "miles", "photos", "video_seconds"):
+                    "air_time", "distance_m", "miles"):
             w.writerow([group, key, summary.get(key), ""])
         w.writerow([group, "decoded_coverage", f"{summary.get('decoded_coverage', 0):.2%}", ""])
     for key, value in report.get("excluded", {}).items():
@@ -345,8 +328,6 @@ def flights_csv(conn: sqlite3.Connection, redact: bool = False) -> str:
         ("max_home_m", lambda r: r["max_home_distance_m"]),
         ("path_length_m", lambda r: r["path_length_m"]),
         ("max_speed_mps", lambda r: r["max_h_speed_mps"]),
-        ("photos", lambda r: r["photo_count"]),
-        ("video_seconds", lambda r: r["video_time_s"]),
         ("identity", lambda r: r["identity_status"]),
         ("metrics_source", lambda r: r["metrics_source"]),
         ("home_lat", lambda r: r["home_lat"]),

@@ -55,8 +55,6 @@ def _samples(start: dt.datetime, *, duration: float = 302.0, base_lat: float = 4
             "home_alt_m": 100.0,
             "voltage": 15.6,
             "cells": None,
-            "is_photo": i == 50,
-            "is_video": i in (30, 31, 32),
         })
     return out
 
@@ -133,12 +131,15 @@ def seed_demo(root: Path) -> dict:
         ("mini3", dt.datetime(2025, 9, 12, 13, 0, 0, tzinfo=dt.timezone.utc),
          "SYN-BAT-3001", 220.0, 48.0, 28.0, 4.0, 1, 0),
     ]
-    for i, (aircraft, start, battery, duration, dist, height, speed, photos, video) in enumerate(flights):
+    for i, row in enumerate(flights):
+        # Trailing entries in these tuples were photo/video counts and are
+        # no longer used; slice so the tuples need no rewriting.
+        aircraft, start, battery, duration, dist, height, speed = row[:7]
         version = 11 if i % 2 == 0 else 8
         data = make_log_bytes(
             version=version, start=start, aircraft=aircraft, battery_sn=battery,
             duration_s=duration, distance_m=dist, max_height_m=height,
-            max_h_speed=speed, photo_num=photos, video_time_s=video,
+            max_h_speed=speed,
         )
         name = filename_time(start, "DJIFlightRecord" if version >= 10 else "FlightRecord")
         write_log(archive_dir / name, data)

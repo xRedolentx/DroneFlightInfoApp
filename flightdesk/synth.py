@@ -35,8 +35,6 @@ def build_details(
     rc_sn: str = "SYNRC00000000001",
     battery_sn: str = "SYN-BAT-1001",
     product_type: int = 42,
-    photo_num: int = 0,
-    video_time_s: int = 0,
 ) -> bytes:
     if start_time.tzinfo is None:
         raise ValueError("start_time must be timezone-aware")
@@ -58,8 +56,6 @@ def build_details(
     struct.pack_into("<f", b, 123, float(max_height_m))
     struct.pack_into("<f", b, 127, float(max_h_speed))
     struct.pack_into("<f", b, 131, float(max_v_speed))
-    struct.pack_into("<i", b, 135, int(photo_num))
-    struct.pack_into("<q", b, 139, int(video_time_s))
     struct.pack_into("<q", b, 243, 0)
     struct.pack_into("<f", b, 267, 0.0)
     struct.pack_into("<B", b, 271, int(product_type))
@@ -123,8 +119,6 @@ def make_log_bytes(
     max_h_speed: float = 15.0,
     lat: float = 45.6789,
     lon: float = 12.3456,
-    photo_num: int = 0,
-    video_time_s: int = 0,
 ) -> bytes:
     profile = AIRCRAFT[aircraft]
     details = build_details(
@@ -139,8 +133,6 @@ def make_log_bytes(
         aircraft_sn=profile["sn"],
         battery_sn=battery_sn or profile["battery"],
         product_type=profile["product"],
-        photo_num=photo_num,
-        video_time_s=video_time_s,
     )
     return build_log(version=version, details=details)
 

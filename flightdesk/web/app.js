@@ -441,10 +441,7 @@
         totals.unresolved + " need review" : "authoritative only") +
       tile("Air time", (totals.air_minutes / 60).toFixed(1), "h",
         Math.round(totals.air_minutes) + " air minutes") +
-      tile("Distance", fmtDistance(totals.distance_m, 1), "", "from log details") +
-      tile("Media", totals.photos === null ? "—" : String(totals.photos),
-        totals.photos === null ? "" : "photos from logs",
-        totals.videos === null ? "counts unavailable" : totals.videos + " flights with video");
+      tile("Distance", fmtDistance(totals.distance_m, 1), "", "from log details");
     var list = document.getElementById("flight-list");
     var records = document.getElementById("records");
     document.getElementById("list-count").textContent = data.rows.length + " shown";
@@ -611,10 +608,7 @@
           esc(file.memberships.join(", ") || "—") + "</td></tr>";
       }).join("") + "</tbody></table></div></div>";
 
-    var mediaNote = f.photo_count !== null || f.video_time_s !== null
-      ? '<div class="notice small" style="margin-top:10px">Counts come from the log details. ' +
-        "Photos and videos are not stored in this archive; clicking a count never claims files " +
-        "were recovered.</div>" : "";
+    var mediaNote = "";
 
     var equipmentHtml = '<div class="panel"><div class="panel-body">' +
       '<div class="cards-2">' +
@@ -2190,14 +2184,13 @@
         document.getElementById("recon-out").innerHTML =
           '<table class="data"><thead><tr><th>View</th><th class="num">Files</th>' +
           '<th class="num">Flights</th><th class="num">Air</th><th class="num">Miles</th>' +
-          '<th class="num">Photos</th><th class="num">Decoded</th></tr></thead><tbody>' +
+          '<th class="num">Decoded</th></tr></thead><tbody>' +
           ["archive", "supplied_controller", "later_controller", "combined"].map(function (k) {
             var g = groups[k];
             return "<tr><td>" + esc(k.replace("_", " ")) + '</td><td class="num">' +
               g.raw_files + '</td><td class="num">' + g.logical_flights +
               '</td><td class="num">' + g.air_time + '</td><td class="num">' +
               g.miles.toFixed(1) + '</td><td class="num">' +
-              (g.photos || "—") + '</td><td class="num">' +
               (g.decoded_coverage * 100).toFixed(0) + "%</td></tr>";
           }).join("") + "</tbody></table>" +
           // A partial total must not read as a complete one.

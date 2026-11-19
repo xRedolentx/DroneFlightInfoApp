@@ -40,8 +40,6 @@ def build(path: Path, logs: int = 6, broken: bool = False) -> Path:
                     duration_s=302.0 + i * 41,
                     distance_m=46.9 + i * 33,
                     max_height_m=45.1 + i * 3,
-                    photo_num=i * 2,
-                    video_time_s=i * 5,
                 ),
             )
         zf.writestr(

@@ -288,20 +288,27 @@ grouped).
   coincidence; the AirData export the reference was taken from was short by
   those two flights while the file inventory still counted 264. The brief itself
   warns the count "counts files, not distinct flights".
-- **Photos: not comparable, and now labeled as such.** Our 983 is the sum of the
-  per-flight photo counter in each log. Two properties rule out the obvious
-  explanations: the counter is **not** a lifetime total (36 decreases across 262
-  consecutive flights, and per-aircraft sequences decrease too, so summing is
-  correct), and it is **not** a file count — AirData's own 749 exceeds the
-  **180 media files that actually exist** on the owner's copy. Three different
-  quantities were being compared as if they were one. The reconciliation no
-  longer claims a signed difference for photos and states what the figure is;
-  the Flights tile reads "photos from logs".
-- **Media "events" were counting states.** `is_video` is true on every frame
-  while recording, so summing it reported 159,592 "video events" on the real
-  archive. It now counts rising edges — segments that actually started. The
-  figure was never displayed, but it was wrong, and would have been misleading
-  if it ever were.
+- **Photo and video counts are removed from the app (2026-11-19, owner request).**
+  The owner's priority is a durable flight log with tracks, totals and
+  maintenance — not media counts — so the feature is gone rather than
+  half-trusted. Removed end to end: the dashboard's Media tile, the flight
+  detail note, the reconciliation column, the CSV columns, the totals, and the
+  parser's reads of the fixed-layout `photoNum`/`videoTime` fields and the
+  per-frame `is_photo`/`is_video` flags. The `photo_count`, `video_time_s` and
+  `media_source` columns are dropped from the schema, and an idempotent
+  migration drops them from existing databases.
+- **Why removal was the right call, not just the owner's preference.** Three
+  different quantities were being compared as though they were one: our 983
+  (sum of per-flight log counters), AirData's 749, and the **180 media files
+  that actually exist**. The counter is not cumulative (36 decreases across 262
+  consecutive flights, so summing was correct) and AirData's figure exceeds the
+  files it holds, so no honest reconciliation was possible.
+- **Migration is non-destructive and reversible.** `SCHEMA_VERSION` stays at 1 on
+  purpose: bumping it would make the owner's existing backups fail restore
+  validation. The migration is keyed on column presence, so old backups restore
+  and are migrated on open. Live check: 264 records before and after, air
+  seconds and distance identical to the millisecond, `foreign_key_check` clean,
+  `integrity_check` ok, and a second open is a no-op.
 - **Pending Kevin:** decide cutover. Keep AirData active until you have read the
   reconciliation with *Mark records as my real inputs* ticked.
 
@@ -317,7 +324,7 @@ grouped).
 | No duplicate imports | **Verified** | Folder, ZIP, renamed duplicate, race, re-scan and reparse all add zero | none |
 | Key-cached offline reparse | **Verified 2026-11-19** | Real key decoded all 39 v14 records; one re-decode from cache at 16:15 UTC with the network off, no new flight | none |
 | Working backup recovery | **Verified** | 12 tests + 13-step rehearsal, including corrupted archive and live-root refusal | Do one rehearsal on your real data before cancelling |
-| Video count comparison | **Discrepancy (by design)** | Logs give video seconds, not a count; `videos_count` is null. Photos are no longer compared: the reference claims 749 while only 180 media files exist | Supply a video count if AirData shows one |
+| Video count comparison | **Removed** | Media counts are gone from the app at the owner's request; the reference claimed 749 photos while only 180 files exist | none |
 
 **Keep AirData active while any material difference is unexplained.** A final
 fresh export/import rehearsal is offered before the February 2027 renewal;
@@ -325,12 +332,12 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 155 automated tests, all passing (`python -m flightdesk selftest`).
-- 68 scripted browser checks, all passing (including the no-egress and privacy
+- 153 automated tests, all passing (`python -m flightdesk selftest`).
+- 69 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).
 - 13-step backup/restore rehearsal, all passing.
-- 11/11 reconciliation checks (`python tools\recon_check.py`) and the
+- 9/9 reconciliation checks (`python tools\recon_check.py`) and the
   interrupted-backup fault check (`python tools\fault_check.py`).
 - Real-input aggregate diagnostics: 269 distinct files at versions 7/222/40;
   real capture applied with the four due-status criteria met.
