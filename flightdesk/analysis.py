@@ -257,6 +257,86 @@ def compute_metrics(
     return m
 
 
+def _warning_label(code: str, value: Any) -> tuple[str, str]:
+    """Human label and severity for one warning code."""
+    from .parser_adapter import FAULT_FLAGS
+
+    for key, label, severity in FAULT_FLAGS:
+        if code == key:
+            return label, severity
+    if code == "voltageWarning":
+        return f"Battery voltage warning (level {value})", "warning"
+    if code == "gimbalStuck":
+        return "Gimbal stuck", "caution"
+    if code == "sdCard":
+        return f"SD card problem ({value})", "caution"
+    if code == "motorStartFailed":
+        return f"Motor start failed ({value})", "warning"
+    return code, "caution"
+
+
+def summarise_warnings(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Turn per-sample fault flags into one row per fault occurrence.
+
+    A flag that stays true across many frames is one event, not hundreds: the
+    rows report when it started, when it stopped, and how long it lasted, so a
+    pilot reads "voltage warning, 14 s, at 03:12" rather than a frame count.
+    """
+    clean = [s for s in samples if s.get("t") is not None]
+    clean.sort(key=lambda s: float(s["t"]))
+    open_runs: dict[str, dict[str, Any]] = {}
+    rows: list[dict[str, Any]] = []
+
+    def close(code: str) -> None:
+        """Finish a run at the last sample that actually raised it.
+
+        Not at the first clean sample: that would claim the fault was present
+        for one interval longer than it was observed.
+        """
+        run = open_runs.pop(code, None)
+        if run is None:
+            return
+        run["seconds"] = round(max(0.0, float(run["end_t"]) - float(run["start_t"])), 3)
+        rows.append(run)
+
+    for sample in clean:
+        t = float(sample["t"])
+        active = sample.get("warn") or {}
+        if not isinstance(active, dict):
+            active = {}
+        for code in list(open_runs):
+            if code not in active:
+                close(code)
+        for code, value in active.items():
+            if code in open_runs:
+                run = open_runs[code]
+                run["end_t"] = round(t, 3)
+                run["frames"] = int(run["frames"]) + 1
+                if run.get("peak") is None and isinstance(value, (int, float)):
+                    run["peak"] = value
+                continue
+            label, severity = _warning_label(code, value)
+            open_runs[code] = {
+                "code": code,
+                "label": label,
+                "severity": severity,
+                "start_t": round(t, 3),
+                "end_t": round(t, 3),
+                "frames": 1,
+                "peak": value if isinstance(value, (int, float)) else None,
+                "value": None if isinstance(value, (int, float)) else value,
+            }
+    if clean:
+        # Anything still true at the end of the record lasted to the last sample.
+        for code in list(open_runs):
+            close(code)
+    rows.sort(key=lambda r: (r["start_t"], r["code"]))
+    for row in rows:
+        if row.get("peak") is None:
+            row.pop("peak", None)
+    return rows
+
+
 def downsample(samples: list[dict[str, Any]], max_points: int = 1400) -> list[dict[str, Any]]:
     clean = [s for s in samples if s.get("t") is not None]
     clean.sort(key=lambda s: float(s["t"]))

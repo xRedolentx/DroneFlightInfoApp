@@ -161,6 +161,11 @@ check("track renders over a local grid",
   await evaluate("!!document.querySelector('#track svg')"));
 check("track states no tiles are fetched",
   await evaluate("/no tiles/.test((document.querySelector('#track svg text:last-of-type')||{}).textContent||'')"));
+check("warnings panel states its provenance",
+  await evaluate("(() => { const p = document.getElementById('warnings-panel');" +
+    "if (!p) return false; const t = p.innerText;" +
+    "return /no fault flag|faults were|fault was|encrypted|not been decoded|" +
+    "could not be read/i.test(t); })()"));
 check("no map tile is requested before consent", tileRequests.length === 0,
   `${tileRequests.length} tile requests`);
 check("a map offer exists but tiles are off by default",

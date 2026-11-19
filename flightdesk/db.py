@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS flights (
     signal_min REAL,
     sample_count INTEGER DEFAULT 0,
     gap_count INTEGER DEFAULT 0,
+    warnings_json TEXT,
     metrics_source TEXT,
     parser_version TEXT,
     fingerprint TEXT,
@@ -355,6 +356,7 @@ def init_db(path: Path | str) -> sqlite3.Connection:
     conn = connect(path)
     conn.executescript(SCHEMA)
     _retire_media_columns(conn)
+    _add_warning_columns(conn)
     current = conn.execute("PRAGMA user_version").fetchone()[0]
     if current != SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version={int(SCHEMA_VERSION)}")
@@ -379,6 +381,22 @@ def _retire_media_columns(conn: sqlite3.Connection) -> None:
                 # Older SQLite, or the column is referenced by an index/view.
                 # Leaving it is safe: nothing reads it any more.
                 pass
+    conn.commit()
+
+
+def _add_warning_columns(conn: sqlite3.Connection) -> None:
+    """Add the per-flight warning record to databases created before it.
+
+    ALTER TABLE ... ADD COLUMN is idempotent here because the column is checked
+    first. Existing rows keep NULL, which reads as "no warnings recorded" rather
+    than "a clean flight" — the UI distinguishes the two.
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(flights)")}
+    if "warnings_json" not in existing:
+        try:
+            conn.execute("ALTER TABLE flights ADD COLUMN warnings_json TEXT")
+        except sqlite3.Error:
+            pass
     conn.commit()
 
 

@@ -463,6 +463,8 @@
         '<span class="meta">' + esc(dateOnly(f.start_time_utc || f.filename_time)) + " · " +
         esc(fmtDuration(f.duration_s)) + "</span>" +
         '<span class="meta">' + esc(f.pilot || "No pilot") +
+        (f.warnings_count > 0 ? " · " + f.warnings_count + " warning" +
+          (f.warnings_count === 1 ? "" : "s") : "") +
         (f.identity_status !== "authoritative" ? " · needs review" : "") + "</span>" +
         "</a></li>";
     }).join("");
@@ -479,6 +481,8 @@
         (f.battery_end_pct !== null ? "<span>battery <b>" +
           Math.round(f.battery_end_pct) + "%</b></span>" : "") +
         (f.gap_count ? "<span class=\"tag amber\">" + f.gap_count + " gap(s)</span>" : "") +
+        (f.warnings_count > 0
+          ? '<span class="tag amber">' + f.warnings_count + " warning(s)</span>" : "") +
         (f.identity_status !== "authoritative"
           ? '<span class="tag amber">needs review</span>' : "") +
         "</div></a>";
@@ -573,6 +577,10 @@
           "Enable map…</button>") +
       "</div></div>";
 
+    var warningsHtml = '<div class="panel" id="warnings-panel" style="margin-top:14px">' +
+      '<div class="panel-head"><h2>Warnings</h2></div><div class="panel-body">' +
+      warningsBody(data.warnings) + "</div></div>";
+
     var scrub =
       '<div class="panel" style="margin-top:14px"><div class="panel-body">' +
       '<div class="row between" style="margin-bottom:6px">' +
@@ -643,7 +651,7 @@
     else if (section === "equipment") sectionHtml = equipmentHtml;
     else if (section === "power" || section === "sensors" || section === "controls"
              || section === "weather") sectionHtml = "";
-    else sectionHtml = overviewHtml + scrub;
+    else sectionHtml = overviewHtml + warningsHtml + scrub;
 
     view.innerHTML = '<div class="privacy-banner">Privacy display is on — serials, locations ' +
       "and route geometry are hidden.</div>" +
@@ -2151,6 +2159,43 @@
         ? '<p class="tiny faint" style="margin-top:8px">Withdrawing consent stops all ' +
           "tile requests immediately; the local grid becomes the only view again.</p>"
         : "");
+  }
+
+  function warningsBody(summary) {
+    if (!summary) return '<p class="small muted">No fault information for this record.</p>';
+    if (summary.state === "pending") {
+      return '<div class="notice warn">' + esc(summary.note) + "</div>";
+    }
+    if (summary.state === "unavailable") {
+      return '<div class="notice warn">' + esc(summary.note) + "</div>";
+    }
+    var items = summary.items || [];
+    if (!items.length) {
+      return '<div class="notice small">' + esc(summary.note ||
+        "No fault flag was raised during this flight.") + "</div>";
+    }
+    return '<p class="small muted" style="margin-bottom:8px">' + items.length +
+      (items.length === 1 ? " fault was" : " faults were") +
+      " raised in this flight's telemetry. Times are from the start of the record; a fault" +
+      " that lasted less than one sample interval shows as <1s.</p>" +
+      '<table class="data"><thead><tr><th>Warning</th><th class="num">At</th>' +
+      "<th class=\"num\">Lasted</th></tr></thead><tbody>" +
+      items.map(function (w) {
+        var tone = w.severity === "warning" ? "warn" : "unknown";
+        var lasted = (w.seconds || 0) > 0 ? fmtDuration(w.seconds)
+          : (w.frames ? "<1s" : "\u2014");
+        return "<tr><td><span class=\"badge " + tone + "\">" + esc(w.severity) +
+          "</span> " + esc(w.label) + "</td><td class=\"num\">" +
+          fmtClock(w.start_t) + "</td><td class=\"num\">" + lasted + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+
+  function fmtClock(seconds) {
+    if (seconds === null || seconds === undefined || !isFinite(seconds)) return "—";
+    var s = Math.max(0, Math.round(Number(seconds)));
+    var m = Math.floor(s / 60);
+    var sec = s % 60;
+    return String(m).padStart(2, "0") + ":" + String(sec).padStart(2, "0");
   }
 
   function section(title, body) {

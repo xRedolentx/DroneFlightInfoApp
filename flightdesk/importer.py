@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from . import archive, db
-from .analysis import compute_metrics, downsample
+from .analysis import compute_metrics, downsample, summarise_warnings
 from .archive import DiskFull, Stored, ZipUnsafe
 from .parser_adapter import ParseOutcome, detect_version, parse_file
 
@@ -167,6 +167,18 @@ def _store_telemetry(conn, flight_id: int, samples, metrics, source: str) -> Non
     )
 
 
+def _warnings_json(samples) -> str | None:
+    """Per-flight fault record, or None when the log carried no samples at all.
+
+    None means "not recorded"; "[]" means "looked and found none". The UI must be
+    able to tell those apart, so an undecoded record never reads as a clean one.
+    """
+    if not samples:
+        return None
+    rows = summarise_warnings(samples)
+    return json.dumps(rows, separators=(",", ":"))
+
+
 def _flight_values(
     outcome: ParseOutcome,
     metrics,
@@ -212,6 +224,7 @@ def _flight_values(
         metrics.signal_min,
         metrics.sample_count,
         metrics.gap_count,
+        _warnings_json(outcome.samples),
         _metrics_source(outcome),
         outcome.parser_version,
         fp,
@@ -229,10 +242,10 @@ FLIGHT_INSERT = """INSERT INTO flights(
     max_home_distance_m,max_height_m,max_altitude_m,max_h_speed_mps,
     home_lat,home_lon,home_alt_m,battery_start_pct,battery_end_pct,
     battery_temp_max_c,battery_temp_min_c,signal_min,
-    sample_count,gap_count,metrics_source,parser_version,
+    sample_count,gap_count,warnings_json,metrics_source,parser_version,
     fingerprint,aircraft_equipment_id,battery_equipment_id,excluded_reason,
     tags_json,created_at,updated_at
-) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) """
+) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) """
 
 
 def _update_flight_metrics(
@@ -255,7 +268,7 @@ def _update_flight_metrics(
             max_h_speed_mps=?, home_lat=?, home_lon=?, home_alt_m=?,
             battery_start_pct=?, battery_end_pct=?, battery_temp_max_c=?,
             battery_temp_min_c=?, signal_min=?,
-            sample_count=?, gap_count=?, metrics_source=?, parser_version=?,
+            sample_count=?, gap_count=?, warnings_json=?, metrics_source=?, parser_version=?,
             aircraft_equipment_id=COALESCE(aircraft_equipment_id,?),
             battery_equipment_id=COALESCE(battery_equipment_id,?), updated_at=?
         WHERE id=?""",
@@ -285,6 +298,7 @@ def _update_flight_metrics(
             metrics.signal_min,
             metrics.sample_count,
             metrics.gap_count,
+            _warnings_json(outcome.samples),
             _metrics_source(outcome),
             outcome.parser_version,
             resolve_equipment(conn, "aircraft", details.get("aircraft_sn"), details.get("aircraft_name")),

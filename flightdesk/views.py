@@ -29,6 +29,17 @@ def _flight_row(row: sqlite3.Row) -> dict[str, Any]:
         data["tags"] = json.loads(row["tags_json"] or "[]")
     except (TypeError, ValueError):
         data["tags"] = []
+    # A count for the list badge; None when faults were not recorded at all, so
+    # an undecoded flight never displays as "0 warnings".
+    raw = row["warnings_json"] if "warnings_json" in row.keys() else None
+    if raw is None:
+        data["warnings_count"] = None
+    else:
+        try:
+            parsed = json.loads(raw)
+            data["warnings_count"] = len(parsed) if isinstance(parsed, list) else None
+        except (TypeError, ValueError):
+            data["warnings_count"] = None
     return data
 
 
@@ -243,7 +254,42 @@ def flight_detail(conn: sqlite3.Connection, flight_id: int) -> dict[str, Any] | 
                       "samples": samples, "gaps": tel["gaps"],
                       "segments": segments},
         "neighbours": {"prev": prev_id, "next": next_id},
+        "warnings": _flight_warnings(row),
     }
+
+
+def _flight_warnings(row: sqlite3.Row) -> dict[str, Any]:
+    """The fault record for one flight, with its provenance stated.
+
+    Three outcomes are deliberately distinct, because they mean different
+    things and only one of them is reassuring:
+
+    * ``recorded``  - the log was decoded and carried fault flags (or none).
+    * ``unavailable`` - no frames were stored, so nothing could be inspected.
+    * ``pending``   - the record has not been decoded yet (needs the DJI key).
+
+    Collapsing these into "no warnings" would let an undecoded record look like
+    a clean flight.
+    """
+    raw = row["warnings_json"] if "warnings_json" in row.keys() else None
+    if raw is None:
+        metrics = (row["metrics_source"] or "") if "metrics_source" in row.keys() else ""
+        if metrics == "metadata_only":
+            return {"state": "pending", "items": [],
+                    "note": "This record is encrypted; faults appear once the DJI key decodes it."}
+        return {"state": "unavailable", "items": [],
+                "note": "No frame data was stored for this record, so faults could not be read."}
+    try:
+        items = json.loads(raw)
+    except (TypeError, ValueError):
+        return {"state": "unavailable", "items": [],
+                "note": "The stored fault record could not be read."}
+    if not isinstance(items, list):
+        return {"state": "unavailable", "items": [],
+                "note": "The stored fault record could not be read."}
+    return {"state": "recorded", "items": items,
+            "count": len(items),
+            "note": "" if items else "No fault flag was raised during this flight."}
 
 
 def equipment_list(conn: sqlite3.Connection, include_archived: bool = False) -> list[dict]:

@@ -356,6 +356,39 @@ consent. OSM's own tile policy was read in full before implementing
 - **Pending Kevin:** decide cutover. Keep AirData active until you have read the
   reconciliation with *Mark records as my real inputs* ticked.
 
+### Stage 9 · Flight warnings — **verified on the real archive**
+
+The brief asks each flight record to track location, speed, battery and
+*warnings*. Location, speed and battery were already stored; warnings were not,
+even though the decoded frames have carried them all along.
+
+- **Fourteen fault conditions are recognised**: compass error, motor blocked,
+  not enough force, propeller catapult, out of limit, vibrating, barometer dead
+  in air, accelerometer out of range, vision/obstacle sensor error, battery
+  voltage warning (with its level), gimbal stuck, SD card full/problem, and motor
+  start failure with its cause.
+- **Benign constants are deliberately excluded.** Scanning the real archive
+  showed several fields are always present with a harmless value:
+  `isImuPreheated` is `True` on every frame, `imuInitFailReason` reads
+  `MonitorError` throughout, `nonGpsCause` reads `Already`, and the gimbal
+  at-limit flags are normal at the ends of travel. Treating "present and
+  truthy" as a fault would have raised an alarm on every flight forever, so each
+  exclusion is written down in `FAULT_FLAGS`' comment.
+- **A sustained flag is one event, not hundreds.** Frames are aggregated into
+  runs reporting start, end and duration, so the panel reads "Not enough force,
+  04:19, 9 s" rather than "91 frames". A run ends at the last sample that
+  actually raised it, not at the first clean one.
+- **Three provenance states, never collapsed.** A flight that was inspected and
+  found clean shows "no fault flag was raised"; a record that was never decoded
+  says faults are pending on the DJI key; a record with no stored frames says
+  they could not be read. None of those may display as "0 warnings".
+- **Real backfill:** all 264 records re-decoded; **76 flights carry at least one
+  fault** — voltage warning 38, compass error 33, not enough force 32, SD card 5,
+  gimbal stuck 2, motor blocked 1. Verified in the browser: the panel lists them
+  with times and durations, and the flight list shows a warning count on the 76
+  affected records.
+- 19 new tests cover extraction, aggregation, provenance and the JSON round trip.
+
 ## Release gate
 
 | Item | Verdict | Evidence | Next human action |
@@ -376,8 +409,8 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 185 automated tests, all passing (`python -m flightdesk selftest`).
-- 72 scripted browser checks, all passing (including the no-egress and privacy
+- 204 automated tests, all passing (`python -m flightdesk selftest`).
+- 73 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).
 - 13-step backup/restore rehearsal, all passing.

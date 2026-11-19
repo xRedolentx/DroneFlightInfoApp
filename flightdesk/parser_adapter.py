@@ -314,6 +314,57 @@ def _num(v) -> float | None:
     return None
 
 
+# Discrete fault flags the logs raise, with what each one means. Only flags
+# whose *true* value is a fault belong here.
+#
+# Deliberately excluded, because on the real archive they are constant and
+# benign rather than faults — including them would raise an alert on every
+# flight forever:
+#   isImuPreheated      True on every frame once the IMU is ready (68,970/68,970)
+#   imuInitFailReason   "MonitorError" on every frame in the real logs
+#   nonGpsCause         "Already..." on every frame; it names a state, not a failure
+#   isGpsUsed/isVisionUsed  which sensors are in use, not faults
+#   gimbal at-limit flags   normal at the ends of travel
+FAULT_FLAGS: tuple[tuple[str, str, str], ...] = (
+    ("isCompassError", "Compass error", "warning"),
+    ("isMotorBlocked", "Motor blocked", "warning"),
+    ("isNotEnoughForce", "Not enough force (obstruction or propeller problem)", "warning"),
+    ("isPropellerCatapult", "Propeller catapult", "warning"),
+    ("isOutOfLimit", "Out of the configured flight limit", "caution"),
+    ("isVibrating", "Airframe vibrating", "caution"),
+    ("isBarometerDeadInAir", "Barometer failed in flight", "warning"),
+    ("isAcceletorOverRange", "Accelerometer out of range", "caution"),
+    ("waveError", "Vision / obstacle sensor error", "caution"),
+)
+SD_CARD_FAULTS = {"Full", "FormatNeeded", "NoSDCard", "SDCardError"}
+
+
+def frame_warnings(frame: dict) -> dict[str, Any]:
+    """The fault conditions this frame is raising, keyed by a stable code.
+
+    Only non-empty results are kept, so a clean flight costs nothing in the
+    stored telemetry.
+    """
+    osd = frame.get("osd") or {}
+    out: dict[str, Any] = {}
+    for key, _label, _severity in FAULT_FLAGS:
+        if osd.get(key) is True:
+            out[key] = 1
+    level = osd.get("voltageWarning")
+    if isinstance(level, (int, float)) and level > 0:
+        out["voltageWarning"] = int(level)
+    gimbal = frame.get("gimbal") or {}
+    if gimbal.get("isStuck") is True:
+        out["gimbalStuck"] = 1
+    sd = (frame.get("camera") or {}).get("sdCardState")
+    if isinstance(sd, str) and sd in SD_CARD_FAULTS:
+        out["sdCard"] = sd
+    cause = osd.get("motorStartFailedCause")
+    if isinstance(cause, str) and cause not in ("", "None", "none"):
+        out["motorStartFailed"] = cause
+    return out
+
+
 def sample_from_frame(frame: dict) -> dict | None:
     osd = frame.get("osd") or {}
     t = _num(_first(osd, "flyTime", "fly_time"))
@@ -337,7 +388,7 @@ def sample_from_frame(frame: dict) -> dict | None:
     down = _num(rc.get("downlinkSignal"))
     signal = min([v for v in (up, down) if v is not None]) if (up is not None or down is not None) else None
     temp = _num(battery.get("temperature"))
-    return {
+    sample: dict[str, Any] = {
         "t": round(t, 3),
         "lat": lat,
         "lon": lon,
@@ -357,6 +408,10 @@ def sample_from_frame(frame: dict) -> dict | None:
         "voltage": _num(battery.get("voltage")),
         "cells": battery.get("cellVoltages") if isinstance(battery.get("cellVoltages"), list) else None,
     }
+    warnings = frame_warnings(frame)
+    if warnings:
+        sample["warn"] = warnings
+    return sample
 
 
 def _run_cli(source: Path, root: Path) -> tuple[dict, dict]:
