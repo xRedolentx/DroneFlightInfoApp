@@ -1,171 +1,136 @@
 # CHECKPOINT — resume here
 
-Written 2026-11-18. Read this first, then `BUILD-STATUS.md`.
-Everything below was verified on this machine; nothing is aspirational.
+Written 2026-11-19 23:30 UTC. Read this first, then `BUILD-STATUS.md`.
+Everything below was measured on this machine at the time of writing; nothing is
+aspirational.
 
 ## State at a glance
 
 - Local Git: a linear history on one branch; **no remote and nothing pushed**.
-  Check the tip with `python tools\local_commit.py` or by reading
-  `.git/refs/heads/master`.
-- Working tree: clean after the commit noted at the end of this file.
+  Tip: **`c58b2b7`** — "editable schedules, reversible restore, visible capture gap".
+- Working tree: **clean**.
 - `python -m flightdesk selftest` → **275 tests, 0 failures, 0 errors**.
 - `node tools\ui_check.mjs <cdp-port> <outdir> <zip>` → **86 checks, 0 failures**.
-- `python tools\rehearse.py` → **13/13 steps** (import → capture → backup →
-  restore into a new root → totals and statuses identical).
+- `python tools\rehearse.py` → **13/13 steps**.
 - `python tools\recon_check.py` → **9/9**.
-- `python tools\fault_check.py` → interrupted backup returns `disk_full`, leaves
-  **no** partial archive, releases its lock, and the next backup validates.
+- `python tools\fault_check.py` → interrupted backup returns `disk_full` with no
+  partial archive; interrupted **restore** leaves the target and its marker intact.
 
-## Real data: imported and applied
+## Live data (measured, not remembered)
 
-- **The real archive is imported.** `tools\diag.py` reported 264 archive files
-  (v8:7, v11:218, v14:39) plus 5 controller samples = **269 distinct hashes at
-  7/222/40**, matching the brief's table. The live data root holds 264 raw files
-  and 264 authoritative flights. **All 39 v14 records are now decoded** — the
-  owner entered the DJI developer key on 2026-11-19, Decode pending cached all 39
-  keychains and decoded every record to frames.
-- **The real equipment capture is applied.** 26 equipment rows (3 current
-  aircraft, 3 archived aircraft that appear only in the service history,
-  20 batteries including 3 identified placeholders for entries the capture
-  lists but cannot read), 43 rules, 72 snapshot counters, 13 service rows
-  (12 resolved, 1 grouped).
-- Live due statuses match the capture: **2 due, 5 due soon, 20 ok, 16 unknown**.
-  The unknown 16 are batteries whose capture row published no counter; a missing
-  counter is not a zero.
-- Rollback copies of the data root, taken before each real-data change, live
-  under `%LOCALAPPDATA%\FlightDesk\` as `data-before-*`. They are not in Git.
+- **264 flights · 24.35 h · 108.3 mi** · 100% decoded · **0 awaiting the key**.
+- 264 raw originals archived; **39 keychains cached**.
+- **49 maintenance rules**: 43 AirData + 6 DoneDoctor. Statuses: 27 ok,
+  16 unknown, 5 due soon, **1 due**.
+- **57 flights** carry at least one counted fault.
+- **5 batteries** have exceeded the 40 °C limit (peaks 44.0–53.6 °C).
+- **`usb_scans = 0`** — no controller has ever been attached.
+- Last backup: **2026-11-19 19:57 UTC, status `ok`** — this predates the Stage 12
+  and 13 code changes, so take a fresh one.
+- Rollback copies of the data root taken before each change live in
+  `%LOCALAPPDATA%\FlightDesk\data-before-*` (11 of them). Not in Git.
 
-## Real-data fixes made on 2026-11-18
+## One thing that looks like a regression and is not
 
-1. **The capture parser could not read the real capture.** It assumed the
-   fixture's layout; the real file files counters in a per-item rule grid and in
-   the battery table's own `Basic`/`Full` columns. Shape-based table
-   classification, positional counter cells, the `Status` column, a heading-based
-   reported total, inventory reconciliation and service-reference resolution are
-   now implemented and pinned by 12 tests on a synthetic fixture of that shape.
-2. **A temperature of exactly 0.0 for every sample is now unknown**, not a
-   reading (217 of 224 decoded records were affected).
-3. **Values beyond physical limits become unknown with a flag** — one real
-   record claimed 191 hours; another 1,176,826,604 photos. Video seconds are
-   bounded by the flight's own duration.
-4. **Reparse now backfills.** An equal-weight reparse refreshes the matched
-   flight (a poorer parse still never replaces a richer one), and a reparse can
-   no longer duplicate a flight when a metric correction changes the identity
-   fingerprint.
-5. **The browser gate is portable.** It no longer hardcodes port 8787 and no
-   longer attaches to an Edge internal page, both of which produced false
-   failures on a fresh profile.
-6. **Photo and video counts are gone.** Removed at the owner's request across the
-   dashboard, flight detail, reconciliation, CSV exports, parser and schema; an
-   idempotent migration drops the three columns from existing databases.
-   `SCHEMA_VERSION` deliberately stays 1 so the owner's existing backups still
-   pass restore validation.
+Battery `Bat-Mavic2-3402QS` Basic read **30/20 Due** at handover — a verified
+acceptance case. It now reads **0/20, `ok`**. Cause: the owner recorded a
+**completed service** on that battery at 19:55:41 UTC on 2026-11-19 (audit entry
+`service_completed`, rule 22, no notes). A completed service resets that rule's
+baseline by design — this is the feature working.
 
-## The owner's priority order for this app
+If that click was unintended: **Maintenance → Completed → Undo** puts it back.
+Do not "fix" it by deleting the row: it is the owner's record and is audited.
 
-Recorded 2026-11-19. Use it to decide what to build next and what to skip.
+## What is NOT verified — needs the owner
 
-1. Retrieve and store an accessible log of every flight across all drones —
-   **done** (264 records, all decoded, all raw originals archived).
-2. An easy GUI to see flights and their information — **done**.
-3. Cumulative totals: hours flown, distance flown, missions — **done** (three
-   dashboard tiles).
-4. Per-flight location, speed, battery life and warnings — **done.** Fault
-   flags are captured per flight and shown with time and duration; 76 of the
-   264 real records carry at least one. Benign constants such as
-   `isImuPreheated` and `imuInitFailReason` are deliberately excluded — see
-   Stage 9 in BUILD-STATUS.md.
-5. A map showing where the track lies — **done**, on OpenStreetMap tiles, which
-   the owner authorised. Opt-in and off by default; the local grid remains the
-   fallback. Tiles are proxied through the local server so the browser still
-   never leaves loopback. See Stage 6b in BUILD-STATUS.md.
-6. A maintenance page like AirData's — **done** (Upcoming / Completed / Service
-   list, per-rule counters and reasons).
+1. **Both controllers, twice each.** Still `usb_scans = 0`. Power one, choose
+   file transfer, **Settings → USB controllers → Check controllers now**, record
+   the result, unplug, replug, check again (expect **0 new**). Repeat for the
+   second. Record the Smart Controller and the RC 2 **separately**.
+2. **A fresh backup**, then **Validate a backup…** on it. The existing one
+   predates the last two code changes.
+3. **Restore rehearsal on real data.** Restore into a *new empty folder* and
+   choose **Keep current data**. Switching roots is the cutover, which is the
+   owner's decision.
+4. **Backdate the real services.** Now possible: Maintenance → a rule → **Rule** →
+   *Record a service on a past date*. The six DoneDoctor checks started counting
+   on 2026-11-19, so without backdating they stay quiet for 60–90 days. Enter the
+   real dates for props, deep-clean, IMU/compass calibration and battery cycles.
+5. **Read the comparison.** Settings → *Mark records as my real inputs* →
+   Reconciliation → Generate report. 108.3 mi against 108; 24h21m against 24h10m,
+   explained by the two newest flights the AirData export lacked.
 
-Media counts are explicitly out of scope: the owner does not care about them.
+Commercially: **keep AirData active** until the owner is satisfied. Renewal is
+February 2027.
 
-## What is NOT verified — needs you (in this order)
+## Known gaps that remain (reasoned, not measured)
 
-0. ~~Make a backup.~~ **Done 2026-11-19 19:57 UTC**, recorded `status=ok`, 264 flights.
-   Validate it once with **Validate a backup…** and keep doing this before any upgrade.
-1. **Both controllers, twice each.** Settings → USB controllers → Check
-   controllers now. First attach imports eligible logs; the second must add
-   zero. Record the Smart Controller and the RC 2 **separately**. The five
-   supplied controller samples cannot certify live hardware.
-2. ~~Prove the offline keychain cache.~~ **Done 2026-11-19.** The owner ran
-   *Re-decode one record from cache* with the network off. The audit log shows
-   exactly one reparse at 16:15:18 UTC and no new flight, so the cached keychain
-   decoded without a network fetch.
-3. **Compare the totals against AirData** — this is now **explained** and needs
-   only your reading of it. Records 264 (match), distance 108.3 mi against 108
-   (match at displayed precision), air time 24h21m against 24h10m. The air-time
-   difference is exactly the **two newest flights** the reference export did not
-   contain: dropping them gives 24h10m and 108.0 mi simultaneously. Tick *Mark
-   records as my real inputs* and read the signed difference yourself.
-4. **Restore rehearsal on real data**, then the cutover decision (the renewal
-   noted in the handoff is February 2027).
-
-## Known gaps I did not close
-
-- ~~**Restore interruption** is tested only at the ends.~~ **Closed 2026-11-19.**
-  `tools/fault_check.py` now interrupts extraction and asserts the target and its
-  marker survive, nothing half-restored is left, and a later restore works. The
-  underlying implementation was also made reversible: the old root is moved aside
-  rather than deleted, so a failed switch puts it back.
-- **Backup while the USB watcher is running** is covered only by a
-  settings-level test, not a genuinely concurrent scan.
-- **The capture claims 21 service records and supplies 13 rows.** The 8 missing
-  are reported as unaccounted, never invented — and are now visible in the capture
-  preview as a count and a notice, rather than only in the data.
-- **Video semantics** are still unconfirmed: logs give video seconds, not a
-  count, so `videos_count` stays `null`.
-- **Visual parity** against the 23 original screenshots needs your images; the
-  in-app `#/compare` page pairs them without uploading anything.
+- **Backup while the USB watcher is running** is covered by a settings-level test,
+  not a genuinely concurrent scan.
+- **Visual parity** for Flights / Selected Flight / Batteries has not been
+  compared against the brief's 23 screenshots. The nine supplied so far are
+  AirData *maintenance* pages only; they settled the rule model.
+- **A native Windows dialog spawned by the server cannot be proven to surface**
+  from here. It now gets a topmost owner and a bounded wait, and every click
+  produces a visible message, but whether it appears on the owner's desktop is
+  the owner's observation. Typing the path always works.
+- **"Missions"** is not modelled; the third tile counts flights. If a mission means
+  something else, say so.
 
 ## Things that bit us (so they do not bite again)
 
-- The import summary used to be painted and then wiped by the re-render. It now
-  persists in `sessionStorage` for the tab and survives navigation.
-- `Choose ZIP` used to call a Windows dialog owned by the server process; all
-  three pickers are now browser-owned `<input type=file>` elements.
-- Duplicate member names inside a ZIP are legal and accepted (the content hash
-  dedupes); escaping paths, symlinks, encrypted entries and oversized members
-  are still rejected before extraction.
-- On a fresh install, a deep link such as `#/import` used to be replaced by the
-  welcome screen, leaving that page without working controls.
-- Running two verification passes against one scratch root makes the second one
-  fail (the ZIP is already imported); use a fresh root per run.
+- **Restore used to be destructive**: it deleted the target root and then renamed
+  the staged copy in. A crash between lost both. Fixed by moving the old root
+  aside and putting it back on failure. The regression test **fails against the
+  old code**, so it bites.
+- **The rule status payload did not expose the limit fields**, so an editing form
+  would have opened blank and saving it would have erased every counter it could
+  not see. The thresholds are now in the payload, with a test.
+- **Downloads fetched the file before clicking a link**, expiring the click
+  gesture and making the browser block every download after the first few. Exports
+  now carry a per-run token so the download starts inside the click.
+- **A capture can claim more service records than it carries** (21 claimed, 13
+  present). The gap is now shown in the preview instead of being absorbed.
+- **Zero temperatures need care in two different ways**: all-zero means the field
+  is absent, and a lone 0.0 among warm readings is a dropout from one older
+  Mavic. Both are handled; a genuinely cold flight is still kept.
+- `git.exe` works for read-only inspection. Commit with
+  `python tools\local_commit.py "msg"` — it normalises line endings on many files,
+  so prefer `git diff HEAD~1 HEAD --ignore-all-space --numstat` to see the real
+  change set.
 
 ## How to resume
 
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
 python -m flightdesk selftest          # expect: 275 tests, 0 failures
-python tools\fault_check.py            # expect: disk_full, no partial archive
-python tools\diag.py "<handoff zip>"   # expect: 269 distinct, 7/222/40
+python tools\fault_check.py            # expect: disk_full; restore survives
+python tools\recon_check.py            # expect: 9/9
 flightdesk.cmd                          # or: python -m flightdesk serve
 ```
 
-Then pick the first unticked item from *What is NOT verified* above. If you plug
-in a controller or paste a DJI key, do that in the app; do not paste either into
-the chat.
+Browser gate recipe that works (fresh root each run — a reused root makes the
+ZIP checks fail because the ZIP is already imported):
 
-## Environment facts worth remembering
+```powershell
+python tools\make_synthetic_handoff.py out.zip
+python -m flightdesk seed-demo --root <freshdir>
+python -m flightdesk serve --root <freshdir> --port <p> --no-browser
+# Edge --headless=new --remote-debugging-port=<d> --disable-extensions --disable-sync
+node tools\ui_check.mjs <d> <outdir> out.zip
+```
 
-- Parser: `dji-log` **0.5.7**, pinned upstream Windows binary, installed at
+Note: a probe that hangs on one *specific* flight is a probe problem, not an app
+problem — the same payload serves in ~0.02 s. Verify through the gate and the API.
+
+## Environment facts
+
+- Parser: `dji-log` **0.5.7**, pinned Windows binary at
   `%LOCALAPPDATA%\FlightDesk\vendor\dji-log\0.5.7\dji-log.exe` with a manifest.
-- Keychain decoder: `flightdesk-decode`, built locally from `shim/` against
-  `dji-log-parser =0.5.7`; rebuild with
-  `cargo build --release --manifest-path shim\Cargo.toml` and copy the exe to
-  `%LOCALAPPDATA%\FlightDesk\vendor\flightdesk-decode\`.
-- Commit with `python tools\local_commit.py "msg"` (dulwich, local only, refuses
-  to commit data/build artifacts). `git.exe` did work on this machine today for
-  read-only inspection.
-- Screenshots live in `%LOCALAPPDATA%\FlightDesk\screenshots\`, never in the repo.
-- Browser gate recipe that works:
-  `python tools\make_synthetic_handoff.py out.zip`,
-  `python -m flightdesk seed-demo --root <freshdir>`,
-  `python -m flightdesk serve --root <freshdir> --port <p> --no-browser`,
-  Edge `--headless=new --remote-debugging-port=<d> --disable-extensions
-  --disable-sync`, then `node tools\ui_check.mjs <d> <outdir> out.zip`.
+- Keychain decoder: `flightdesk-decode`, built from `shim/` against
+  `dji-log-parser =0.5.7`.
+- Screenshots live in `%LOCALAPPDATA%\FlightDesk\screenshots\`. The owner's
+  AirData screenshots sit in `Screenshots/`, which is **git-ignored** and should
+  eventually move outside the project tree.
+- Working hours: peak DeepSeek pricing is **01:00–04:00 and 06:00–10:00 UTC,
+  Monday–Friday**; weekends open. `.codewhale/instructions.md` holds the rule.
