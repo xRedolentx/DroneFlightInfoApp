@@ -47,10 +47,13 @@ await call("Network.enable");
 
 // Every request the page makes must stay on loopback: the offline proof.
 const externalRequests = [];
+// Tile requests are counted separately: with consent off there must be none.
+const tileRequests = [];
 ws.addEventListener("message", (event) => {
   const msg = JSON.parse(event.data);
   if (msg.method === "Network.requestWillBeSent") {
     const url = msg.params?.request?.url || "";
+    if (url.includes("/api/tiles/")) tileRequests.push(url.slice(0, 80));
     if (!/^(http:\/\/127\.0\.0\.1|http:\/\/localhost|data:|about:)/.test(url)) {
       externalRequests.push(url.slice(0, 80));
     }
@@ -158,6 +161,11 @@ check("track renders over a local grid",
   await evaluate("!!document.querySelector('#track svg')"));
 check("track states no tiles are fetched",
   await evaluate("/no tiles/.test((document.querySelector('#track svg text:last-of-type')||{}).textContent||'')"));
+check("no map tile is requested before consent", tileRequests.length === 0,
+  `${tileRequests.length} tile requests`);
+check("a map offer exists but tiles are off by default",
+  await evaluate("!!document.getElementById('map-consent') && " +
+    "!document.getElementById('map-toggle')"));
 check("charts include a missing-interval marker",
   await evaluate("document.querySelectorAll('.chart-missing').length > 0"));
 check("metric stacks flank the track",

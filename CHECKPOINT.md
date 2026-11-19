@@ -9,8 +9,8 @@ Everything below was verified on this machine; nothing is aspirational.
   Check the tip with `python tools\local_commit.py` or by reading
   `.git/refs/heads/master`.
 - Working tree: clean after the commit noted at the end of this file.
-- `python -m flightdesk selftest` → **153 tests, 0 failures, 0 errors**.
-- `node tools\ui_check.mjs <cdp-port> <outdir> <zip>` → **69 checks, 0 failures**.
+- `python -m flightdesk selftest` → **175 tests, 0 failures, 0 errors**.
+- `node tools\ui_check.mjs <cdp-port> <outdir> <zip>` → **71 checks, 0 failures**.
 - `python tools\rehearse.py` → **13/13 steps** (import → capture → backup →
   restore into a new root → totals and statuses identical).
 - `python tools\recon_check.py` → **9/9**.
@@ -79,10 +79,10 @@ Recorded 2026-11-19. Use it to decide what to build next and what to skip.
    `isImuPreheated`, `imuInitFailReason`, `motorStartFailedCause`,
    `nonGpsCause`, plus `gimbal.isStuck` and `camera.sdCardState`. This is the one
    real gap in the core requirements.
-5. A map showing where the track lies — **not done.** The track is drawn on a
-   locally computed metre grid with a "no tiles" caption, which was the brief's
-   privacy-first default. Real map imagery needs either a bundled offline tile
-   pack or an online provider the owner consents to.
+5. A map showing where the track lies — **done**, on OpenStreetMap tiles, which
+   the owner authorised. Opt-in and off by default; the local grid remains the
+   fallback. Tiles are proxied through the local server so the browser still
+   never leaves loopback. See Stage 6b in BUILD-STATUS.md.
 6. A maintenance page like AirData's — **done** (Upcoming / Completed / Service
    list, per-rule counters and reasons).
 
@@ -141,7 +141,7 @@ Media counts are explicitly out of scope: the owner does not care about them.
 
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
-python -m flightdesk selftest          # expect: 153 tests, 0 failures
+python -m flightdesk selftest          # expect: 175 tests, 0 failures
 python tools\fault_check.py            # expect: disk_full, no partial archive
 python tools\diag.py "<handoff zip>"   # expect: 269 distinct, 7/222/40
 flightdesk.cmd                          # or: python -m flightdesk serve

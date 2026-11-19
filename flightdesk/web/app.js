@@ -7,7 +7,7 @@
   var toastEl = document.getElementById("toast");
   var modalEl = document.getElementById("modal");
   var state = { app: null, filters: {}, flight: null, section: "overview", cursor: null,
-                playing: false, metric: "power", mobileView: "list",
+                playing: false, metric: "power", mobileView: "list", mapMode: false,
                 lastImport: null, lastImportStatus: "", lastImportTone: "" };
 
   // ------------------------------------------------------------------ utils
@@ -159,6 +159,8 @@
   function refreshState() {
     return api("/api/state").then(function (data) {
       state.app = data;
+      // Map mode is a saved preference; the server is the source of truth.
+      state.mapMode = !!data.map_mode;
       applyChrome();
       return data;
     });
@@ -552,7 +554,14 @@
       (tel.source ? "<span>source: " + esc(tel.source) + "</span>" : "") +
       "</div>" +
       '<div class="row"><button type="button" class="secondary" id="fit-track">Fit track</button>' +
-      '<button type="button" class="secondary" id="play-track">Play</button></div></div>';
+      '<button type="button" class="secondary" id="play-track">Play</button>' +
+      ((state.app && state.app.map && state.app.map.consented)
+        ? '<button type="button" class="secondary" id="map-toggle" aria-pressed="' +
+          (state.mapMode ? "true" : "false") + '">' +
+          (state.mapMode ? "Local grid" : "Map") + "</button>"
+        : '<button type="button" class="secondary" id="map-consent">' +
+          "Enable map…</button>") +
+      "</div></div>";
 
     var scrub =
       '<div class="panel" style="margin-top:14px"><div class="panel-body">' +
@@ -766,11 +775,20 @@
 
     function drawTrack() {
       var sample = window.FDTrack.nearest(samples, state.cursor);
+      var map = state.app && state.app.map;
       window.FDTrack.render(trackEl, {
         segments: tel.segments,
         gaps: tel.gaps,
         home: f.home_lat !== null ? { lat: f.home_lat, lon: f.home_lon } : null,
         cursorSample: sample,
+        // Tiles only when the owner consented AND chose map mode. The default
+        // stays the local grid, which needs nothing external.
+        basemap: {
+          enabled: !!(map && map.consented && state.mapMode),
+          attribution: map ? map.attribution : "",
+          attributionUrl: map ? map.attribution_url : "",
+          tileToken: map ? map.tile_token || "" : "",
+        },
       });
     }
     drawTrack();
@@ -788,6 +806,45 @@
     if (fit) fit.addEventListener("click", function () {
       drawTrack();
       toast("Track fitted to the recorded positions");
+    });
+    var mapToggle = document.getElementById("map-toggle");
+    if (mapToggle) mapToggle.addEventListener("click", function () {
+      state.mapMode = !state.mapMode;
+      mapToggle.textContent = state.mapMode ? "Local grid" : "Map";
+      mapToggle.setAttribute("aria-pressed", state.mapMode ? "true" : "false");
+      // Remembered across launches, like units and filters.
+      api("/api/settings", { method: "POST", body: { map_mode: state.mapMode } })
+        .catch(function () {});
+      drawTrack();
+    });
+    var mapConsent = document.getElementById("map-consent");
+    if (mapConsent) mapConsent.addEventListener("click", function () {
+      var map = (state.app && state.app.map) || {};
+      openModal("Online map tiles",
+        '<p class="small">A basemap puts your flight on a real map. It needs map ' +
+        "imagery from <strong>" + esc(map.label || "OpenStreetMap") + "</strong>.</p>" +
+        '<p class="small muted">What would be sent, and only when you open a flight ' +
+        "with Map on: the <strong>map tile numbers</strong> for the area you are " +
+        "looking at. Tile numbers describe a square of ground, so together they " +
+        "reveal roughly where the flight was. Your identifiers, serials, notes and " +
+        "the log files themselves are never sent.</p>" +
+        '<p class="small muted">Requests go through Flight Desk on this machine, which ' +
+        "identifies itself to the tile service as required and keeps a local tile " +
+        "cache for at least 7 days. Tiles are never pre-fetched or saved for offline " +
+        "use. The local grid stays available and is what you see when Map is off.</p>" +
+        '<p class="tiny faint">Attribution appears on the map. Map data © ' +
+        esc(map.label || "OpenStreetMap") + " contributors.</p>",
+        [{ label: "Cancel", cls: "secondary" },
+         { label: "Allow map tiles", cls: "primary", action: function () {
+            var merged = Object.assign({}, state.app.external_services || {});
+            merged.map = true;
+            return api("/api/settings", { method: "POST", body: {
+              external_consent: merged, map_mode: true } }).then(function () {
+              state.mapMode = true;
+              closeModal();
+              toast("Map enabled; tiles load only for the area you view");
+              refreshState().then(function () { render(); });
+            }); } }]);
     });
     var play = document.getElementById("play-track");
     if (play) {
@@ -1931,6 +1988,7 @@
               '<div class="row" style="margin-top:6px"><button type="button" class="secondary" ' +
               'id="capture-preview-text">Preview pasted text</button></div></details>' +
               '<div id="capture-out" style="margin-top:12px"></div>') +
+            section("Online map", mapSectionHtml(state.app.map)) +
             section("Privacy and data root", '<p class="small muted">Data root: <code>' +
               esc(state.app.db_path.replace(/\\[^\\]+$/, "")) + "</code></p>" +
               '<p class="small muted">Privacy display hides serials, coordinates and blurs the ' +
@@ -1947,6 +2005,33 @@
         });
       });
     });
+  }
+
+  function mapSectionHtml(map) {
+    if (!map) return '<p class="small muted">Map status unavailable.</p>';
+    var stateBadge = map.consented
+      ? '<span class="badge ok">tiles allowed</span>'
+      : '<span class="badge unknown">tiles off</span>';
+    return '<p class="small muted">The track draws on a local grid by default and needs ' +
+      "nothing external. Turning Map on fetches basemap imagery for the area you are " +
+      "looking at from <strong>" + esc(map.label) + "</strong>. Only tile numbers for " +
+      "the visible viewport are requested; nothing is pre-fetched and nothing is " +
+      "saved for offline use. Tiles are cached here for at least 7 days, as the tile " +
+      "service requires.</p>" +
+      '<div class="row" style="margin-top:10px">' + stateBadge +
+      '<span class="tiny faint">cached tiles: ' + map.cached_tiles + " · " +
+      Math.round((map.cache_bytes || 0) / 1024) + " KB</span></div>" +
+      '<div class="row" style="margin-top:10px">' +
+      '<button type="button" class="secondary" id="map-consent-toggle">' +
+      (map.consented ? "Turn map tiles off" : "Allow map tiles…") + "</button>" +
+      '<button type="button" class="secondary" id="map-cache-clear">Clear tile cache</button>' +
+      '<a class="secondary" style="padding:6px 12px;border:1px solid var(--line-strong);' +
+      'border-radius:4px" href="' + esc(map.report_issue_url || "#") + '" target="_blank" ' +
+      'rel="noopener noreferrer">Report a map issue</a></div>' +
+      (map.consented
+        ? '<p class="tiny faint" style="margin-top:8px">Withdrawing consent stops all ' +
+          "tile requests immediately; the local grid becomes the only view again.</p>"
+        : "");
   }
 
   function section(title, body) {
@@ -2328,6 +2413,47 @@
       api("/api/recon/select-real", { method: "POST",
         body: { selected: !state.app.real_inputs_selected } })
         .then(function () { refreshState().then(renderSettings); });
+    });
+    var mapToggle = document.getElementById("map-consent-toggle");
+    if (mapToggle) mapToggle.addEventListener("click", function () {
+      var map = (state.app && state.app.map) || {};
+      if (map.consented) {
+        // Withdrawing is a single reversible click, no confirmation theatre.
+        var merged = Object.assign({}, state.app.external_services || {});
+        merged.map = false;
+        api("/api/settings", { method: "POST", body: {
+          external_consent: merged, map_mode: false } }).then(function () {
+          state.mapMode = false;
+          toast("Map tiles off");
+          refreshState().then(renderSettings);
+        });
+        return;
+      }
+      openModal("Online map tiles",
+        '<p class="small">Turning Map on requests map imagery for the area you view ' +
+        "from <strong>" + esc(map.label || "OpenStreetMap") + "</strong>.</p>" +
+        '<p class="small muted">Sent: the tile numbers covering the visible viewport. ' +
+        "Those numbers describe a square of ground, so together they reveal roughly " +
+        "where the flight was. Your serials, notes, identifiers and log files are " +
+        "never sent. Nothing is pre-fetched or saved for offline use.</p>",
+        [{ label: "Cancel", cls: "secondary" },
+         { label: "Allow map tiles", cls: "primary", action: function () {
+            var merged = Object.assign({}, state.app.external_services || {});
+            merged.map = true;
+            return api("/api/settings", { method: "POST", body: {
+              external_consent: merged } }).then(function () {
+              toast("Map tiles allowed");
+              closeModal();
+              refreshState().then(renderSettings);
+            }); } }]);
+    });
+    var mapClear = document.getElementById("map-cache-clear");
+    if (mapClear) mapClear.addEventListener("click", function () {
+      api("/api/map/cache", { method: "POST", body: { action: "clear" } })
+        .then(function (res) {
+          toast(res.ok ? "Cleared " + res.removed + " cached tiles" : "Could not clear cache");
+          refreshState().then(renderSettings);
+        });
     });
   }
 

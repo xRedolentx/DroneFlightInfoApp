@@ -239,6 +239,38 @@ grouped).
     one), and a reparse can no longer create a duplicate flight when a metric
     correction changes the identity fingerprint.
 
+### Stage 6b · Online basemap — **verified against live OpenStreetMap tiles**
+
+The brief's privacy-first default was a locally drawn grid, and that is still the
+default. A real basemap was added later at the owner's request, behind explicit
+consent. OSM's own tile policy was read in full before implementing
+(`operations.osmfoundation.org/policies/tiles/`), and the design follows it.
+
+- **Tiles are proxied through the local server, not fetched by the browser.** The
+  page keeps `img-src 'self'` and `Referrer-Policy: no-referrer`; the server holds
+  the consent gate, the identifiable User-Agent, and the on-disk cache. This keeps
+  the existing privacy assertions meaningful: the browser still never leaves
+  loopback.
+- **Policy compliance, each point tested:** a distinct `User-Agent` naming the app
+  (never `python-urllib`/`curl`/library defaults), visible `© OpenStreetMap
+  contributors` attribution linked to the copyright page, cache TTL of at least 7
+  days, `Cache-Control` never suppressed on tiles, only viewport tiles requested,
+  and a *Report a map issue* link.
+- **Consent is required and reversible.** Off by default. Turning it on shows what
+  is sent (tile numbers, which reveal roughly where the flight was) before any
+  request. Turning it off stops requests immediately.
+- **The proxy cannot be aimed elsewhere.** The provider host is fixed in code, the
+  client supplies no URL, and z/x/y are pinned to non-negative integers inside the
+  pyramid. `True` is rejected as a coordinate even though Python treats it as `1`.
+- **Verified end to end against the real service** on a seeded scratch root: 8
+  tile requests, all HTTP 200, the track drawn over real street imagery, the
+  attribution legible, and a second view served **entirely from cache**
+  (`X-Tile-Cache: hit` × 8, no upstream request).
+- **Image requests cannot carry the `X-FD-Token` header**, which the session
+  check requires, so tiles would always have 403'd. Rather than weaken that check,
+  tiles carry a separate per-run capability token in the path; the tile route is
+  the only path exempt from the header check and validates the token itself.
+
 ### Stage 7 · Backup, recovery, cutover — **verified on synthetic data**
 
 - 12 automated checks pass (`tests/test_stage7_backup.py`); `tools/rehearse.py`
@@ -332,8 +364,8 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 153 automated tests, all passing (`python -m flightdesk selftest`).
-- 69 scripted browser checks, all passing (including the no-egress and privacy
+- 175 automated tests, all passing (`python -m flightdesk selftest`).
+- 71 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).
 - 13-step backup/restore rehearsal, all passing.

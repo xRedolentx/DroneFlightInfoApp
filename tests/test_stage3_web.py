@@ -121,7 +121,7 @@ class StaticAssetTest(unittest.TestCase):
 
     def test_bundled_files_exist(self) -> None:
         web = Path(__file__).resolve().parent.parent / "flightdesk" / "web"
-        for name in ("index.html", "app.css", "app.js", "charts.js", "track.js"):
+        for name in ("index.html", "app.css", "app.js", "charts.js", "track.js", "map.js"):
             self.assertTrue((web / name).is_file(), name)
 
     def test_owner_can_prove_the_cache_offline(self) -> None:
@@ -140,7 +140,7 @@ class StaticAssetTest(unittest.TestCase):
         if not node:
             self.skipTest("node not installed")
         web = Path(__file__).resolve().parent.parent / "flightdesk" / "web"
-        for name in ("app.js", "charts.js", "track.js"):
+        for name in ("app.js", "charts.js", "track.js", "map.js"):
             proc = subprocess.run([node, "--check", str(web / name)],
                                   capture_output=True, timeout=60)
             self.assertEqual(proc.returncode, 0,
@@ -212,6 +212,24 @@ class ApiTest(ServerCase):
         self.assertEqual(result["attempted"], 0)
         self.assertEqual(result["failed"], 0)
         self.assertEqual(result["codes"], [])
+
+    def test_map_status_is_reported_without_leaking_the_token_to_others(self) -> None:
+        state = self.get_json("/api/state")
+        self.assertIn("map", state)
+        self.assertFalse(state["map"]["consented"])
+        self.assertIn("attribution", state["map"])
+        # The token exists so the page can build image URLs, but tiles still
+        # refuse to load without consent.
+        self.assertTrue(state["map"].get("tile_token"))
+
+    def test_tile_endpoint_needs_the_capability_not_just_a_cookie(self) -> None:
+        state = self.get_json("/api/state")
+        token = state["map"]["tile_token"]
+        status, _ = self.request("GET", "/api/tiles/not-a-real-token/1/0/0.png")
+        self.assertEqual(status, 403)
+        ok, _ = self.request("GET", f"/api/tiles/{token}/1/0/0.png")
+        # Correct capability, but no consent recorded: still refused.
+        self.assertEqual(ok, 403)
 
     def test_reparse_from_cache_says_when_there_is_no_cache(self) -> None:
         # On a root with no decoded encrypted record there is nothing cached to

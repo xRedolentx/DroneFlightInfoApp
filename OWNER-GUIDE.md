@@ -99,7 +99,30 @@ screen.
 - **Unknown** on a counter means the capture never published that number. It is
   never treated as zero.
 
-## 7. Back up, and rehearse recovery
+## 7. Show a flight on a real map (optional)
+
+The track always draws on a local grid and needs nothing external. A real map
+is one click away and entirely opt-in.
+
+1. Open any flight. In the Overview, under the track, press **Enable map…**.
+2. Read the disclosure, then **Allow map tiles**. The button then reads **Local
+   grid**, so you can flip between views whenever you like.
+
+What leaves this machine: the **tile numbers** for the area on screen. Tile
+numbers describe squares of ground, so together they show roughly where the
+flight was. Your serials, notes, names and log files are never sent. Nothing is
+fetched for areas you are not looking at, and nothing is saved for offline use.
+
+Tiles come from OpenStreetMap, arrive through Flight Desk on this machine, and
+are kept in a local cache for at least seven days so panning does not re-request
+them. The map always shows *© OpenStreetMap contributors* in the corner, and
+Settings → Online map has **Clear tile cache** and a *Report a map issue* link.
+
+Turn it off at any time with **Settings → Online map → Turn map tiles off**.
+That stops all tile requests immediately and the local grid becomes the only
+view again.
+
+## 8. Back up, and rehearse recovery
 
 1. **Settings → Backup and export**: type the backup folder in the box (or press
    **Choose folder…**). Use a folder **outside** OneDrive/Dropbox/Google Drive —
@@ -116,12 +139,12 @@ screen.
 
 Do this rehearsal before you cancel AirData.
 
-## 8. Exports
+## 9. Exports
 
 **Settings → Backup and export** gives you flights, equipment and services CSV,
 plus a redacted mode that omits serials and coordinates.
 
-## 9. If you want to check the app itself
+## 10. If you want to check the app itself
 
 ```powershell
 python -m flightdesk selftest      # the full test suite
@@ -145,7 +168,7 @@ is only a fallback for browsers without folder uploads.
 `tools\diag.py` is the only command meant for real data: it prints counts by
 source, format version and status, and never prints a filename, path or serial.
 
-## 10. Removing Flight Desk
+## 11. Removing Flight Desk
 
 Delete this folder and `%LOCALAPPDATA%\FlightDesk`. If you enabled the logon
 watcher, untick it first so the scheduled task is removed too.

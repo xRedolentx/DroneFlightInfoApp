@@ -12,6 +12,7 @@ data/
 *.zip
 *.txt.bak
 screenshots/
+tiles/
 exports/
 backups/
 ui-shots/

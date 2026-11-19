@@ -1,10 +1,12 @@
 """Loopback-only HTTP server with origin, host and session protection."""
 from __future__ import annotations
 
+import hmac
 import json
 import mimetypes
 import os
 import re
+import secrets
 import socket
 import sqlite3
 import threading
@@ -17,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import (archive, backup, capture, db, demo, keychain, maintenance, paths,
-               report, security, usb, views)
+               report, security, tiles, usb, views)
 from .importer import Importer
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -25,6 +27,7 @@ MAX_BODY = 512 * 1024 * 1024
 UPLOAD_LIMIT_FILE = 512 * 1024 * 1024
 UPLOAD_LIMIT_ZIP = 2 * 1024 * 1024 * 1024
 STREAMED_UPLOAD_PATH = "/api/import/upload"
+TILES_PREFIX = "/api/tiles/"
 ROUTES: dict[tuple[str, re.Pattern], Callable] = {}
 
 
@@ -76,6 +79,12 @@ class App:
         conn = db.init_db(self.db_file)
         conn.close()
         self.session = security.Session()
+        # A capability for tile images only. An <img> (and an SVG <image>) cannot
+        # send the X-FD-Token header, so those requests would always fail the
+        # double-submit check. Rather than weaken that check, tiles carry their
+        # own secret in the path: unknown to any other page, rotated every run,
+        # and useless for anything except fetching a tile through this proxy.
+        self.tile_token = secrets.token_urlsafe(24)
         self.port = 0
         self.watcher_thread: threading.Thread | None = None
         self.stop_event = threading.Event()
@@ -177,6 +186,9 @@ def health(ctx: Ctx) -> None:
 def api_state(ctx: Ctx) -> None:
     payload = views.state(ctx.conn)
     payload["db_path"] = str(ctx.app.db_file)
+    if isinstance(payload.get("map"), dict):
+        # The page needs this capability to build tile URLs.
+        payload["map"]["tile_token"] = ctx.app.tile_token
     _send_json(ctx.handler, payload)
 
 
@@ -186,7 +198,7 @@ def api_settings(ctx: Ctx) -> None:
     with db.tx(ctx.conn):
         for key in ("unit_preference", "last_flight_id", "last_filters", "privacy_mode",
                     "pilot_default", "pilots", "external_consent", "data_mode",
-                    "real_inputs_selected"):
+                    "real_inputs_selected", "map_mode", "map_provider", "map_contact"):
             if key in body:
                 db.set_setting(ctx.conn, key, body[key])
         db.audit(ctx.conn, "owner", "settings", None, None, sorted(body))
@@ -773,6 +785,58 @@ def api_capture_apply(ctx: Ctx) -> None:
     _send_json(ctx.handler, result)
 
 
+# ------------------------------------------------------------------ map tiles
+
+@route("GET", r"/api/tiles/([A-Za-z0-9_\-]{16,})/(\d+)/(\d+)/(\d+)\.png")
+def api_tile(ctx: Ctx) -> None:
+    token = ctx.params.get("1") or ""
+    if not hmac.compare_digest(token, ctx.app.tile_token):
+        _send_json(ctx.handler, {"ok": False, "code": "bad_tile_token"}, 403)
+        return
+    result = tiles.fetch(ctx.conn, ctx.app.root, ctx.params.get("2"),
+                         ctx.params.get("3"), ctx.params.get("4"))
+    if not result.get("ok"):
+        code = str(result.get("code") or "tile_unavailable")
+        status = 403 if code == "map_consent_required" else 404
+        if code == "rate_limited":
+            status = 429
+        _send_json(ctx.handler, {"ok": False, "code": code}, status)
+        return
+    data = result["bytes"]
+    ctx.handler.send_response(200)
+    ctx.handler.send_header("Content-Type", result.get("content_type") or "image/png")
+    ctx.handler.send_header("Content-Length", str(len(data)))
+    ctx.handler.send_header("X-Content-Type-Options", "nosniff")
+    # Deliberately NOT _no_store: the tile policy requires honouring caching, and
+    # a no-store header would re-download every pan from a donation-funded
+    # server. The browser cache mirrors the local cache lifetime.
+    ctx.handler.send_header("Cache-Control", f"public, max-age={tiles.MIN_TTL_S}")
+    ctx.handler.send_header("X-Tile-Cache", "hit" if result.get("cached") else "miss")
+    ctx.handler.end_headers()
+    ctx.handler.wfile.write(data)
+
+
+@route("GET", r"/api/map")
+def api_map(ctx: Ctx) -> None:
+    payload = tiles.status(ctx.conn, ctx.app.root)
+    payload["tile_token"] = ctx.app.tile_token
+    _send_json(ctx.handler, payload)
+
+
+@route("POST", r"/api/map/cache")
+def api_map_cache(ctx: Ctx) -> None:
+    body = ctx.json_body()
+    if body.get("action") != "clear":
+        _send_json(ctx.handler, {"ok": False, "code": "unknown_action"}, 400)
+        return
+    entry = tiles.provider(ctx.conn)
+    removed = tiles.clear_cache(ctx.app.root, entry)
+    db.audit(ctx.conn, "owner", "map_cache_clear", "tiles", entry["key"],
+             {"removed": removed})
+    _send_json(ctx.handler, {"ok": True, "removed": removed,
+                             **tiles.status(ctx.conn, ctx.app.root)})
+
+
 # ------------------------------------------------------------------ recon
 
 @route("GET", r"/api/local-image")
@@ -1026,7 +1090,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._serve_static(path)
             return
-        if not self._session_ok():
+        if not path.startswith(TILES_PREFIX) and not self._session_ok():
             self._reject(403, "session_required")
             return
         try:

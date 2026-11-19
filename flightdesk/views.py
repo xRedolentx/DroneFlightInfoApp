@@ -62,7 +62,7 @@ def _data_mode(conn: sqlite3.Connection) -> str:
 
 
 def state(conn: sqlite3.Connection) -> dict[str, Any]:
-    from . import keychain, paths
+    from . import keychain, paths, tiles
     counts = db.table_counts(conn)
     root = Path(db_path_of(conn)).parent if db_path_of(conn) else None
     raw_status = {
@@ -71,6 +71,7 @@ def state(conn: sqlite3.Connection) -> dict[str, Any]:
     }
     unresolved = int(conn.execute(
         "SELECT COUNT(*) FROM flights WHERE identity_status='unresolved'").fetchone()[0])
+    map_info = tiles.status(conn, root) if root else {"consented": False}
     return {
         "counts": counts,
         "raw_status": raw_status,
@@ -88,6 +89,8 @@ def state(conn: sqlite3.Connection) -> dict[str, Any]:
         "parser": {"version": paths.PARSER_VERSION, "source": paths.PARSER_SOURCE},
         "privacy": bool(db.get_setting(conn, "privacy_mode", False)),
         "external_services": db.get_setting(conn, "external_consent", {}),
+        "map": map_info,
+        "map_mode": bool(db.get_setting(conn, "map_mode", False)),
         "capture_applied": bool(conn.execute(
             "SELECT COUNT(*) FROM service_snapshots").fetchone()[0]),
     }
