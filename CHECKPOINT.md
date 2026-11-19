@@ -7,7 +7,11 @@ aspirational.
 ## State at a glance
 
 - Local Git: a linear history on one branch; **no remote and nothing pushed**.
-  Tip: **`c58b2b7`** — "editable schedules, reversible restore, visible capture gap".
+  Code tip: **`c58b2b7`** — "editable schedules, reversible restore, visible
+  capture gap". 
+  (This checkpoint file is committed immediately after it, so `git log -1` will
+  show a checkpoint commit whose parent is that code tip. That is expected and is
+  why the tip is named rather than derived.)
 - Working tree: **clean**.
 - `python -m flightdesk selftest` → **275 tests, 0 failures, 0 errors**.
 - `node tools\ui_check.mjs <cdp-port> <outdir> <zip>` → **86 checks, 0 failures**.
