@@ -134,6 +134,25 @@ class MetricTest(unittest.TestCase):
         self.assertAlmostEqual(normal.duration_s, 302.0)
         self.assertAlmostEqual(normal.max_h_speed_mps, 12.0)
 
+    def test_media_flags_count_segments_not_frames(self) -> None:
+        # "Recording now" is a state. Counting every frame reported 159,592
+        # "video events" on the real archive; a rising edge is one segment.
+        samples = [
+            sample(0, 45.0, 9.0, height=5),
+            sample(1, 45.0, 9.0, height=5),
+            sample(2, 45.0, 9.0, height=5),
+            sample(3, 45.0, 9.0, height=5),
+        ]
+        for i, flag in ((1, True), (2, True), (3, False)):
+            samples[i]["is_video"] = flag
+        samples[0]["is_video"] = True
+        m = compute_metrics(samples, {})
+        self.assertEqual(m.media_video_events, 1)
+        still = [sample(i, 45.0, 9.0, height=5) for i in range(4)]
+        for i in range(4):
+            still[i]["is_photo"] = True
+        self.assertEqual(compute_metrics(still, {}).media_photo_events, 1)
+
     def test_duration_kinds_stay_separate(self) -> None:
         samples = [sample(0, 45.0, 9.0, height=0, motor=False),
                    sample(60, 45.0, 9.0, height=0, motor=False),

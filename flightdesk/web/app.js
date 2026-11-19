@@ -443,7 +443,7 @@
         Math.round(totals.air_minutes) + " air minutes") +
       tile("Distance", fmtDistance(totals.distance_m, 1), "", "from log details") +
       tile("Media", totals.photos === null ? "—" : String(totals.photos),
-        totals.photos === null ? "" : "photos",
+        totals.photos === null ? "" : "photos from logs",
         totals.videos === null ? "counts unavailable" : totals.videos + " flights with video");
     var list = document.getElementById("flight-list");
     var records = document.getElementById("records");

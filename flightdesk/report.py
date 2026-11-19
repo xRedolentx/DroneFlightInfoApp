@@ -200,7 +200,11 @@ def reconciliation(conn: sqlite3.Connection, *, persist: bool = True) -> dict[st
             "files": measured["raw_files"] - expected["files"],
             "air_minutes": round(measured["air_minutes"] - expected["air_minutes"], 3),
             "miles": round(measured["miles"] - expected["miles"], 3),
-            "photos": measured["photos"] - expected["photos"],
+            # Photos are deliberately not compared. The reference reports fewer
+            # actual media files than it claims photos, so its figure and ours
+            # describe different things; a signed difference would assert a
+            # relationship that has not been established.
+            "photos": None,
             "videos": None,
         }
     excluded = {
@@ -235,8 +239,7 @@ def reconciliation(conn: sqlite3.Connection, *, persist: bool = True) -> dict[st
         "expected_archive": expected if real_inputs else {
             **expected, "status": "reference only; select real inputs to compare"
         },
-        "signed_differences": diffs,
-        "groups": summaries,
+        "signed_differences": diffs,        "groups": summaries,
         "excluded": excluded,
         "maintenance_discrepancies": discrepancies,
         "snapshot": {
@@ -246,7 +249,11 @@ def reconciliation(conn: sqlite3.Connection, *, persist: bool = True) -> dict[st
             "source_label": snapshot["source_label"] if snapshot else None,
         },
         "semantics": {
-            "photos": "sum of DJI details capture counts; media files are not in this archive",
+            "photos": (
+                "sum of the per-flight DJI details capture count. Not a file count: the "
+                "AirData reference reports fewer files than it claims, so the two figures "
+                "describe different things and no signed difference is claimed for them."
+            ),
             "videos": "video count unavailable from details; video seconds only",
             "air_minutes": "from DJI details total time; track-derived airborne time is separate",
             "distance": "from DJI details total distance; path length is separate",

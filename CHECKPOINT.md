@@ -63,10 +63,10 @@ Everything below was verified on this machine; nothing is aspirational.
    controllers now. First attach imports eligible logs; the second must add
    zero. Record the Smart Controller and the RC 2 **separately**. The five
    supplied controller samples cannot certify live hardware.
-2. **Prove the offline keychain cache.** The key is entered and nothing is
-   pending. What remains is the offline proof: close the app, disconnect the
-   network, reopen, then **Settings → DJI key → Re-decode one record from
-   cache**. Expected: "Re-decoded a v14 record from its cached keychain".
+2. ~~Prove the offline keychain cache.~~ **Done 2026-11-19.** The owner ran
+   *Re-decode one record from cache* with the network off. The audit log shows
+   exactly one reparse at 16:15:18 UTC and no new flight, so the cached keychain
+   decoded without a network fetch.
 3. **Compare the totals against AirData** — this is now **explained** and needs
    only your reading of it. Records 264 (match), distance 108.3 mi against 108
    (match at displayed precision), air time 24h21m against 24h10m. The air-time

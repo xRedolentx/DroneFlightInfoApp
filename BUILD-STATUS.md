@@ -161,9 +161,9 @@ grouped).
   be recorded separately for the Smart Controller and RC 2. The supplied 5
   controller samples cannot certify the live hardware path.
 
-### Stage 5 · DJI key — **mechanism verified; live decode pending a real key**
+### Stage 5 · DJI key — **verified end to end with a real key**
 
-- 14 automated checks pass (`tests/test_stage5_key.py`).
+- 16 automated checks pass (`tests/test_stage5_key.py`).
 - The key is sent only in the `Api-Key` header to the documented endpoint,
   never in the body, URL, arguments or logs (asserted with a local test server).
 - Storage is DPAPI-protected; a scan of the database bytes for the key string
@@ -175,10 +175,22 @@ grouped).
 - Without a key, v13/v14 metadata (date, aircraft, battery serial, duration) is
   read from the XOR-encoded auxiliary block and shown; `metrics_source` is
   `metadata_only`.
-- **Pending Kevin:** enter a valid key and decode one real v14 file, then close,
-  disconnect the network and re-open to confirm the cached keychain works
-  offline. The Air 3S reference flight figures (5m02s, 154 ft, 49 ft, 148 ft,
-  14.54 mph, 82.9°F, 94%→81%) can only be compared against a real decode.
+- **Verified 2026-11-19 with the owner's real developer key.** Save key → Decode
+  pending fetched **39 keychains**, cached them, and decoded **all 39 v14 records
+  to frames** (median 3,435 samples per flight). The audit log records the
+  keychain fetch, the batch decode, and then exactly one further reparse at
+  16:15:18 UTC from **Settings → DJI key → Re-decode one record from cache** with
+  the owner's network disconnected — the offline keychain proof. No new flight
+  was created by any reparse.
+- **The first "could not decode" message was a reporting bug, not a decode
+  failure.** The endpoint tested `all(results)` and displayed `results[0].code`,
+  so an empty target list (clicking Decode pending a second time) read as
+  failure, and a real failure could be masked by a successful first result. It
+  now returns `nothing_pending`, `decoded`, `failed` and the distinct failure
+  codes, and the UI says which.
+- **Still unverified by observation:** the Air 3S reference figures (5m02s,
+  154 ft, 49 ft, 148 ft, 14.54 mph, 82.9°F, 94%→81%) have not been compared
+  against the decoded record. The data is now available to do it.
 
 ### Stage 6 · Offline analysis — **verified on synthetic + one real decode path**
 
@@ -276,9 +288,20 @@ grouped).
   coincidence; the AirData export the reference was taken from was short by
   those two flights while the file inventory still counted 264. The brief itself
   warns the count "counts files, not distinct flights".
-- **Photos remain unexplained** (983 against 749). Per-flight photo counts are a
-  different quantity from an AirData media-library count, but that is a
-  hypothesis, not a finding. **Keep AirData active.**
+- **Photos: not comparable, and now labeled as such.** Our 983 is the sum of the
+  per-flight photo counter in each log. Two properties rule out the obvious
+  explanations: the counter is **not** a lifetime total (36 decreases across 262
+  consecutive flights, and per-aircraft sequences decrease too, so summing is
+  correct), and it is **not** a file count — AirData's own 749 exceeds the
+  **180 media files that actually exist** on the owner's copy. Three different
+  quantities were being compared as if they were one. The reconciliation no
+  longer claims a signed difference for photos and states what the figure is;
+  the Flights tile reads "photos from logs".
+- **Media "events" were counting states.** `is_video` is true on every frame
+  while recording, so summing it reported 159,592 "video events" on the real
+  archive. It now counts rising edges — segments that actually started. The
+  figure was never displayed, but it was wrong, and would have been misleading
+  if it ever were.
 - **Pending Kevin:** decide cutover. Keep AirData active until you have read the
   reconciliation with *Mark records as my real inputs* ticked.
 
@@ -292,9 +315,9 @@ grouped).
 | Due statuses at handover | **Verified on the real capture** | 188/100 + 1018/1000 Due; 19/20 and 16/20 Due soon; battery 30/20 Due | Re-check after any service record |
 | Both real USB devices | **Pending Kevin** | Simulated adapter covers 13 cases incl. interrupted copy and reconnect | Plug each controller in twice; expect zero new records on the second attach |
 | No duplicate imports | **Verified** | Folder, ZIP, renamed duplicate, race, re-scan and reparse all add zero | none |
-| Key-cached offline reparse | **Mechanism verified** | DPAPI cache + local decoder produce frames without network | Enter a real key, decode one v14, disconnect, restart, reparse |
+| Key-cached offline reparse | **Verified 2026-11-19** | Real key decoded all 39 v14 records; one re-decode from cache at 16:15 UTC with the network off, no new flight | none |
 | Working backup recovery | **Verified** | 12 tests + 13-step rehearsal, including corrupted archive and live-root refusal | Do one rehearsal on your real data before cancelling |
-| Video count comparison | **Discrepancy (by design)** | Logs give video seconds, not a count; `videos_count` is null | Supply a video count if AirData shows one |
+| Video count comparison | **Discrepancy (by design)** | Logs give video seconds, not a count; `videos_count` is null. Photos are no longer compared: the reference claims 749 while only 180 media files exist | Supply a video count if AirData shows one |
 
 **Keep AirData active while any material difference is unexplained.** A final
 fresh export/import rehearsal is offered before the February 2027 renewal;
