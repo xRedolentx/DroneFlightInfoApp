@@ -1,8 +1,7 @@
 """Maintenance schedules and their provenance.
 
-Every rule in this app must be able to say where its numbers came from. Three
-sources are in play and they disagree, which is why provenance is stored rather
-than assumed:
+Every rule in this app must be able to say where its numbers came from, so
+provenance is stored rather than assumed. Two sources are in use:
 
 * **AirData** — the counters the archive was already verified against (Basic 20
   flights / 200 min, Extended 100 / 1000, Full 200 / 2000; batteries 20 charges /
@@ -13,12 +12,10 @@ than assumed:
   cleaning, IMU/compass calibration and a full battery cycle. This is the source
   of the calendar triggers, which AirData models as "Time-Based Days" but leaves
   disabled.
-* **DJI** — the AGRAS T50/T25 manual carries a per-component service and
-  replacement table, but it describes agricultural spray drones flown
-  commercially. Its headline intervals (first inspection at 100 flights, motor at
-  1,000 h, propellers at 700 h) are deliberately NOT applied to a Mavic-class
-  aircraft flown for minutes at a time; that mismatch is recorded here rather
-  than silently "harmonised".
+
+No manufacturer service interval is applied, because none has been verified for
+the aircraft in this archive (Mavic 2, Air 3S, Mini 3 Pro, Mavic 3 Pro). If one is
+ever added, it must name its aircraft and its date, the way these two sources do.
 
 AirData's task checklists are reproduced from the owner's own screenshots, so
 the wording is the source's, not this app's invention.

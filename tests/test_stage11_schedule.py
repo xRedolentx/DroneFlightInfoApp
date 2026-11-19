@@ -172,6 +172,28 @@ class SeedingTest(TempCase):
                       " ".join(schedule.DONEDOCTOR_RULES[1]["items"]))
 
 
+class SourceGuardTest(unittest.TestCase):
+    """Only two schedule sources are sanctioned.
+
+    The owner rejected a manufacturer document that described a different class
+    of aircraft, so the intervals in use must stay exactly the two verified
+    sources. This fails if a third one is quietly introduced.
+    """
+
+    def test_only_the_two_sources_are_used(self) -> None:
+        self.assertEqual(schedule.AIRDATA_SOURCE, "AirData")
+        self.assertEqual(schedule.DONEDOCTOR_SOURCE, "DoneDoctor")
+        codes = {spec["code"] for spec in schedule.DONEDOCTOR_RULES}
+        self.assertEqual(codes, {"donedoctor_frequent", "donedoctor_quarterly"})
+
+    def test_no_rule_carries_a_multi_year_or_engine_hour_interval(self) -> None:
+        # Intervals from commercial heavy-lift documentation have no place here.
+        for spec in schedule.DONEDOCTOR_RULES:
+            self.assertLessEqual(spec.get("days_limit", 0), 365, spec["code"])
+            self.assertLessEqual(spec.get("flights_limit", 0), 50, spec["code"])
+            self.assertNotIn("hours", json.dumps(spec).lower())
+
+
 class ChecklistTest(TempCase):
     def test_airdata_lists_are_attached_without_overwriting(self) -> None:
         eq = _equipment(self.conn, "Drone A")
