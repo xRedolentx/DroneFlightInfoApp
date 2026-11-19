@@ -254,6 +254,26 @@ check("two cards across",
 check("over-limit value is visible",
   await evaluate("/\\d+ \\/ \\d+/.test(document.body.textContent)"));
 await shot("stage3-21-maintenance-1536", 1536, 1000);
+
+// --- schedule sources: AirData counters kept, DoneDoctor checks added ------
+check("the page names the schedule source", await evaluate("/Schedule source: AirData/.test(document.body.textContent)"));
+await evaluate("document.getElementById('add-source-rules').click(); true");
+await new Promise((r) => setTimeout(r, 3000));
+check("DoneDoctor checks are added and labelled",
+  await evaluate("/DoneDoctor/.test(document.body.textContent)"));
+check("each rule carries its task checklist",
+  await evaluate("!!document.querySelector('details summary')"));
+check("AirData counters are still shown alongside",
+  await evaluate("/Schedule source: AirData/.test(document.body.textContent)"));
+await goto("#/maintenance/rules");
+await waitFor("/DoneDoctor/.test(document.body.textContent)", 15000);
+check("the calendar trigger appears as days on the rule list",
+  await evaluate("(() => { const rows = [...document.querySelectorAll('table.data tr')];" +
+    "const dd = rows.filter(r => /DoneDoctor/.test(r.innerText));" +
+    "return dd.some(r => /days:/.test(r.innerText)); })()"));
+await goto("#/maintenance/upcoming");
+await waitFor("!!document.querySelector('[data-act=complete]')", 15000);
+
 await evaluate(`(() => { const b = document.querySelector('[data-act=complete]'); b.click(); return true; })()`);
 await waitFor("!!document.getElementById('note-text')");
 await evaluate(`(() => { document.getElementById('note-text').value = 'ui check';

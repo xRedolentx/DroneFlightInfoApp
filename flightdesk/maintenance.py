@@ -140,6 +140,46 @@ def _status_for(value: float | None, limit: float | None,
     return "ok", ratio
 
 
+def _service_items(rule: sqlite3.Row) -> list[str]:
+    from .schedule import service_items
+
+    return service_items(rule)
+
+
+def _rule_source(rule: sqlite3.Row) -> str:
+    from .schedule import rule_source
+
+    return rule_source(rule)
+
+
+def _days_since_baseline(conn: sqlite3.Connection, rule: sqlite3.Row,
+                         base_at: "datetime | None") -> tuple[int | None, str]:
+    """Days elapsed since this rule's baseline, and where that baseline came from.
+
+    The baseline is whatever the counters use: the last completed or skipped
+    service, else the captured snapshot date, else the rule's own creation. A
+    missing baseline is reported as unknown rather than as zero days.
+    """
+    start = base_at
+    reason = "service"
+    if start is None:
+        for field, why in (("captured_baseline_at", "capture"), ("created_at", "rule_created")):
+            if field not in rule.keys():
+                continue
+            parsed = _parse_dt(rule[field])
+            if parsed is not None:
+                start = parsed
+                reason = why
+                break
+    if start is None:
+        return None, "no_baseline"
+    now = datetime.now(timezone.utc)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    days = (now - start).days
+    return (max(0, days), reason)
+
+
 def _normalize_captured(value: str | None) -> str | None:
     if not value:
         return None
@@ -175,9 +215,24 @@ def rule_status(conn: sqlite3.Connection, rule: sqlite3.Row,
     base_at: datetime | None = None
     base_values: dict[str, float] = {"flights": 0.0, "minutes": 0.0, "charges": 0.0}
     basis_rounded = False
+
+    # A rule added after the capture was taken cannot be covered by it: the
+    # snapshot describes services and counters that existed at capture time.
+    # Counting the whole history for such a rule would report "overdue since
+    # records began" for a check nobody has ever performed, so its clock starts
+    # when the rule was added and the card says so.
+    # Timestamps cannot tell these apart: the capture writes its rules and its
+    # snapshot in the same transaction, so both carry "now". Provenance can: a
+    # rule whose source is AirData came from the capture and is covered by it.
+    rule_created = _parse_dt(rule["created_at"]) if "created_at" in rule.keys() else None
+    rule_postdates_capture = _rule_source(rule) != "AirData"
+
     if service is not None and (snap_end is None or (service_dt and service_dt > snap_end)):
         basis = "service"
         base_at = service_dt
+    elif rule_postdates_capture:
+        basis = "rule_added"
+        base_at = rule_created
     elif snapshot is not None:
         if snap_by_metric:
             basis = "snapshot"
@@ -266,6 +321,7 @@ def rule_status(conn: sqlite3.Connection, rule: sqlite3.Row,
         "minutes": rule["air_minutes_limit"],
         "charges": rule["charges_limit"],
     }
+    days_limit = rule["days_limit"] if "days_limit" in rule.keys() else None
     due_soon_pct = float(rule["due_soon_pct"] or 0.8)
     counters = []
     fired = None
@@ -289,6 +345,26 @@ def rule_status(conn: sqlite3.Connection, rule: sqlite3.Row,
                             and int(snap_by_metric[metric]["rounded"])),
             "captured_raw": snap_by_metric[metric]["raw_text"] if metric in snap_by_metric else None,
             "missing_duration": missing_duration if metric == "minutes" else 0,
+        })
+    # The calendar trigger. AirData models this as "Time-Based Days"; it is
+    # measured from the same baseline as the counters, so a completed service
+    # resets the clock as well as the odometer.
+    if days_limit:
+        days_value, days_basis = _days_since_baseline(conn, rule, base_at)
+        status, ratio = _status_for(days_value, float(days_limit), due_soon_pct)
+        if ratio is not None and ratio > fired_ratio:
+            fired_ratio = ratio
+            fired = "days"
+        counters.append({
+            "metric": "days",
+            "value": days_value,
+            "limit": days_limit,
+            "ratio": ratio,
+            "status": status,
+            "rounded": False,
+            "captured_raw": None,
+            "missing_duration": 0,
+            "basis": days_basis,
         })
     if values.get("minutes") is not None and missing_duration:
         counters_minutes = next((c for c in counters if c["metric"] == "minutes"), None)
@@ -350,6 +426,9 @@ def rule_status(conn: sqlite3.Connection, rule: sqlite3.Row,
         "captured_counter_text": rule["captured_counter_text"],
         "captured_status_normalized": captured_status,
         "matches_capture": captured_status == worst if captured_status else None,
+        "days_limit": days_limit,
+        "service_items": _service_items(rule),
+        "source": _rule_source(rule),
         "baseline": baseline_info,
         "last_service": last_service,
         "covered_flights": covered,
@@ -380,7 +459,8 @@ def _explain(worst: str, counters: list[dict], fired: str | None,
     metric = next((c for c in counters if c["metric"] == fired), counters[0] if counters else None)
     if metric is None:
         return STATUS_LABELS[worst]
-    unit = {"flights": "flights", "minutes": "air minutes", "charges": "charges"}[metric["metric"]]
+    unit = {"flights": "flights", "minutes": "air minutes", "charges": "charges",
+            "days": "days"}.get(metric["metric"], metric["metric"])
     text = f"{metric['value']:.0f} of {metric['limit']:.0f} {unit}"
     if last_service and last_service.get("at"):
         text += f"; baseline {last_service['at']}"
@@ -584,7 +664,8 @@ def resolve_coverage(conn: sqlite3.Connection, flight_id: int, snapshot_id: int,
 
 
 def set_rule_policy(conn: sqlite3.Connection, rule_id: int, **fields: Any) -> dict[str, Any]:
-    allowed = {"enabled", "due_soon_pct", "flights_limit", "air_minutes_limit", "charges_limit"}
+    allowed = {"enabled", "due_soon_pct", "flights_limit", "air_minutes_limit",
+               "charges_limit", "days_limit"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return {"ok": False, "code": "no_fields"}

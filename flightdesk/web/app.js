@@ -208,7 +208,8 @@
 
   function counterBlock(counter) {
     var unit = counter.metric === "flights" ? "flights"
-      : counter.metric === "minutes" ? "air minutes" : "charges";
+      : counter.metric === "minutes" ? "air minutes"
+      : counter.metric === "days" ? "days" : "charges";
     if (counter.value === null || counter.value === undefined) {
       return '<div class="counter unknown"><div class="counter-top">' +
         '<span class="label">' + esc(unit) + '</span>' +
@@ -222,7 +223,9 @@
     var over = counter.limit !== null && counter.value > counter.limit;
     var valueText = (counter.metric === "minutes")
       ? Math.round(counter.value) + " / " + Math.round(counter.limit) + " min"
-      : Math.round(counter.value) + " / " + Math.round(counter.limit) + " " + unit;
+      : counter.metric === "days"
+        ? Math.round(counter.value) + " / " + Math.round(counter.limit) + " days"
+        : Math.round(counter.value) + " / " + Math.round(counter.limit) + " " + unit;
     if (counter.limit === null) valueText = Math.round(counter.value) + " " + unit;
     return '<div class="counter ' + counter.status + (over ? " over" : "") + '">' +
       '<div class="counter-top"><span class="label">' + esc(unit) + " · " +
@@ -262,6 +265,15 @@
       (last ? '<div class="tiny faint" style="margin-top:6px">Last service: ' +
         esc(last.kind) + (last.at ? " · " + esc(dateOnly(last.at)) : "") +
         (last.notes ? " · " + esc(last.notes) : "") + "</div>" : "") +
+      (status.service_items && status.service_items.length
+        ? '<details style="margin-top:6px"><summary class="tiny">' +
+          "What this service covers (" + status.service_items.length + ")</summary>" +
+          '<ol class="small" style="margin:6px 0 0 18px">' +
+          status.service_items.map(function (i) { return "<li>" + esc(i) + "</li>"; }).join("") +
+          "</ol></details>"
+        : "") +
+      '<div class="tiny faint" style="margin-top:4px">Schedule source: ' +
+      esc(status.source || "AirData") + "</div>" +
       '<div class="tiny faint">Baseline: ' + esc(baseline.basis || "none") +
       (baseline.at ? " · " + esc(dateOnly(baseline.at)) : "") +
       (status.covered_flights ? " · covers " + status.covered_flights + " archived flights" : "") +
@@ -1396,7 +1408,10 @@
         '<h2>Maintenance</h2><div class="row tiny faint">' +
         esc((data.snapshot && data.snapshot.source_label) || "no capture applied") +
         (data.snapshot ? " · covered through " + esc(data.snapshot.covered_through) : "") +
-        "</div></div>" +
+        "</div>" +
+        '<button type="button" class="secondary" id="add-source-rules" ' +
+        'style="margin-top:6px">Add DoneDoctor checks</button>' +
+        "</div>" +
         '<div class="tabs" style="margin:0 14px" role="tablist">' + tabs.map(function (t) {
           return '<button type="button" role="tab" data-tab="' + t[0] + '"' +
             (t[0] === tab ? ' aria-selected="true"' : ' aria-selected="false"') + ">" +
@@ -1407,6 +1422,19 @@
         btn.addEventListener("click", function () {
           go("#/maintenance/" + btn.dataset.tab);
         });
+      });
+      var addRules = document.getElementById("add-source-rules");
+      if (addRules) addRules.addEventListener("click", function () {
+        api("/api/maintenance/sources", { method: "POST", body: {} }).then(function (res) {
+          // AirData's counters are never rewritten; this only adds the calendar
+          // and short-interval checks and attaches the task lists.
+          var text = res.seeded.created
+            ? "Added " + res.seeded.created + " DoneDoctor check(s)"
+            : "DoneDoctor checks already present";
+          toast(text + (res.checklists.updated
+            ? " · " + res.checklists.updated + " task list(s) attached" : ""));
+          renderMaintenance(tab);
+        }).catch(function (e) { toast("Could not add: " + e.message); });
       });
       wireRuleActions(view, function () { renderMaintenance(tab); });
       bindAct(view);

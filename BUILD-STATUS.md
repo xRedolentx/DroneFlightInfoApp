@@ -434,6 +434,44 @@ cluster mid-to-late flight (not-enough-force at 56 % through, battery voltage at
 After the change: **89 counted faults across 57 flights**, down from 113 across
 76, with the 22 start-up transients recorded separately.
 
+### Stage 11 · Maintenance schedules and their provenance — **applied to the real data**
+
+The rule engine could count flights, airtime and charges, and nothing else. The
+owner's AirData screenshots showed that AirData itself models a third trigger —
+**"Time-Based Days"** — and a per-rule **"Recommended Service Items"** checklist.
+Neither was implemented here, which is why the schedules could only ever be
+counter-based.
+
+- **Three sources, each labelled in the app.** AirData supplies the counters the
+  archive was verified against. DoneDoctor supplies the calendar intervals.
+  DJI's AGRAS T50/T25 manual was read in full and **deliberately not applied**:
+  it describes agricultural spray drones flown commercially, and its intervals
+  (first inspection at 100 flights, motors at 1,000 h, propellers at 700 h) would
+  never prompt on a Mavic flown for five minutes at a time. That decision is
+  recorded in `schedule.py` rather than left implicit. The document the owner
+  supplied is a DJI manual attached to an FAA docket, not FAA guidance.
+- **AirData's counters are untouched.** Verified on the live data: 43 rules
+  before, `pre_existing_rules_changed=0` after. The four acceptance cases still
+  read 188/100 due, 19/20 due soon, 16/20 due soon and battery 30/20 due.
+- **DoneDoctor added as two rules per drone**, published ranges mapped onto the
+  existing model — the upper bound becomes the limit, the lower bound the
+  due-soon point:
+  - *every 10–15 flights* → due at 15, due soon at 10 (67%)
+  - *every 2–3 months* → due at 90 days, due soon at 60 days (67%)
+  Live: **6 rules added across 3 drones**, all starting at 0 and correctly not due.
+- **A new rule's clock starts when it was added.** Counting a drone's whole
+  history against a check nobody has ever performed would report "overdue since
+  records began" on day one. The baseline is recorded as `rule_added` and shown,
+  so the card is honest about what it is measuring. Provenance decides this, not
+  timestamps — the capture writes its rules and its snapshot in one transaction,
+  so both carry "now".
+- **Task checklists carried from the sources.** AirData's own wording from the
+  owner's screenshots (aircraft Basic/Extended/Full, battery Basic/Full) plus
+  DoneDoctor's two lists, shown in a collapsible list on each card. Every rule now
+  names its schedule source.
+- 18 new tests cover the calendar trigger, the range-to-threshold mapping,
+  idempotent seeding, provenance, and that AirData counters survive seeding.
+
 ## Release gate
 
 | Item | Verdict | Evidence | Next human action |
@@ -454,8 +492,8 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 231 automated tests, all passing (`python -m flightdesk selftest`).
-- 74 scripted browser checks, all passing (including the no-egress and privacy
+- 249 automated tests, all passing (`python -m flightdesk selftest`).
+- 79 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).
 - 13-step backup/restore rehearsal, all passing.

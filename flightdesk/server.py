@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import (archive, backup, capture, climate, db, demo, keychain, maintenance,
-               paths, report, security, tiles, usb, views)
+               paths, report, schedule, security, tiles, usb, views)
 from .importer import Importer
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -387,6 +387,9 @@ def api_rule_policy(ctx: Ctx) -> None:
     fields = {}
     if "enabled" in body:
         fields["enabled"] = 1 if body["enabled"] else 0
+    if "days_limit" in body:
+        value = body["days_limit"]
+        fields["days_limit"] = None if value in (None, "", 0) else int(value)
     if "due_soon_pct" in body:
         try:
             fields["due_soon_pct"] = max(0.1, min(1.0, float(body["due_soon_pct"])))
@@ -878,6 +881,18 @@ def api_local_image(ctx: Ctx) -> None:
     ctx.handler.send_header("Content-Security-Policy", "default-src 'none'")
     ctx.handler.end_headers()
     ctx.handler.wfile.write(data)
+
+
+@route("POST", r"/api/maintenance/sources")
+def api_maintenance_sources(ctx: Ctx) -> None:
+    """Add the DoneDoctor checks and attach AirData's own task lists.
+
+    Deliberately a separate, explicit action: the AirData counters were verified
+    against the archive, so nothing here rewrites them.
+    """
+    seeded = schedule.seed_donedoctor_rules(ctx.conn)
+    items = schedule.backfill_airdata_items(ctx.conn)
+    _send_json(ctx.handler, {"ok": True, "seeded": seeded, "checklists": items})
 
 
 @route("GET", r"/api/battery-temperature")

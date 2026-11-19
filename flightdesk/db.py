@@ -163,6 +163,9 @@ CREATE TABLE IF NOT EXISTS rules (
     flights_limit INTEGER,
     air_minutes_limit REAL,
     charges_limit INTEGER,
+    days_limit INTEGER,
+    service_items_json TEXT,
+    source TEXT,
     captured_status TEXT,
     captured_counter_text TEXT,
     captured_baseline_text TEXT,
@@ -357,6 +360,7 @@ def init_db(path: Path | str) -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     _retire_media_columns(conn)
     _add_warning_columns(conn)
+    _add_rule_columns(conn)
     current = conn.execute("PRAGMA user_version").fetchone()[0]
     if current != SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version={int(SCHEMA_VERSION)}")
@@ -381,6 +385,30 @@ def _retire_media_columns(conn: sqlite3.Connection) -> None:
                 # Older SQLite, or the column is referenced by an index/view.
                 # Leaving it is safe: nothing reads it any more.
                 pass
+    conn.commit()
+
+
+def _add_rule_columns(conn: sqlite3.Connection) -> None:
+    """Add the calendar trigger, service checklist and source label to rules.
+
+    AirData's own rule model has three triggers - flights, airtime and
+    "Time-Based Days" - plus a free-text "Recommended Service Items" list. The
+    first version of this app implemented only the two counter triggers and no
+    checklist, so these columns bring the model up to what the source actually
+    has. Idempotent: each column is checked before it is added.
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(rules)")}
+    for column, ddl in (
+        ("days_limit", "ALTER TABLE rules ADD COLUMN days_limit INTEGER"),
+        ("service_items_json", "ALTER TABLE rules ADD COLUMN service_items_json TEXT"),
+        ("source", "ALTER TABLE rules ADD COLUMN source TEXT"),
+    ):
+        if column in existing:
+            continue
+        try:
+            conn.execute(ddl)
+        except sqlite3.Error:
+            pass
     conn.commit()
 
 
