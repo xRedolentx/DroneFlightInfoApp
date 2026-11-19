@@ -92,25 +92,50 @@
     toast._t = setTimeout(function () { toastEl.classList.remove("on"); }, 3400);
   }
 
-  // Downloads need the session header, which a plain link cannot send. Fetch
-  // the bytes with the header, then hand the browser a local blob URL.
   function download(path, filename) {
-    return fetch(path, { headers: { "X-FD-Token": TOKEN }, credentials: "same-origin" })
-      .then(function (res) {
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        return res.blob();
-      })
-      .then(function (blob) {
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 2000);
-        toast("Saved " + filename);
-      })
-      .catch(function (err) { toast("Export failed: " + err.message); });
+    // Start the download synchronously, inside the click. Fetching the file
+    // first and clicking afterwards expires the user gesture, and the browser
+    // then blocks every download after the first few as an "automatic
+    // download" - which made exporting several CSVs in a row appear to fail.
+    // The export routes accept a per-run token in the query string instead of
+    // the header, so a plain anchor works and no gap is introduced.
+    var token = (state.app && state.app.export_token) || "";
+    if (!token) { toast("Export unavailable: reload the page"); return Promise.resolve(); }
+    var url = path + (path.indexOf("?") >= 0 ? "&" : "?") + "token=" +
+      encodeURIComponent(token);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { a.remove(); }, 2000);
+    toast("Saved " + filename);
+  }
+
+  // A native dialog is spawned by the server, so it can surface behind the
+  // browser or not at all. Either way the click must produce a visible result:
+  // a silent no-op is what makes a working app look broken.
+  function pickInto(inputId, kind, noteId) {
+    var input = document.getElementById(inputId);
+    var note = noteId ? document.getElementById(noteId) : null;
+    function say(text) { if (note) note.textContent = text; }
+    say("Opening a Windows dialog\u2026 if none appears, type the path instead.");
+    return api("/api/pick", { method: "POST", body: { kind: kind } }).then(function (res) {
+      if (res.cancelled) {
+        say("No path chosen. Type or paste the path, then press the action button again.");
+        return null;
+      }
+      if (!res.ok || !res.path) {
+        say("The Windows dialog could not be shown. Type or paste the path instead.");
+        return null;
+      }
+      if (input) input.value = res.path;
+      say("Chosen: " + res.path);
+      return res.path;
+    }).catch(function () {
+      say("The Windows dialog could not be shown. Type or paste the path instead.");
+      return null;
+    });
   }
 
   function exportButton(label, path, filename) {
@@ -2094,8 +2119,9 @@
               '</label><div class="row"><input id="backup-dest" type="text" ' +
               'placeholder="C:\\Users\\you\\FlightDeskBackups" style="flex:1;min-width:220px">' +
               '<button type="button" class="secondary" id="backup-pick">Choose folder…</button>' +
-              "</div><p class=\"tiny faint\">Type the folder, or use Choose folder. Leave it " +
-              "empty to be asked.</p></div>" +
+              "</div><p class=\"tiny faint\">Type or paste the folder, or use Choose folder. " +
+              "A path typed here always works, even if the Windows dialog does not appear.</p>" +
+              '<div id="backup-note" class="tiny faint"></div></div>' +
               '<div class="row" style="margin-top:10px">' +
               exportButton("Flights CSV", "/api/export/flights.csv", "FlightDesk-flights.csv") +
               exportButton("Equipment CSV", "/api/export/equipment.csv",
@@ -2381,13 +2407,13 @@
     });
     var backupPick = document.getElementById("backup-pick");
     if (backupPick) backupPick.addEventListener("click", function () {
-      api("/api/pick", { method: "POST", body: { kind: "folder" } }).then(function (res) {
-        if (res.cancelled) return;
-        var input = document.getElementById("backup-dest");
-        if (input && res.path) input.value = res.path;
-        if (!res.path) toast("No folder chosen \u2014 type the path instead");
-      });
+      pickInto("backup-dest", "folder", "backup-note");
     });
+    // A usable default means the dialog is never required.
+    var backupDest = document.getElementById("backup-dest");
+    if (backupDest && !backupDest.value && state.app && state.app.backup_default) {
+      backupDest.value = state.app.backup_default;
+    }
     var backupNow = document.getElementById("backup-now");
     if (backupNow) backupNow.addEventListener("click", function () {
       var typed = (document.getElementById("backup-dest") || {}).value || "";
@@ -2413,7 +2439,8 @@
         '<p class="small">Type or choose the backup ZIP. Nothing is restored or changed.</p>' +
         '<div class="field"><label for="validate-path">Backup file</label>' +
         '<div class="row"><input id="validate-path" type="text" placeholder="C:\\Users\\you\\FlightDeskBackups\\FlightDesk-backup-....zip" style="flex:1;min-width:220px">' +
-        '<button type="button" class="secondary" id="validate-pick">Choose file…</button></div></div>',
+        '<button type="button" class="secondary" id="validate-pick">Choose file…</button></div></div>' +
+        '<div id="validate-note" class="tiny faint"></div>',
         [{ label: "Cancel", cls: "secondary" },
          { label: "Validate", cls: "primary", action: function () {
             var path = (document.getElementById("validate-path") || {}).value || "";
@@ -2432,12 +2459,7 @@
             }); } }]);
       var vpick = document.getElementById("validate-pick");
       if (vpick) vpick.addEventListener("click", function () {
-        api("/api/pick", { method: "POST", body: { kind: "file" } }).then(function (res) {
-          if (res.cancelled) return;
-          var input = document.getElementById("validate-path");
-          if (input && res.path) input.value = res.path;
-          if (!res.path) toast("No file chosen \u2014 type the path instead");
-        });
+        pickInto("validate-path", "file", "validate-note");
       });
     });
     var restore = document.getElementById("restore-run");
@@ -2451,7 +2473,8 @@
         '<div class="field"><label for="restore-target">New data root</label>' +
         '<input id="restore-target" type="text" placeholder="C:\\Users\\you\\FlightDeskRestored">' +
         '<div class="row" style="margin-top:6px"><button type="button" class="secondary" ' +
-        'id="restore-target-pick">Choose folder…</button></div></div>',
+        'id="restore-target-pick">Choose folder…</button></div></div>' +
+        '<div id="restore-note" class="tiny faint"></div>',
         [{ label: "Cancel", cls: "secondary" },
          { label: "Choose backup and restore", cls: "primary", action: function () {
             var target = document.getElementById("restore-target").value;
@@ -2484,21 +2507,11 @@
               }); } }]);
       var pick = document.getElementById("restore-pick");
       if (pick) pick.addEventListener("click", function () {
-        api("/api/pick", { method: "POST", body: { kind: "file" } }).then(function (res) {
-          if (res.cancelled) return;
-          var input = document.getElementById("restore-source");
-          if (input && res.path) input.value = res.path;
-          if (!res.path) toast("No file chosen \u2014 type the path instead");
-        });
+        pickInto("restore-source", "file", "restore-note");
       });
       var targetPick = document.getElementById("restore-target-pick");
       if (targetPick) targetPick.addEventListener("click", function () {
-        api("/api/pick", { method: "POST", body: { kind: "folder" } }).then(function (res) {
-          if (res.cancelled) return;
-          var input = document.getElementById("restore-target");
-          if (input && res.path) input.value = res.path;
-          if (!res.path) toast("No folder chosen \u2014 type the path instead");
-        });
+        pickInto("restore-target", "folder", "restore-note");
       });
     });
     var recon = document.getElementById("recon-run");

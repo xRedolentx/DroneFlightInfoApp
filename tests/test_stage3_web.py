@@ -213,6 +213,45 @@ class ApiTest(ServerCase):
         self.assertEqual(result["failed"], 0)
         self.assertEqual(result["codes"], [])
 
+    def test_export_downloads_with_a_token_and_no_header(self) -> None:
+        # A browser cannot attach a header to a download, and fetching the file
+        # first loses the click gesture. The token makes a plain link work.
+        state = self.get_json("/api/state")
+        token = state["export_token"]
+        self.assertTrue(token)
+        status, body = self.request(
+            "GET", f"/api/export/flights.csv?token={token}", token=False, cookie=False)
+        self.assertEqual(status, 200, body[:200])
+        self.assertIn(b"flight_id", body)
+
+    def test_export_records_itself_as_an_attachment(self) -> None:
+        state = self.get_json("/api/state")
+        status, body = self.request(
+            "GET", f"/api/export/flights.csv?token={state['export_token']}",
+            token=False, cookie=False)
+        self.assertEqual(status, 200)
+        self.assertGreater(len(body), 100)
+
+    def test_a_bad_export_token_is_refused(self) -> None:
+        status, _ = self.request(
+            "GET", "/api/export/flights.csv?token=not-the-token", token=False, cookie=False)
+        self.assertEqual(status, 403)
+
+    def test_an_export_with_no_token_and_no_header_is_refused(self) -> None:
+        status, _ = self.request(
+            "GET", "/api/export/flights.csv", token=False, cookie=False)
+        self.assertEqual(status, 403)
+
+    def test_the_header_still_works_for_the_api(self) -> None:
+        status, body = self.request("GET", "/api/export/equipment.csv")
+        self.assertEqual(status, 200, body[:200])
+
+    def test_the_token_is_not_accepted_outside_the_export_routes(self) -> None:
+        state = self.get_json("/api/state")
+        status, _ = self.request(
+            "GET", f"/api/flights?token={state['export_token']}", token=False, cookie=False)
+        self.assertEqual(status, 403)
+
     def test_map_status_is_reported_without_leaking_the_token_to_others(self) -> None:
         state = self.get_json("/api/state")
         self.assertIn("map", state)

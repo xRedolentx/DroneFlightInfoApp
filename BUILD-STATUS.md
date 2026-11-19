@@ -470,6 +470,38 @@ counter-based.
   idempotent seeding, provenance, that AirData counters survive seeding, and a
   guard that no third schedule source is introduced.
 
+### Stage 12 · Downloads and destination pickers — **fixed from a real report**
+
+Two failures the owner hit while making the first real backup. Both were
+reporting and mechanism faults, not data faults.
+
+- **The redacted export did nothing.** The download fetched the file first and
+  only then clicked a link to it. Fetching expires the click gesture, so the
+  browser classifies every download after the first few as an *automatic
+  download* and blocks it silently. Three CSVs saved, the fourth and fifth did
+  nothing. Exports now go through a per-run capability token in the query string
+  (`App.export_token`), so a plain `<a download>` starts inside the click and no
+  gesture is lost. The token is accepted only on `/api/export/`; the header path
+  still works and is still required everywhere else.
+- **"Choose folder" and "Choose file" appeared dead.** The dialog is spawned by
+  the server, so Windows is free to place it behind the browser — and the request
+  then blocks until it is answered, which looks exactly like a broken button. The
+  picker now gives the dialog a topmost owner so it comes to the front, the wait
+  is bounded at 120 s instead of 300 s, and — the part that matters — **the click
+  always produces a visible message**: while waiting, on cancel, and on failure,
+  each saying to type the path instead. A silent no-op is the one outcome that is
+  never acceptable.
+- **A destination no longer needs a dialog at all.** Settings prefills the backup
+  folder with `<app home>\backups`, so Create backup works without touching the
+  picker.
+- Verified in a browser: all five exports download; the redacted one reports
+  "Saved FlightDesk-flights-redacted.csv"; serials and coordinates are absent from
+  it while the row count is identical; the backup folder is prefilled; and the
+  chooser shows its message immediately.
+- 6 new tests pin the export capability: token accepted without a header, bad
+  token refused, no token and no header refused, header still works, and the
+  token rejected outside the export routes.
+
 ## Release gate
 
 | Item | Verdict | Evidence | Next human action |
@@ -490,8 +522,8 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 251 automated tests, all passing (`python -m flightdesk selftest`).
-- 79 scripted browser checks, all passing (including the no-egress and privacy
+- 257 automated tests, all passing (`python -m flightdesk selftest`).
+- 83 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).
 - 13-step backup/restore rehearsal, all passing.

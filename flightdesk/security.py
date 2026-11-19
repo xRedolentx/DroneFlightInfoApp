@@ -103,17 +103,31 @@ def cloud_sync_marker(path: str | Path) -> str | None:
     return None
 
 
-def pick_path(mode: str, *, timeout: int = 300) -> str | None:
+def pick_path(mode: str, *, timeout: int = 120) -> str | None:
     """Open a native dialog in the interactive user session. Paths are returned
-    only to the local server, never logged."""
+    only to the local server, never logged.
+
+    A dialog spawned by the server process is not owned by any window, so
+    Windows is free to put it behind the browser — which looks exactly like a
+    dead button, because the request is waiting on it. The owner form below is
+    topmost, which brings the dialog to the front. If it still does not appear,
+    callers must say so: the caller can type the path instead, and a silent
+    no-op is the one outcome that must never happen.
+    """
     if os.name != "nt":
         return None
+    owner = (
+        "$owner=New-Object System.Windows.Forms.Form;"
+        "$owner.TopMost=$true;$owner.ShowInTaskbar=$false;"
+        "$owner.FormBorderStyle='None';$owner.Size=New-Object System.Drawing.Size(1,1);"
+        "$owner.StartPosition='Manual';$owner.Location=New-Object System.Drawing.Point(-2000,-2000);"
+        "$owner.Show();$owner.Activate();"
+    )
     if mode == "folder":
-        script = (
-            "Add-Type -AssemblyName System.Windows.Forms;"
+        picker = (
             "$d=New-Object System.Windows.Forms.FolderBrowserDialog;"
             "$d.Description='Select the Flight Desk folder';"
-            "if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK)"
+            "if($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK)"
             "{[Console]::Out.Write($d.SelectedPath)}"
         )
     else:
@@ -121,22 +135,26 @@ def pick_path(mode: str, *, timeout: int = 300) -> str | None:
             "Flight logs and archives (*.zip;*.txt)|*.zip;*.txt|"
             "ZIP archives (*.zip)|*.zip|DJI logs (*.txt)|*.txt|All files (*.*)|*.*"
         )
-        script = (
-            "Add-Type -AssemblyName System.Windows.Forms;"
+        picker = (
             "$d=New-Object System.Windows.Forms.OpenFileDialog;"
             "$d.Title='Select an AirData export, handoff ZIP or flight log';"
             f"$d.Filter='{filt}';"
-            "if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK)"
+            "if($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK)"
             "{[Console]::Out.Write($d.FileName)}"
         )
+    script = (
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "Add-Type -AssemblyName System.Drawing;" + owner + picker +
+        ";$owner.Close()"
+    )
     kwargs = {"capture_output": True, "timeout": timeout}
-    if os.name == "nt":
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         proc = subprocess.run(
             ["powershell.exe", "-NoProfile", "-STA", "-Command", script], **kwargs
         )
     except (OSError, subprocess.TimeoutExpired):
+        return None
+    except ValueError:
         return None
     if proc.returncode != 0:
         return None

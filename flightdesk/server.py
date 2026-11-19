@@ -85,6 +85,14 @@ class App:
         # own secret in the path: unknown to any other page, rotated every run,
         # and useless for anything except fetching a tile through this proxy.
         self.tile_token = secrets.token_urlsafe(24)
+        # Exports need their own capability for the same reason as tiles: an
+        # <a download> cannot send the X-FD-Token header. Crucially it also lets
+        # the browser start the download inside the click itself. Fetching the
+        # file first and clicking afterwards expires the user gesture, and the
+        # browser then treats every download after the first few as an
+        # automatic download and blocks it — which is what made the redacted
+        # export appear to do nothing.
+        self.export_token = secrets.token_urlsafe(24)
         self.port = 0
         self.watcher_thread: threading.Thread | None = None
         self.stop_event = threading.Event()
@@ -186,6 +194,11 @@ def health(ctx: Ctx) -> None:
 def api_state(ctx: Ctx) -> None:
     payload = views.state(ctx.conn)
     payload["db_path"] = str(ctx.app.db_file)
+    # The page needs this to build download links that the browser can follow
+    # without a header (and therefore without losing the click gesture).
+    payload["export_token"] = ctx.app.export_token
+    # A destination the owner can accept without ever opening a dialog.
+    payload["backup_default"] = str(paths.app_home() / "backups")
     if isinstance(payload.get("map"), dict):
         # The page needs this capability to build tile URLs.
         payload["map"]["tile_token"] = ctx.app.tile_token
@@ -1034,6 +1047,18 @@ class Handler(BaseHTTPRequestHandler):
     def _host_ok(self) -> bool:
         return security.host_allowed(self.headers.get("Host"), self.app.port)
 
+    def _export_token_ok(self, path: str, query: str) -> bool:
+        """A download URL is authorised by its own per-run capability.
+
+        Browsers cannot attach a header to a download, so the token travels in
+        the query string. It is per-run, loopback-only, and only accepted on the
+        export routes.
+        """
+        if not path.startswith("/api/export/"):
+            return False
+        supplied = (urllib.parse.parse_qs(query).get("token") or [""])[0]
+        return bool(supplied) and hmac.compare_digest(supplied, self.app.export_token)
+
     def _session_ok(self) -> bool:
         cookie = self.headers.get("Cookie") or ""
         match = re.search(r"fd_session=([A-Za-z0-9_\-]+)", cookie)
@@ -1123,8 +1148,10 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_static(path)
             return
         if not path.startswith(TILES_PREFIX) and not self._session_ok():
-            self._reject(403, "session_required")
-            return
+            # Exports carry their own capability in the query string; see App.
+            if not (path.startswith("/api/export/") and self._export_token_ok(path, parsed.query)):
+                self._reject(403, "session_required")
+                return
         try:
             # The upload route streams its own body to disk; reading it here
             # would double the memory cost of a large handoff ZIP.

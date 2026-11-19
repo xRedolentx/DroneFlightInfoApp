@@ -565,6 +565,31 @@ if (!zipPath) {
     String(await evaluate("fetch('/api/backups').then(r=>r.json()).then(d => JSON.stringify(d.rows[0] || {}).slice(0,80))")));
 }
 
+// --- exports and destination pickers ---------------------------------------
+{
+  await goto("#/settings");
+  await waitFor("document.querySelectorAll('[data-export]').length >= 5", 20000);
+  check("every export button carries its own download link",
+    await evaluate("Array.from(document.querySelectorAll('[data-export]'))" +
+      ".every(b => b.dataset.export && b.dataset.filename)"));
+  // Click the redacted export: it was the one that appeared to do nothing.
+  await evaluate("(() => { const b = [...document.querySelectorAll('[data-export]')]" +
+    ".find(x => /no locations/i.test(x.textContent)); if (b) b.click(); return true; })()");
+  await new Promise((r) => setTimeout(r, 1500));
+  check("the redacted export reports that it saved",
+    await evaluate("/Saved FlightDesk-flights-redacted\\.csv/.test(" +
+      "(document.getElementById('toast')||{}).textContent || '')"),
+    String(await evaluate("(document.getElementById('toast')||{}).textContent")));
+  check("a backup folder is suggested so the dialog is optional",
+    await evaluate("(() => { const v = (document.getElementById('backup-dest')||{}).value || '';" +
+      "return /backups$/i.test(v); })()"));
+  await evaluate("document.getElementById('backup-pick').click(); true");
+  await new Promise((r) => setTimeout(r, 1200));
+  check("choosing a folder always produces a visible message",
+    await evaluate("/Opening a Windows dialog|could not be shown|No path chosen/.test(" +
+      "(document.getElementById('backup-note')||{}).textContent || '')"));
+}
+
 // --- folder picker is browser-owned ----------------------------------------
 {
   await goto("#/import");
