@@ -164,8 +164,14 @@ check("track states no tiles are fetched",
 check("warnings panel states its provenance",
   await evaluate("(() => { const p = document.getElementById('warnings-panel');" +
     "if (!p) return false; const t = p.innerText;" +
-    "return /no fault flag|faults were|fault was|encrypted|not been decoded|" +
+    "return /no fault flag|faults were|fault was|encrypted|not been decoded|start-up|" +
     "could not be read/i.test(t); })()"));
+check("battery temperature is judged against the configured limits",
+  await evaluate("(() => { const p = document.getElementById('warnings-panel');" +
+    "if (!p) return false; const t = p.innerText;" +
+    "if (!/Battery temperature/i.test(t)) return false;" +
+    "return /Within the configured limits|°C limit|no battery temperature|limits are turned off/i.test(t);" +
+    "})()"));
 check("no map tile is requested before consent", tileRequests.length === 0,
   `${tileRequests.length} tile requests`);
 check("a map offer exists but tiles are off by default",

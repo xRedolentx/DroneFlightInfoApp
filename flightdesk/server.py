@@ -18,8 +18,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
-from . import (archive, backup, capture, db, demo, keychain, maintenance, paths,
-               report, security, tiles, usb, views)
+from . import (archive, backup, capture, climate, db, demo, keychain, maintenance,
+               paths, report, security, tiles, usb, views)
 from .importer import Importer
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -878,6 +878,23 @@ def api_local_image(ctx: Ctx) -> None:
     ctx.handler.send_header("Content-Security-Policy", "default-src 'none'")
     ctx.handler.end_headers()
     ctx.handler.wfile.write(data)
+
+
+@route("GET", r"/api/battery-temperature")
+def api_battery_temperature(ctx: Ctx) -> None:
+    payload = climate.fleet_summary(ctx.conn)
+    payload["ok"] = True
+    _send_json(ctx.handler, payload)
+
+
+@route("POST", r"/api/battery-temperature/limits")
+def api_battery_temperature_limits(ctx: Ctx) -> None:
+    body = ctx.json_body()
+    result = climate.save_limits(ctx.conn, body if isinstance(body, dict) else {})
+    if result.get("ok"):
+        db.audit(ctx.conn, "owner", "battery_temp_limits", "settings", None,
+                 {k: result["limits"][k] for k in ("enabled", "cold_c", "hot_c")})
+    _send_json(ctx.handler, result)
 
 
 @route("GET", r"/api/recon")

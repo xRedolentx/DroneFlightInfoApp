@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from . import db, maintenance
+from . import climate, db, maintenance
 from .analysis import track_segments
 
 FLIGHT_FIELDS = (
@@ -37,8 +37,15 @@ def _flight_row(row: sqlite3.Row) -> dict[str, Any]:
     else:
         try:
             parsed = json.loads(raw)
-            data["warnings_count"] = len(parsed) if isinstance(parsed, list) else None
         except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, list):
+            # Start-up transients are recorded but do not raise a badge: the
+            # badge is for something worth opening the flight for.
+            data["warnings_count"] = sum(
+                1 for i in parsed if i.get("counted", True)
+            )
+        else:
             data["warnings_count"] = None
     return data
 
@@ -255,6 +262,10 @@ def flight_detail(conn: sqlite3.Connection, flight_id: int) -> dict[str, Any] | 
                       "segments": segments},
         "neighbours": {"prev": prev_id, "next": next_id},
         "warnings": _flight_warnings(row),
+        "temperature": climate.classify(
+            row["battery_temp_max_c"], row["battery_temp_min_c"],
+            climate.limits(conn),
+        ),
     }
 
 
@@ -287,9 +298,19 @@ def _flight_warnings(row: sqlite3.Row) -> dict[str, Any]:
     if not isinstance(items, list):
         return {"state": "unavailable", "items": [],
                 "note": "The stored fault record could not be read."}
+    counted = [i for i in items if i.get("counted", True)]
+    startup = [i for i in items if not i.get("counted", True)]
+    if not items:
+        note = "No fault flag was raised during this flight."
+    elif not counted:
+        note = ("Only start-up transients were seen \u2014 a single-frame compass flag "
+                "in the first seconds, which is the known DJI behaviour at motor start.")
+    else:
+        note = ""
     return {"state": "recorded", "items": items,
-            "count": len(items),
-            "note": "" if items else "No fault flag was raised during this flight."}
+            "count": len(counted),
+            "startup_transients": len(startup),
+            "note": note}
 
 
 def equipment_list(conn: sqlite3.Connection, include_archived: bool = False) -> list[dict]:

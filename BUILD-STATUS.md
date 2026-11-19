@@ -389,6 +389,51 @@ even though the decoded frames have carried them all along.
   affected records.
 - 19 new tests cover extraction, aggregation, provenance and the JSON round trip.
 
+### Stage 10 · Battery temperature limits — **verified on the real archive**
+
+Temperature was stored and displayed but never compared to anything: a reading
+on its own cannot tell you a pack ran hot. It is now judged against an explicit,
+editable policy.
+
+- **Where the numbers come from.** No temperature limit is published in the DJI
+  log — the frames carry a reading and nothing more — so the limits are local
+  policy. Defaults are **0 °C cold / 40 °C hot**, with a **10 °C margin** that
+  turns an excursion into a warning rather than a caution. Settings says plainly
+  that these are the app's own defaults, not the manufacturer's figures, and all
+  three are editable. A pair where hot is not above cold is refused.
+- **Three answers, not two.** In limits → *ok*. Beyond them → *caution*, and far
+  beyond (past the margin) → *warning*. A record with no temperature reading
+  reports *no reading*, never *ok*: absent is not safe.
+- **Real result:** of 264 records, 46 carry a temperature (the rest report 0 for
+  every sample, which is already treated as absent). **Five batteries have run
+  above the 40 °C limit**, peaks 44.0–53.6 °C, worst `Bat-Mavic3-A01WUJ` with 8
+  flights and a 52.3 °C peak. None has been below the cold limit.
+- **A false cold reading was caught and fixed.** Five flights — all one older
+  Mavic — recorded a 0.00 °C minimum inside flights whose real readings were
+  35–53 °C. Zero readings far from the flight's own median are now treated as
+  dropouts and dropped, with a `battery_temp_dropouts` flag; a genuinely cold
+  flight (median near zero) is still kept. That removed all five false "freezing"
+  reports without hiding a real one.
+- 20 new tests cover the policy, the classifier, the battery and fleet summaries,
+  and the dropout rule.
+
+### Stage 10b · The compass start-up quirk
+
+The owner reported the compass errors as the known DJI behaviour at motor start.
+The archive supports it: **22 of 33 compass flags fire at t=0**, every one lasts
+a single frame, and they are spread across four different aircraft — not one
+faulty unit. Those are now classified `startup` and **do not count** as faults;
+they are still recorded and shown, labelled "Compass flagged at start-up
+(transient, single frame)", so nothing is hidden.
+
+**11 compass flags are not explained that way** — they occur 32–425 s into the
+flight. Those keep full `warning` severity. Meanwhile the genuinely useful faults
+cluster mid-to-late flight (not-enough-force at 56 % through, battery voltage at
+94 %, SD card at 70 %), which is what you would expect from real events.
+
+After the change: **89 counted faults across 57 flights**, down from 113 across
+76, with the 22 start-up transients recorded separately.
+
 ## Release gate
 
 | Item | Verdict | Evidence | Next human action |
@@ -409,8 +454,8 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 204 automated tests, all passing (`python -m flightdesk selftest`).
-- 73 scripted browser checks, all passing (including the no-egress and privacy
+- 231 automated tests, all passing (`python -m flightdesk selftest`).
+- 74 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).
 - 13-step backup/restore rehearsal, all passing.

@@ -67,6 +67,7 @@ class FlightMetrics:
     battery_end_pct: float | None = None
     battery_temp_max_c: float | None = None
     battery_temp_min_c: float | None = None
+    battery_temp_dropouts: int = 0
     signal_min: float | None = None
     home_lat: float | None = None
     home_lon: float | None = None
@@ -228,6 +229,20 @@ def compute_metrics(
     # flight that never moves off exactly 0.0 is not reporting a temperature,
     # so leave it unknown rather than turning it into a reading. A genuinely
     # freezing flight varies around zero and is kept.
+    #
+    # A single 0.0 among real readings is a different problem: one real aircraft
+    # (an older Mavic) drops the temperature field to 0 for a few frames while
+    # the rest of the flight reads 35-53 C. Taking that as a minimum would
+    # report a freezing battery that never happened, so zero readings far from
+    # the flight's own median are treated as dropouts.
+    non_zero = [t for t in temps if abs(t) > 1e-9]
+    if non_zero:
+        centre = _median(non_zero)
+        if len(non_zero) >= 3 and abs(centre) > 15.0 and len(non_zero) < len(temps):
+            dropped = len(temps) - len(non_zero)
+            m.flags.append("battery_temp_dropouts")
+            m.battery_temp_dropouts = dropped
+            temps = non_zero
     if temps and any(abs(t) > 1e-9 for t in temps):
         m.battery_temp_max_c = max(temps)
         m.battery_temp_min_c = min(temps)
@@ -334,6 +349,18 @@ def summarise_warnings(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for row in rows:
         if row.get("peak") is None:
             row.pop("peak", None)
+        # A single-frame compass flag at the very start of a flight is the known
+        # DJI start-up quirk, not interference. Measured on the real archive: 22
+        # of 33 compass flags fire at t=0, every one of them lasts a single
+        # frame, and they are spread across four different aircraft. Kept and
+        # labelled rather than discarded, but not counted as a fault.
+        if (row["code"] == "isCompassError" and int(row.get("frames") or 0) <= 1
+                and float(row.get("start_t") or 0.0) < 30.0):
+            row["severity"] = "startup"
+            row["label"] = "Compass flagged at start-up (transient, single frame)"
+            row["counted"] = False
+        else:
+            row["counted"] = True
     return rows
 
 

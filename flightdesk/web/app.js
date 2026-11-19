@@ -579,7 +579,10 @@
 
     var warningsHtml = '<div class="panel" id="warnings-panel" style="margin-top:14px">' +
       '<div class="panel-head"><h2>Warnings</h2></div><div class="panel-body">' +
-      warningsBody(data.warnings) + "</div></div>";
+      warningsBody(data.warnings) +
+      '<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">' +
+      '<h3 class="small" style="margin-bottom:6px">Battery temperature</h3>' +
+      temperatureBody(data.temperature) + "</div></div></div>";
 
     var scrub =
       '<div class="panel" style="margin-top:14px"><div class="panel-body">' +
@@ -2115,6 +2118,7 @@
               '<div class="row" style="margin-top:6px"><button type="button" class="secondary" ' +
               'id="capture-preview-text">Preview pasted text</button></div></details>' +
               '<div id="capture-out" style="margin-top:12px"></div>') +
+            section("Battery temperature limits", tempLimitsSectionHtml()) +
             section("Online map", mapSectionHtml(state.app.map)) +
             section("Privacy and data root", '<p class="small muted">Data root: <code>' +
               esc(state.app.db_path.replace(/\\[^\\]+$/, "")) + "</code></p>" +
@@ -2132,6 +2136,29 @@
         });
       });
     });
+  }
+
+  var tempLimits = null;
+
+  function tempLimitsSectionHtml() {
+    var p = tempLimits || {};
+    return '<p class="small muted">Flight Desk compares each flight\'s recorded battery ' +
+      "temperature against these limits and tells you when a pack ran hot or cold. " +
+      "<strong>No temperature limit is published in the DJI log</strong>, so these are " +
+      "this app's defaults, not the manufacturer's figures \u2014 adjust them to your " +
+      "battery's own manual.</p>" +
+      '<div class="row" style="margin-top:10px;gap:14px;align-items:flex-end">' +
+      '<label class="small">Too cold below (°C)<br><input id="temp-cold" type="number" ' +
+      'step="1" style="width:90px" value="' + esc(p.cold_c === undefined ? "" : p.cold_c) + '"></label>' +
+      '<label class="small">Too hot above (°C)<br><input id="temp-hot" type="number" ' +
+      'step="1" style="width:90px" value="' + esc(p.hot_c === undefined ? "" : p.hot_c) + '"></label>' +
+      '<label class="small">Warning margin (°C)<br><input id="temp-margin" type="number" ' +
+      'step="1" min="0" style="width:90px" value="' + esc(p.margin_c === undefined ? "" : p.margin_c) + '"></label>' +
+      '<label class="small"><input id="temp-enabled" type="checkbox"' +
+      (p.enabled ? " checked" : "") + "> Limits on</label>" +
+      '<button type="button" class="primary" id="temp-save">Save limits</button></div>' +
+      '<div id="temp-out" class="small" style="margin-top:8px"></div>' +
+      '<div id="temp-fleet" class="small" style="margin-top:10px"></div>';
   }
 
   function mapSectionHtml(map) {
@@ -2188,6 +2215,26 @@
           "</span> " + esc(w.label) + "</td><td class=\"num\">" +
           fmtClock(w.start_t) + "</td><td class=\"num\">" + lasted + "</td></tr>";
       }).join("") + "</tbody></table>";
+  }
+
+  function temperatureBody(t) {
+    if (!t) return '<p class="small muted">No temperature information.</p>';
+    if (t.state === "disabled") {
+      return '<p class="small muted">Temperature limits are turned off in Settings.</p>';
+    }
+    if (t.state === "no_reading") {
+      return '<div class="notice small">' + esc(t.note ||
+        "This record carries no battery temperature reading.") + "</div>";
+    }
+    if (!t.reasons || !t.reasons.length) {
+      return '<div class="notice small">Within the configured limits.</div>';
+    }
+    return t.reasons.map(function (r) {
+      var tone = r.severity === "warning" ? "warn" : "unknown";
+      return '<div class="notice ' + (r.severity === "warning" ? "warn" : "small") +
+        '" style="margin-bottom:6px"><span class="badge ' + tone + '">' +
+        esc(r.severity) + "</span> " + esc(r.label) + "</div>";
+    }).join("");
   }
 
   function fmtClock(seconds) {
@@ -2572,6 +2619,64 @@
         setCaptureOut("Apply failed: " + err.message, "bad");
       }
     });
+    // Fill the "which batteries ran hot or cold" list once it arrives. Kept off
+    // the render path so a slow query never delays the settings screen.
+    api("/api/battery-temperature").then(function (data) {
+      tempLimits = data.limits || null;
+      // Populate the inputs from the stored policy (the section renders with
+      // placeholders when the limits have not arrived yet).
+      if (tempLimits) {
+        var cold = document.getElementById("temp-cold");
+        var hot = document.getElementById("temp-hot");
+        var margin = document.getElementById("temp-margin");
+        var enabled = document.getElementById("temp-enabled");
+        if (cold) cold.value = tempLimits.cold_c;
+        if (hot) hot.value = tempLimits.hot_c;
+        if (margin) margin.value = tempLimits.margin_c;
+        if (enabled) enabled.checked = !!tempLimits.enabled;
+      }
+      var host = document.getElementById("temp-fleet");
+      if (!host) return;
+      if (!data.batteries || !data.batteries.length) {
+        host.innerHTML = data.limits && data.limits.enabled
+          ? '<p class="small muted">No battery has been outside the limits.</p>'
+          : "";
+        return;
+      }
+      host.innerHTML = '<h3 class="small" style="margin-bottom:6px">Batteries outside ' +
+        "the limits</h3>" + data.batteries.map(function (b) {
+          return '<div class="row between" style="padding:4px 0">' +
+            "<span>" + esc(b.name) + "</span><span class=\"tiny faint\">" +
+            (b.too_hot ? b.too_hot + " too hot" : "") +
+            (b.too_hot && b.too_cold ? " · " : "") +
+            (b.too_cold ? b.too_cold + " too cold" : "") +
+            " · peak " + esc(b.hottest_c) + " °C</span></div>";
+        }).join("");
+    }).catch(function () {});
+
+    var tempSave = document.getElementById("temp-save");
+    if (tempSave) tempSave.addEventListener("click", function () {
+      var body = {
+        enabled: !!(document.getElementById("temp-enabled") || {}).checked,
+        cold_c: Number((document.getElementById("temp-cold") || {}).value),
+        hot_c: Number((document.getElementById("temp-hot") || {}).value),
+        margin_c: Number((document.getElementById("temp-margin") || {}).value),
+      };
+      api("/api/battery-temperature/limits", { method: "POST", body: body })
+        .then(function (res) {
+          var out = document.getElementById("temp-out");
+          if (res.ok) {
+            tempLimits = res.limits;
+            toast("Temperature limits saved");
+            refreshState().then(renderSettings);
+          } else if (out) {
+            out.textContent = res.code === "hot_below_cold"
+              ? "The hot limit must be above the cold limit."
+              : "Could not save: " + res.code;
+          }
+        });
+    });
+
     var real = document.getElementById("real-toggle");
     if (real) real.addEventListener("click", function () {
       api("/api/recon/select-real", { method: "POST",
