@@ -166,6 +166,9 @@ check("no map tile is requested before consent", tileRequests.length === 0,
 check("a map offer exists but tiles are off by default",
   await evaluate("!!document.getElementById('map-consent') && " +
     "!document.getElementById('map-toggle')"));
+check("zoom controls appear only once the map is allowed",
+  await evaluate("!document.getElementById('map-zoom-in') && " +
+    "!document.getElementById('map-zoom-out')"));
 check("charts include a missing-interval marker",
   await evaluate("document.querySelectorAll('.chart-missing').length > 0"));
 check("metric stacks flank the track",

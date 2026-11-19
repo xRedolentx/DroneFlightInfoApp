@@ -92,14 +92,20 @@
     var P;
     var zoomUsed = null;
     var gridCount = 0;
+    var viewOut = null;
 
     if (mapMode) {
-      // Real basemap: Web Mercator, tiles covering exactly this panel.
-      var fitted = window.FDMap.fit(b, W, H, pad);
+      // Real basemap: Web Mercator. The view comes from the caller when the
+      // owner has panned or zoomed; otherwise it is fitted to the track.
+      var fitted = spec.basemap
+        ? window.FDMap.normaliseView(spec.basemap.view, b, W, H, pad)
+        : window.FDMap.fit(b, W, H, pad);
       zoomUsed = fitted.z;
       P = window.FDMap.projector(fitted.z, fitted.originX, fitted.originY);
       var key = window.FDMap.viewKey(fitted.z, fitted.originX, fitted.originY, W, H);
       if (tileCache.key === key && tileCache.nodes.length) {
+        // Re-append the same nodes. Re-inserting them is what keeps a drag
+        // smooth: no new requests, no re-decode of already-decoded images.
         tileCache.nodes.forEach(function (node) { svg.appendChild(node); });
       } else {
         var nodes = [];
@@ -111,6 +117,7 @@
           });
         tileCache = { key: key, nodes: nodes };
       }
+      viewOut = fitted;
     } else {
       P = function (lat, lon) {
         var p = project(lat, lon, b.lat0, b.lon0);
@@ -206,6 +213,9 @@
       "stroke-width": 2, visibility: "hidden" });
     svg.appendChild(cursor);
 
+    // A map the owner can move is a map that can be dragged: show it.
+    if (mapMode) svg.style.cursor = "grab";
+
     if (spec.cursorSample) {
       var cs = spec.cursorSample;
       if (cs.lat !== null && cs.lon !== null) {
@@ -233,7 +243,8 @@
 
     container.appendChild(svg);
     return { svg: svg, project: P, bounds: b, gridCount: gridCount,
-             zoom: zoomUsed, tiles: mapMode ? svg.querySelectorAll("image").length : 0 };
+             zoom: zoomUsed, view: viewOut,
+             tiles: mapMode ? svg.querySelectorAll("image").length : 0 };
   }
 
   window.FDTrack = { render: render, nearest: nearest, project: project };

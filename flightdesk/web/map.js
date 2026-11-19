@@ -56,6 +56,65 @@
     };
   }
 
+  /** The inverse, so a drag can be expressed in the same units. */
+  function unprojector(z, originX, originY) {
+    return function (px, py) {
+      var scale = TILE * Math.pow(2, z);
+      var x = px + originX;
+      var y = py + originY;
+      var lon = (x / scale) * 360 - 180;
+      var n = Math.PI - (2 * Math.PI * y) / scale;
+      var lat = (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+      return [lat, lon];
+    };
+  }
+
+  /**
+   * Clamp a view to the world and to the provider's zoom range.
+   * Keeping the centre inside the valid latitude band stops a drag from
+   * scrolling the map into empty space above or below the planet.
+   */
+  function normaliseView(view, b, W, H, pad) {
+    var base = fit(b, W, H, pad);
+    if (!view || typeof view.z !== "number" || !isFinite(view.z)) return base;
+    var z = Math.max(0, Math.min(MAX_ZOOM, Math.round(view.z)));
+    var span = TILE * Math.pow(2, z);
+    var cx = Number(view.centerX), cy = Number(view.centerY);
+    if (!isFinite(cx)) cx = base.originX + W / 2;
+    if (!isFinite(cy)) cy = base.originY + H / 2;
+    cx = Math.max(0, Math.min(span, cx));
+    // Pixel y of the mercator limit at this zoom, so the view cannot leave the map.
+    var top = pixel(MAX_LAT, -180, z)[1];
+    var bottom = pixel(-MAX_LAT, -180, z)[1];
+    cy = Math.max(top, Math.min(bottom, cy));
+    return { z: z, originX: cx - W / 2, originY: cy - H / 2, centerX: cx, centerY: cy };
+  }
+
+  /**
+   * One pinch/wheel/cursor step, keeping the point under the pointer still.
+   * Integer zoom only, because tiles exist per level.
+   */
+  function zoomAt(view, delta, atX, atY, b, W, H, pad) {
+    var current = normaliseView(view, b, W, H, pad);
+    var z = Math.max(0, Math.min(MAX_ZOOM, current.z + delta));
+    if (z === current.z) return current;
+    // Keep the map coordinate under the pointer at the same screen point.
+    var anchorX = current.originX + atX;
+    var anchorY = current.originY + atY;
+    var factor = Math.pow(2, z - current.z);
+    var cx = anchorX * factor - atX + W / 2;
+    var cy = anchorY * factor - atY + H / 2;
+    return normaliseView({ z: z, centerX: cx, centerY: cy }, b, W, H, pad);
+  }
+
+  /** Drag in screen pixels. */
+  function panBy(view, dx, dy, b, W, H, pad) {
+    var current = normaliseView(view, b, W, H, pad);
+    return normaliseView(
+      { z: current.z, centerX: current.centerX - dx, centerY: current.centerY - dy },
+      b, W, H, pad);
+  }
+
   /**
    * Tiles covering exactly the visible panel. No prefetch, no look-ahead beyond
    * the viewport: the tile policy forbids fetching tiles a user is not viewing.
@@ -100,10 +159,15 @@
   window.FDMap = {
     TILE: TILE,
     MAX_ZOOM: MAX_ZOOM,
+    MAX_LAT: MAX_LAT,
     pixel: pixel,
     extent: extent,
     fit: fit,
     projector: projector,
+    unprojector: unprojector,
+    normaliseView: normaliseView,
+    zoomAt: zoomAt,
+    panBy: panBy,
     tilesFor: tilesFor,
     imageNode: imageNode,
     viewKey: viewKey,

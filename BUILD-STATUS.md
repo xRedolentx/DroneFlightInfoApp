@@ -266,6 +266,18 @@ consent. OSM's own tile policy was read in full before implementing
   tile requests, all HTTP 200, the track drawn over real street imagery, the
   attribution legible, and a second view served **entirely from cache**
   (`X-Tile-Cache: hit` × 8, no upstream request).
+- **The map pans and zooms.** Drag to move, wheel or trackpad to zoom about the
+  pointer, `+`/`−` buttons, and the track takes keyboard focus: arrows pan, `+`
+  and `-` zoom, `0` re-fits. Fit track resets the view as well as redrawing.
+  Zoom is integer and clamped to 0–19; the centre is clamped inside the mercator
+  world so a drag cannot leave the map. Verified in a browser: zoom 18 -> 19 ->
+  17, a drag changes the visible tiles, and *Fit track* restores the original
+  tile set exactly. Ten tests pin the maths, including that the point under the
+  cursor stays still while zooming.
+- **One bug worth remembering.** The bounds cache was declared with an
+  initializer *after* the first draw, so it wiped the value the draw had just
+  stored and every zoom click returned early — the buttons did nothing while
+  looking correct. Caught by driving the real browser, not by reading the code.
 - **Image requests cannot carry the `X-FD-Token` header**, which the session
   check requires, so tiles would always have 403'd. Rather than weaken that check,
   tiles carry a separate per-run capability token in the path; the tile route is
@@ -364,8 +376,8 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 175 automated tests, all passing (`python -m flightdesk selftest`).
-- 71 scripted browser checks, all passing (including the no-egress and privacy
+- 185 automated tests, all passing (`python -m flightdesk selftest`).
+- 72 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).
 - 13-step backup/restore rehearsal, all passing.

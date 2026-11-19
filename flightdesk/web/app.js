@@ -508,6 +508,11 @@
     if (!id) return renderFlights();
     state.section = section;
     api("/api/flights/" + id).then(function (data) {
+      // A different flight is a different map: drop any pan/zoom so each
+      // flight opens fitted to its own track.
+      if (state.flight && state.flight.flight && state.flight.flight.id !== id) {
+        state.mapView = null;
+      }
       state.flight = data;
       api("/api/settings", { method: "POST", body: { last_flight_id: id } }).catch(function () {});
       drawFlight(data, section);
@@ -556,7 +561,12 @@
       '<div class="row"><button type="button" class="secondary" id="fit-track">Fit track</button>' +
       '<button type="button" class="secondary" id="play-track">Play</button>' +
       ((state.app && state.app.map && state.app.map.consented)
-        ? '<button type="button" class="secondary" id="map-toggle" aria-pressed="' +
+        ? '<span class="row" role="group" aria-label="Map zoom" style="gap:4px">' +
+          '<button type="button" class="secondary" id="map-zoom-out" ' +
+          'aria-label="Zoom out">\u2212</button>' +
+          '<button type="button" class="secondary" id="map-zoom-in" ' +
+          'aria-label="Zoom in">+</button></span>' +
+          '<button type="button" class="secondary" id="map-toggle" aria-pressed="' +
           (state.mapMode ? "true" : "false") + '">' +
           (state.mapMode ? "Local grid" : "Map") + "</button>"
         : '<button type="button" class="secondary" id="map-consent">' +
@@ -773,10 +783,15 @@
     var cursorTime = samples.length ? samples[0].t : 0;
     state.cursor = cursorTime;
 
+    // The track's bounds never change while the owner pans, so they are taken
+    // once from the first draw. Declared before the first draw: an initializer
+    // that ran afterwards would wipe the value the draw had stored.
+    var trackBounds = null;
+
     function drawTrack() {
       var sample = window.FDTrack.nearest(samples, state.cursor);
       var map = state.app && state.app.map;
-      window.FDTrack.render(trackEl, {
+      var result = window.FDTrack.render(trackEl, {
         segments: tel.segments,
         gaps: tel.gaps,
         home: f.home_lat !== null ? { lat: f.home_lat, lon: f.home_lon } : null,
@@ -788,8 +803,12 @@
           attribution: map ? map.attribution : "",
           attributionUrl: map ? map.attribution_url : "",
           tileToken: map ? map.tile_token || "" : "",
+          view: map && state.mapMode ? state.mapView : null,
         },
       });
+      if (result && result.view) state.mapView = result.view;
+      if (result && result.bounds) trackBounds = result.bounds;
+      return result;
     }
     drawTrack();
 
@@ -804,8 +823,108 @@
     }
     var fit = document.getElementById("fit-track");
     if (fit) fit.addEventListener("click", function () {
+      // Fit resets the pan/zoom as well as redrawing the track.
+      state.mapView = null;
       drawTrack();
       toast("Track fitted to the recorded positions");
+    });
+
+    // ---- map interaction: drag to pan, wheel/trackpad or +/- to zoom ----
+    function mapBox() {
+      var svg = trackEl.querySelector("svg");
+      if (!svg) return null;
+      var vb = svg.getAttribute("viewBox").split(" ");
+      var rect = svg.getBoundingClientRect();
+      var Wv = Number(vb[2]), Hv = Number(vb[3]);
+      if (!rect.width || !rect.height) return null;
+      return { svg: svg, W: Wv, H: Hv, rect: rect, sx: Wv / rect.width, sy: Hv / rect.height };
+    }
+    // The track's bounds never change while the owner pans, so they are taken
+    // once from the first draw. Recomputing them per pointer move meant two
+    // full re-renders for every event, which is what made a drag stutter.
+    function currentBounds() {
+      return trackBounds;
+    }
+
+    function zoomStep(delta, atX, atY) {
+      if (!state.mapMode || !window.FDMap) return;
+      var box = mapBox();
+      var b = currentBounds();
+      if (!box || !b) return;
+      state.mapView = window.FDMap.zoomAt(
+        state.mapView, delta,
+        atX === undefined ? box.W / 2 : atX,
+        atY === undefined ? box.H / 2 : atY,
+        b, box.W, box.H, 26);
+      drawTrack();
+    }
+    var zin = document.getElementById("map-zoom-in");
+    if (zin) zin.addEventListener("click", function () { zoomStep(1); });
+    var zout = document.getElementById("map-zoom-out");
+    if (zout) zout.addEventListener("click", function () { zoomStep(-1); });
+
+    trackEl.addEventListener("wheel", function (event) {
+      if (!state.mapMode) return;
+      event.preventDefault();
+      var box = mapBox();
+      if (!box) return;
+      var x = (event.clientX - box.rect.left) * box.sx;
+      var y = (event.clientY - box.rect.top) * box.sy;
+      zoomStep(event.deltaY < 0 ? 1 : -1, x, y);
+    }, { passive: false });
+
+    var drag = null;
+    trackEl.addEventListener("pointerdown", function (event) {
+      if (!state.mapMode || event.button !== 0) return;
+      var box = mapBox();
+      if (!box) return;
+      drag = { x: event.clientX, y: event.clientY, view: state.mapView };
+      box.svg.style.cursor = "grabbing";
+      try { trackEl.setPointerCapture(event.pointerId); } catch (e) { /* older browsers */ }
+    });
+    trackEl.addEventListener("pointermove", function (event) {
+      if (!drag || !state.mapMode) return;
+      var box = mapBox();
+      var b = currentBounds();
+      if (!box || !b) return;
+      var dx = (event.clientX - drag.x) * box.sx;
+      var dy = (event.clientY - drag.y) * box.sy;
+      // Pan from the view as it was when the drag began, so small pointer
+      // jitter cannot accumulate drift across many move events.
+      state.mapView = window.FDMap.panBy(drag.view, dx, dy, b, box.W, box.H, 26);
+      drawTrack();
+    });
+    function endDrag(event) {
+      if (!drag) return;
+      drag = null;
+      var svg = trackEl.querySelector("svg");
+      if (svg) svg.style.cursor = "grab";
+      try { trackEl.releasePointerCapture(event.pointerId); } catch (e) { /* ignore */ }
+    }
+    trackEl.addEventListener("pointerup", endDrag);
+    trackEl.addEventListener("pointercancel", endDrag);
+
+    // Keyboard access: +/- and arrows, on the track itself.
+    trackEl.tabIndex = state.mapMode ? 0 : -1;
+    trackEl.setAttribute("aria-label", state.mapMode
+      ? "Flight track map. Arrow keys pan, plus and minus zoom, 0 fits the track."
+      : "Flight track");
+    trackEl.addEventListener("keydown", function (event) {
+      if (!state.mapMode) return;
+      var box = mapBox();
+      var b = currentBounds();
+      if (!box || !b) return;
+      var step = 60;
+      var handled = true;
+      if (event.key === "+" || event.key === "=") zoomStep(1);
+      else if (event.key === "-" || event.key === "_") zoomStep(-1);
+      else if (event.key === "0") { state.mapView = null; drawTrack(); }
+      else if (event.key === "ArrowLeft") state.mapView = window.FDMap.panBy(state.mapView, step, 0, b, box.W, box.H, 26);
+      else if (event.key === "ArrowRight") state.mapView = window.FDMap.panBy(state.mapView, -step, 0, b, box.W, box.H, 26);
+      else if (event.key === "ArrowUp") state.mapView = window.FDMap.panBy(state.mapView, 0, step, b, box.W, box.H, 26);
+      else if (event.key === "ArrowDown") state.mapView = window.FDMap.panBy(state.mapView, 0, -step, b, box.W, box.H, 26);
+      else handled = false;
+      if (handled) { event.preventDefault(); drawTrack(); }
     });
     var mapToggle = document.getElementById("map-toggle");
     if (mapToggle) mapToggle.addEventListener("click", function () {
