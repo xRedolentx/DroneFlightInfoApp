@@ -315,6 +315,34 @@ class OwnerEditTest(TempCase):
                                  ("SYN-BAT-1001",)))
 
 
+class ReportingGapTest(TempCase):
+    """A capture may claim more service records than it carries."""
+
+    def test_the_gap_is_computed_and_previewed(self) -> None:
+        text = grid_capture_text().replace("(6 records)", "(9 records)")
+        doc = capture.parse_capture(text)
+        self.assertEqual(doc.reported_total, 9)
+        self.assertEqual(len(doc.services), 6)
+        self.assertEqual(doc.reporting_gap, 3)
+        preview = capture.preview_capture(self.conn, doc)
+        self.assertEqual(preview["reported_total"], 9)
+        self.assertEqual(preview["reporting_gap"], 3)
+        self.assertEqual(preview["service_events"], 6)
+
+    def test_a_capture_that_carries_everything_reports_no_gap(self) -> None:
+        doc = capture.parse_capture(grid_capture_text())
+        self.assertEqual(doc.reporting_gap, 0)
+        self.assertEqual(capture.preview_capture(self.conn, doc)["reporting_gap"], 0)
+
+    def test_the_gap_never_invents_records(self) -> None:
+        text = grid_capture_text().replace("(6 records)", "(9 records)")
+        doc = capture.parse_capture(text)
+        result = capture.apply_capture(self.conn, doc, "gap fixture")
+        self.assertEqual(result["services_inserted"], 6)
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM services").fetchone()[0], 6)
+
+
 class GridShapedCaptureTest(TempCase):
     """The real capture files rule counters in a per-item grid and inside the
     battery table, under headings that never say "snapshot". These checks pin

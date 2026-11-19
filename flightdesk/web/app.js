@@ -1504,13 +1504,93 @@
             return "<li>" + esc(h.occurred_at || "—") + " · " + esc(h.kind) + " · " +
               esc(h.notes || "") + "</li>";
           }).join("");
+          var limits = ["flights_limit", "air_minutes_limit", "charges_limit", "days_limit"]
+            .map(function (key) {
+              var label = { flights_limit: "Flights", air_minutes_limit: "Air minutes",
+                charges_limit: "Charges", days_limit: "Days" }[key];
+              var value = rule[key] === null || rule[key] === undefined ? "" : rule[key];
+              return '<label class="small" style="display:inline-block;margin:0 12px 8px 0">' +
+                esc(label) + '<br><input type="number" min="0" step="any" style="width:96px" ' +
+                'data-limit="' + key + '" value="' + esc(value) + '"></label>';
+            }).join("");
+          var editHtml =
+            "<h4>Triggers</h4>" +
+            '<p class="tiny faint">Leave a box empty to switch that trigger off. ' +
+            "A rule with every trigger empty cannot fire, so at least one is required. " +
+            "Changing these numbers does not touch your history.</p>" +
+            '<div style="margin-top:6px">' + limits +
+            '<label class="small" style="display:inline-block;margin:0 12px 8px 0">' +
+            'Due soon at<br><input type="number" min="1" max="100" step="1" style="width:80px" ' +
+            'data-limit="due_soon_pct" value="' +
+            esc(Math.round((rule.due_soon_pct || 0.8) * 100)) + '">%</label>' +
+            '<label class="small" style="display:inline-block;margin:0 12px 8px 0">' +
+            '<input type="checkbox" id="rule-enabled"' + (rule.enabled ? " checked" : "") +
+            "> Enabled</label></div>" +
+            '<div class="row" style="margin-top:4px"><button type="button" class="primary" ' +
+            'id="rule-save">Save triggers</button></div>' +
+            '<div id="rule-save-out" class="tiny" style="margin-top:6px"></div>' +
+            "<h4 style=\"margin-top:14px\">Record a service on a past date</h4>" +
+            '<p class="tiny faint">Use this when the work was already done — it sets the ' +
+            "baseline to that date, so a calendar check reflects reality instead of " +
+            "starting today.</p>" +
+            '<div class="row" style="margin-top:4px"><input type="date" id="rule-backdate" ' +
+            'style="width:150px"><button type="button" class="secondary" ' +
+            'id="rule-backdate-save">Record as completed</button></div>' +
+            '<div id="rule-backdate-out" class="tiny" style="margin-top:6px"></div>';
           openModal("Rule · " + rule.equipment_name + " " + rule.label,
             "<p class=\"small muted\">" + esc(rule.explanation) + "</p>" +
             "<h4>Counters</h4><ul class=\"small\">" + counters + "</ul>" +
             "<h4>Baseline</h4><p class=\"small\">" + esc(rule.baseline.basis) +
             (rule.baseline.at ? " from " + esc(rule.baseline.at) : "") + "</p>" +
+            editHtml +
             "<h4>History</h4><ul class=\"small\">" + (history || "<li>none</li>") + "</ul>",
             [{ label: "Close", cls: "secondary" }]);
+          var save = document.getElementById("rule-save");
+          if (save) save.addEventListener("click", function () {
+            var body = { enabled: !!(document.getElementById("rule-enabled") || {}).checked };
+            Array.prototype.forEach.call(
+              document.querySelectorAll("[data-limit]"), function (input) {
+                var key = input.dataset.limit;
+                if (key === "due_soon_pct") {
+                  body.due_soon_pct = Number(input.value) / 100;
+                } else {
+                  body[key] = input.value === "" ? null : input.value;
+                }
+              });
+            api("/api/rules/" + btn.dataset.rule + "/policy",
+                { method: "POST", body: body }).then(function (res) {
+              var out = document.getElementById("rule-save-out");
+              if (res.ok) {
+                toast("Triggers saved");
+                closeModal();
+                after();
+              } else if (out) {
+                out.textContent = res.code === "no_triggers"
+                  ? "At least one trigger is required."
+                  : res.code === "invalid_value"
+                    ? "Check these values: " + (res.fields || []).join(", ")
+                    : "Could not save: " + res.code;
+              }
+            });
+          });
+          var back = document.getElementById("rule-backdate-save");
+          if (back) back.addEventListener("click", function () {
+            var when = (document.getElementById("rule-backdate") || {}).value;
+            var out = document.getElementById("rule-backdate-out");
+            if (!when) { if (out) out.textContent = "Pick a date first."; return; }
+            api("/api/rules/" + btn.dataset.rule + "/service", { method: "POST", body: {
+              action: "completed", occurred_at: when,
+              notes: "Recorded retrospectively", equipment_id: rule.equipment_id,
+            } }).then(function (res) {
+              if (res.ok) {
+                toast("Service recorded on " + when);
+                closeModal();
+                after();
+              } else if (out) {
+                out.textContent = "Could not record: " + res.code;
+              }
+            });
+          });
         });
       });
     });
@@ -2613,10 +2693,24 @@
           [res.resolved_services, "individually resolved"],
           [res.grouped_services, "kept as groups"],
         ];
+        // The capture can claim more service records than it actually carries.
+        // Saying so is the point: the difference must never be absorbed silently.
+        var gap = (res.reported_total !== null && res.reported_total !== undefined)
+          ? res.reporting_gap : null;
+        if (gap > 0) {
+          rows.push([gap, "records the capture claims but does not contain"]);
+        }
+        var gapNote = gap > 0
+          ? '<div class="notice warn small" style="margin-top:10px">This capture states ' +
+            res.reported_total + " historical service records but carries " +
+            res.service_events + " rows. The missing " + gap +
+            " are reported as unaccounted, never invented &mdash; add them by hand if " +
+            "the AirData page shows them.</div>"
+          : "";
         var html = '<div class="result-grid">' + rows.map(function (pair) {
           return '<div class="result-cell"><div class="n">' + pair[0] +
             '</div><div class="l">' + pair[1] + "</div></div>";
-        }).join("") + "</div>";
+        }).join("") + "</div>" + gapNote;
         if (res.already_applied) {
           html += '<div class="notice small" style="margin-top:10px">This exact capture is ' +
             "already applied. Applying again would change nothing.</div>";

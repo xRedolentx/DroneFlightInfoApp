@@ -9,8 +9,8 @@ Everything below was verified on this machine; nothing is aspirational.
   Check the tip with `python tools\local_commit.py` or by reading
   `.git/refs/heads/master`.
 - Working tree: clean after the commit noted at the end of this file.
-- `python -m flightdesk selftest` → **257 tests, 0 failures, 0 errors**.
-- `node tools\ui_check.mjs <cdp-port> <outdir> <zip>` → **83 checks, 0 failures**.
+- `python -m flightdesk selftest` → **275 tests, 0 failures, 0 errors**.
+- `node tools\ui_check.mjs <cdp-port> <outdir> <zip>` → **86 checks, 0 failures**.
 - `python tools\rehearse.py` → **13/13 steps** (import → capture → backup →
   restore into a new root → totals and statuses identical).
 - `python tools\recon_check.py` → **9/9**.
@@ -108,15 +108,16 @@ Media counts are explicitly out of scope: the owner does not care about them.
 
 ## Known gaps I did not close
 
-- **Restore interruption** is tested only at the ends (validation failure,
-  live-root refusal, corrupted archive). A crash *during* extraction is not
-  injected; the code extracts to `<target>.restore-tmp` and renames only after
-  hashes pass, but that is reasoning, not evidence. `tools/fault_check.py` is
-  the place to add it.
+- ~~**Restore interruption** is tested only at the ends.~~ **Closed 2026-11-19.**
+  `tools/fault_check.py` now interrupts extraction and asserts the target and its
+  marker survive, nothing half-restored is left, and a later restore works. The
+  underlying implementation was also made reversible: the old root is moved aside
+  rather than deleted, so a failed switch puts it back.
 - **Backup while the USB watcher is running** is covered only by a
   settings-level test, not a genuinely concurrent scan.
 - **The capture claims 21 service records and supplies 13 rows.** The 8 missing
-  are reported as unaccounted, never invented.
+  are reported as unaccounted, never invented — and are now visible in the capture
+  preview as a count and a notice, rather than only in the data.
 - **Video semantics** are still unconfirmed: logs give video seconds, not a
   count, so `videos_count` stays `null`.
 - **Visual parity** against the 23 original screenshots needs your images; the
@@ -140,7 +141,7 @@ Media counts are explicitly out of scope: the owner does not care about them.
 
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
-python -m flightdesk selftest          # expect: 257 tests, 0 failures
+python -m flightdesk selftest          # expect: 275 tests, 0 failures
 python tools\fault_check.py            # expect: disk_full, no partial archive
 python tools\diag.py "<handoff zip>"   # expect: 269 distinct, 7/222/40
 flightdesk.cmd                          # or: python -m flightdesk serve

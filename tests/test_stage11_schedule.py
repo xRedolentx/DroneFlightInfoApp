@@ -194,6 +194,122 @@ class SourceGuardTest(unittest.TestCase):
             self.assertNotIn("hours", json.dumps(spec).lower())
 
 
+class RuleEditingTest(TempCase):
+    """The owner can retune a schedule from the screen, and cannot wreck it."""
+
+    def _rule(self, **kw):
+        eq = _equipment(self.conn, "Drone A")
+        rid = _rule(self.conn, eq, "basic", flights=20, minutes=200, **kw)
+        return eq, rid
+
+    def test_status_exposes_the_thresholds_so_a_form_can_show_them(self) -> None:
+        eq, rid = self._rule()
+        rule = db.one(self.conn, "SELECT * FROM rules WHERE id=?", (rid,))
+        status = maintenance.rule_status(self.conn, rule)
+        self.assertEqual(status["flights_limit"], 20)
+        self.assertEqual(status["air_minutes_limit"], 200)
+        self.assertIsNone(status["charges_limit"])
+        self.assertIsNone(status["days_limit"])
+
+    def test_a_limit_can_be_lowered(self) -> None:
+        eq, rid = self._rule()
+        result = maintenance.set_rule_policy(self.conn, rid, flights_limit=10)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(db.one(self.conn, "SELECT flights_limit f FROM rules WHERE id=?",
+                                (rid,))["f"], 10)
+
+    def test_a_trigger_can_be_switched_off_with_null(self) -> None:
+        eq, rid = self._rule()
+        result = maintenance.set_rule_policy(self.conn, rid, air_minutes_limit=None)
+        self.assertTrue(result["ok"], result)
+        self.assertIsNone(db.one(self.conn, "SELECT air_minutes_limit m FROM rules WHERE id=?",
+                                 (rid,))["m"])
+        # The other trigger survives.
+        self.assertEqual(db.one(self.conn, "SELECT flights_limit f FROM rules WHERE id=?",
+                                (rid,))["f"], 20)
+
+    def test_the_last_trigger_cannot_be_removed(self) -> None:
+        eq, rid = self._rule()
+        maintenance.set_rule_policy(self.conn, rid, air_minutes_limit=None)
+        result = maintenance.set_rule_policy(self.conn, rid, flights_limit=None)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "no_triggers")
+
+    def test_nonsense_values_are_refused_not_stored(self) -> None:
+        eq, rid = self._rule()
+        for bad in ("abc", -5, 0, float("inf")):
+            result = maintenance.set_rule_policy(self.conn, rid, flights_limit=bad)
+            self.assertFalse(result["ok"], bad)
+            self.assertEqual(result["code"], "invalid_value")
+        self.assertEqual(db.one(self.conn, "SELECT flights_limit f FROM rules WHERE id=?",
+                                (rid,))["f"], 20)
+
+    def test_due_soon_percentage_is_bounded(self) -> None:
+        eq, rid = self._rule()
+        self.assertFalse(maintenance.set_rule_policy(
+            self.conn, rid, due_soon_pct=1.5)["ok"])
+        self.assertTrue(maintenance.set_rule_policy(
+            self.conn, rid, due_soon_pct=0.5)["ok"])
+        self.assertAlmostEqual(
+            db.one(self.conn, "SELECT due_soon_pct p FROM rules WHERE id=?", (rid,))["p"],
+            0.5)
+
+    def test_a_counter_can_be_given_a_calendar_trigger(self) -> None:
+        eq, rid = self._rule()
+        result = maintenance.set_rule_policy(self.conn, rid, days_limit=90)
+        self.assertTrue(result["ok"], result)
+        rule = db.one(self.conn, "SELECT * FROM rules WHERE id=?", (rid,))
+        status = maintenance.rule_status(self.conn, rule)
+        self.assertTrue([c for c in status["counters"] if c["metric"] == "days"])
+
+    def test_editing_limits_does_not_touch_history(self) -> None:
+        eq, rid = self._rule()
+        maintenance.complete_service(self.conn, eq, rid, notes="done")
+        before = db.one(self.conn, "SELECT COUNT(*) n FROM services")["n"]
+        maintenance.set_rule_policy(self.conn, rid, flights_limit=12)
+        self.assertEqual(db.one(self.conn, "SELECT COUNT(*) n FROM services")["n"], before)
+
+    def test_an_edit_is_audited(self) -> None:
+        eq, rid = self._rule()
+        maintenance.set_rule_policy(self.conn, rid, flights_limit=12)
+        row = db.one(self.conn, "SELECT * FROM audit_log WHERE action='rule_policy' "
+                                "ORDER BY rowid DESC LIMIT 1")
+        self.assertIsNotNone(row)
+
+
+class BackdateTest(TempCase):
+    """Recording work that was already done."""
+
+    def test_a_past_service_sets_a_past_baseline(self) -> None:
+        eq = _equipment(self.conn, "Drone A")
+        rid = _rule(self.conn, eq, "quarterly", days=90)
+        maintenance.complete_service(self.conn, eq, rid, notes="props replaced",
+                                     occurred_at="2025-08-15")
+        rule = db.one(self.conn, "SELECT * FROM rules WHERE id=?", (rid,))
+        status = maintenance.rule_status(self.conn, rule)
+        days = [c for c in status["counters"] if c["metric"] == "days"][0]
+        # More than a year later, a 90-day check must read as due.
+        self.assertGreater(days["value"], 90)
+        self.assertEqual(status["status"], "due")
+
+    def test_a_backdated_service_is_distinguishable_in_history(self) -> None:
+        eq = _equipment(self.conn, "Drone A")
+        rid = _rule(self.conn, eq, "quarterly", days=90)
+        maintenance.complete_service(self.conn, eq, rid, notes="props replaced",
+                                     occurred_at="2025-08-15")
+        row = db.one(self.conn, "SELECT * FROM services ORDER BY id DESC LIMIT 1")
+        self.assertEqual(row["occurred_at"], "2025-08-15")
+        self.assertEqual(row["source"], "owner")
+
+    def test_a_recent_backdate_leaves_a_rule_not_due(self) -> None:
+        eq = _equipment(self.conn, "Drone A")
+        rid = _rule(self.conn, eq, "quarterly", days=90)
+        recent = (datetime.now(timezone.utc) - timedelta(days=5)).date().isoformat()
+        maintenance.complete_service(self.conn, eq, rid, occurred_at=recent)
+        rule = db.one(self.conn, "SELECT * FROM rules WHERE id=?", (rid,))
+        self.assertEqual(maintenance.rule_status(self.conn, rule)["status"], "ok")
+
+
 class ChecklistTest(TempCase):
     def test_airdata_lists_are_attached_without_overwriting(self) -> None:
         eq = _equipment(self.conn, "Drone A")

@@ -7,6 +7,7 @@ import os
 import shutil
 import sqlite3
 import time
+import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -291,9 +292,23 @@ def restore_backup(path: Path, target_root: Path, *,
             p = staging / "archive" / item["rel"]
             if not p.exists() or _sha256_file(p) != item.get("sha256"):
                 return {"ok": False, "code": "restored_archive_checksum_failed"}
+        # Move the existing root aside rather than deleting it. Deleting first
+        # leaves a window where a crash loses the only copy: the target is gone
+        # and the staged copy is not yet in place. Renaming is reversible, so an
+        # interruption at any point leaves either the old root or the new one.
+        previous: Path | None = None
         if target_root.exists():
-            shutil.rmtree(target_root)
-        os.replace(staging, target_root)
+            previous = target_root.with_name(
+                target_root.name + ".previous-" + uuid.uuid4().hex[:8])
+            os.replace(target_root, previous)
+        try:
+            os.replace(staging, target_root)
+        except OSError:
+            if previous is not None and not target_root.exists():
+                os.replace(previous, target_root)
+            raise
+        if previous is not None:
+            shutil.rmtree(previous, ignore_errors=True)
     finally:
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)

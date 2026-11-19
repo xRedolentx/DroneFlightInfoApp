@@ -502,6 +502,37 @@ reporting and mechanism faults, not data faults.
   token refused, no token and no header refused, header still works, and the
   token rejected outside the export routes.
 
+### Stage 13 · Schedule editing, restore durability, capture honesty
+
+Three gaps closed without needing the owner.
+
+- **A rule's thresholds can be edited from the screen, and backdated.** The Rule
+  dialog previously showed counters, baseline and history but could not change
+  anything, so the 20/200 counters and the DoneDoctor 15/90 limits were frozen.
+  It now takes flights, air minutes, charges, days and the due-soon percentage,
+  plus an enable switch, and offers *Record a service on a past date* so a
+  calendar check reflects work that was already done instead of starting today.
+- **Editing cannot wreck a rule.** Validation is in one place: a nonsense value
+  is refused rather than stored, at least one trigger must remain, the due-soon
+  percentage is bounded, and empty means "switch this trigger off". Editing never
+  touches service history, and every change is audited.
+- **A hazard was found while building it.** The rule status payload did not expose
+  `flights_limit`/`air_minutes_limit`/`charges_limit`, so an editing form would
+  have opened blank and **saving it would have erased every counter it could not
+  see**. The thresholds are now part of the payload, and a test asserts it.
+- **Restore is now reversible, not destructive.** `restore_backup` deleted the
+  existing target root and then renamed the staged copy into place — a crash in
+  between lost both. The old root is now moved aside, the switch is attempted, and
+  the old root is put back if the switch fails. Proven by fault injection:
+  `tools/fault_check.py` interrupts extraction and asserts the target and its
+  marker file survive, that nothing half-restored is left where it would be
+  trusted, and that a later restore still works. The regression test was checked
+  against the old implementation and **fails there**, so it genuinely bites.
+- **The capture's unaccounted records are now visible.** The real capture states
+  21 historical service records and carries 13. The difference was computed but
+  never shown, so the app silently looked complete. It now appears in the preview
+  counts and in a plain-language notice: unaccounted, never invented.
+
 ## Release gate
 
 | Item | Verdict | Evidence | Next human action |
@@ -522,8 +553,8 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 257 automated tests, all passing (`python -m flightdesk selftest`).
-- 83 scripted browser checks, all passing (including the no-egress and privacy
+- 275 automated tests, all passing (`python -m flightdesk selftest`).
+- 86 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).
 - 13-step backup/restore rehearsal, all passing.

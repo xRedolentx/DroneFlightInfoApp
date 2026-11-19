@@ -239,6 +239,14 @@ check("battery page shows maintenance rules",
   await evaluate("document.querySelectorAll('[data-rule-card]').length > 0"));
 await evaluate(`(() => { const b = document.querySelector('[data-act=rule]'); b.click(); return true; })()`);
 await new Promise((r) => setTimeout(r, 900));
+check("the rule dialog can retune the schedule", await evaluate("(() => {" +
+  "const inputs = document.querySelectorAll('[data-limit]');" +
+  "return inputs.length >= 5 && !!document.getElementById('rule-save'); })()"));
+check("the rule dialog can backdate a service", await evaluate("!!document.getElementById('rule-backdate')"));
+check("the rule dialog shows the stored thresholds",
+  await evaluate("(() => { const f = [...document.querySelectorAll('[data-limit]')]" +
+    ".find(x => x.dataset.limit === 'flights_limit');" +
+    "return f && Number(f.value) > 0; })()"));
 check("rule dialog shows counters and baseline",
   await evaluate("/Counters/.test(document.body.textContent) && /Baseline/.test(document.body.textContent)"));
 await evaluate("(() => { const b = document.querySelector('#modal [data-close]'); if (b) b.click(); return true; })()");

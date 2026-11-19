@@ -199,5 +199,87 @@ class ReconciliationTest(TempCase):
         self.assertIn("combined", text)
 
 
+class RestoreInterruptionTest(TempCase):
+    """A restore that dies part-way must not cost the owner their data.
+
+    The previous implementation deleted the target root before moving the
+    staged copy into place, so a crash in between lost both. The target is now
+    moved aside and restored if the switch fails.
+    """
+
+    def _backup(self):
+        self.import_bytes(log_bytes(11), "DJIFlightRecord_2026-08-11_[21-53-20].txt")
+        dest = Path(tempfile.mkdtemp(prefix="fd-restore-src-"))
+        result = backup.create_backup(self.conn, self.root, dest, "restore test")
+        self.assertTrue(result.get("ok"), result)
+        return Path(result["path"])
+
+    def test_an_interrupted_extraction_leaves_the_target_untouched(self) -> None:
+        import zipfile
+        from unittest import mock
+
+        archive = self._backup()
+        target = Path(tempfile.mkdtemp(prefix="fd-target-"))
+        marker = target / "existing-marker.txt"
+        marker.write_text("do not lose me", encoding="utf-8")
+
+        def explode(self, *args, **kwargs):
+            raise OSError(5, "simulated interruption")
+
+        with mock.patch.object(zipfile.ZipFile, "extractall", explode):
+            with self.assertRaises(OSError):
+                backup.restore_backup(archive, target, allow_existing=True)
+
+        self.assertTrue(target.exists())
+        self.assertTrue(marker.exists())
+        self.assertEqual(marker.read_text(encoding="utf-8"), "do not lose me")
+        # Nothing half-restored was left where the owner would trust it.
+        self.assertFalse((target / "manifest.json").exists())
+        self.assertFalse(list(target.parent.glob("*.restore-tmp")))
+
+    def test_a_restore_that_cannot_switch_puts_the_old_root_back(self) -> None:
+        from unittest import mock
+
+        archive = self._backup()
+        target = Path(tempfile.mkdtemp(prefix="fd-target2-"))
+        (target / "existing-marker.txt").write_text("keep", encoding="utf-8")
+
+        real_replace = os.replace
+        calls = {"n": 0}
+
+        def failing_replace(src, dst):
+            # Let the first move (target aside) happen, fail the swap.
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError(13, "simulated failure while switching roots")
+            return real_replace(src, dst)
+
+        with mock.patch.object(os, "replace", failing_replace):
+            with self.assertRaises(OSError):
+                backup.restore_backup(archive, target, allow_existing=True)
+
+        self.assertTrue(target.exists())
+        self.assertTrue((target / "existing-marker.txt").exists())
+
+    def test_a_restore_after_an_interruption_still_works(self) -> None:
+        import zipfile
+        from unittest import mock
+
+        archive = self._backup()
+        target = Path(tempfile.mkdtemp(prefix="fd-target3-"))
+
+        def explode(self, *args, **kwargs):
+            raise OSError(5, "simulated interruption")
+
+        with mock.patch.object(zipfile.ZipFile, "extractall", explode):
+            with self.assertRaises(OSError):
+                backup.restore_backup(archive, target, allow_existing=True)
+
+        fresh = Path(tempfile.mkdtemp(prefix="fd-target4-"))
+        result = backup.restore_backup(archive, fresh)
+        self.assertTrue(result.get("ok"), result)
+        self.assertTrue((fresh / "flightdesk.sqlite3").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

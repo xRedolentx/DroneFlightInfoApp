@@ -67,6 +67,40 @@ def main() -> int:
     print("followup_ok=" + str(follow.get("ok")))
     print("followup_valid=" + str(backup.validate_backup(Path(follow["path"]))["ok"])
           if follow.get("ok") else "followup_valid=n/a")
+
+    # ---- a restore interrupted mid-extraction must not destroy a target ----
+    # The target holds a marker file that a destructive implementation would
+    # delete before the staged copy is in place.
+    target = base / "restore-target"
+    target.mkdir(exist_ok=True)
+    (target / "existing-marker.txt").write_text("do not lose me", encoding="utf-8")
+
+    real_extract = zipfile.ZipFile.extractall
+
+    def interrupted_extract(self, *args, **kwargs):
+        raise OSError(5, "simulated disconnect while extracting the backup")
+
+    try:
+        with mock.patch.object(zipfile.ZipFile, "extractall", interrupted_extract):
+            interrupted = backup.restore_backup(Path(follow["path"]), target,
+                                                allow_existing=True)
+    except Exception as exc:  # an interruption may raise rather than return
+        interrupted = {"ok": False, "code": "raised:" + type(exc).__name__}
+    print("interrupted_restore_ok=" + str(interrupted.get("ok")))
+    print("interrupted_restore_code=" + str(interrupted.get("code")))
+    print("target_still_present=" + str(target.exists()))
+    marker = target / "existing-marker.txt"
+    print("target_marker_kept=" + str(marker.exists()
+                                      and marker.read_text(encoding="utf-8") == "do not lose me"))
+    print("no_half_written_target=" + str(not (target / "manifest.json").exists()))
+    stale = [p.name for p in base.iterdir() if ".restore-tmp" in p.name]
+    print("stale_staging_dirs=" + str(stale))
+
+    # ---- and a clean restore after that must still work --------------------
+    clean_target = base / "restore-clean"
+    retry = backup.restore_backup(Path(follow["path"]), clean_target)
+    print("retry_ok=" + str(retry.get("ok")))
+    print("retry_has_db=" + str((clean_target / "flightdesk.sqlite3").exists()))
     conn.close()
     return 0
 

@@ -426,6 +426,12 @@ def rule_status(conn: sqlite3.Connection, rule: sqlite3.Row,
         "captured_counter_text": rule["captured_counter_text"],
         "captured_status_normalized": captured_status,
         "matches_capture": captured_status == worst if captured_status else None,
+        # The raw thresholds, so an editing form can show what is actually
+        # stored. Without these a form would open blank and saving it would
+        # erase every counter it could not see.
+        "flights_limit": rule["flights_limit"],
+        "air_minutes_limit": rule["air_minutes_limit"],
+        "charges_limit": rule["charges_limit"],
         "days_limit": days_limit,
         "service_items": _service_items(rule),
         "source": _rule_source(rule),
@@ -663,15 +669,74 @@ def resolve_coverage(conn: sqlite3.Connection, flight_id: int, snapshot_id: int,
     return {"ok": True}
 
 
+LIMIT_FIELDS = ("flights_limit", "air_minutes_limit", "charges_limit", "days_limit")
+
+
+def _clean_limit(value: Any) -> tuple[bool, Any]:
+    """A limit must be a positive number, or None to switch that trigger off.
+
+    An empty string from a form field means "not used", which is a legitimate
+    choice: it is how a counter-only rule turns its calendar trigger off.
+    """
+    if value is None or value == "":
+        return True, None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False, None
+    if number != number or number in (float("inf"), float("-inf")):
+        return False, None
+    if number <= 0:
+        return False, None
+    # Integer counters stay integers; air minutes and days may be fractional.
+    if float(number).is_integer():
+        return True, int(number)
+    return True, number
+
+
 def set_rule_policy(conn: sqlite3.Connection, rule_id: int, **fields: Any) -> dict[str, Any]:
-    allowed = {"enabled", "due_soon_pct", "flights_limit", "air_minutes_limit",
-               "charges_limit", "days_limit"}
-    updates = {k: v for k, v in fields.items() if k in allowed}
+    """Change a rule's thresholds. Rejects nonsense rather than storing it."""
+    rule = db.one(conn, "SELECT * FROM rules WHERE id=?", (rule_id,))
+    if rule is None:
+        return {"ok": False, "code": "not_found"}
+    updates: dict[str, Any] = {}
+    rejected: list[str] = []
+
+    if "enabled" in fields:
+        updates["enabled"] = 1 if fields["enabled"] else 0
+    if "due_soon_pct" in fields:
+        try:
+            pct = float(fields["due_soon_pct"])
+        except (TypeError, ValueError):
+            pct = -1.0
+        if 0.0 < pct <= 1.0:
+            updates["due_soon_pct"] = pct
+        else:
+            rejected.append("due_soon_pct")
+    for name in LIMIT_FIELDS:
+        if name not in fields:
+            continue
+        ok, value = _clean_limit(fields[name])
+        if not ok:
+            rejected.append(name)
+        else:
+            updates[name] = value
+
+    if rejected:
+        return {"ok": False, "code": "invalid_value", "fields": rejected}
     if not updates:
         return {"ok": False, "code": "no_fields"}
+
+    # A rule with no trigger at all can never fire, so refuse that outcome.
+    merged = {name: updates.get(name, rule[name] if name in rule.keys() else None)
+              for name in LIMIT_FIELDS}
+    if not any(v for v in merged.values()):
+        return {"ok": False, "code": "no_triggers"}
+
     with db.tx(conn):
         sets = ",".join(f"{k}=?" for k in updates)
         conn.execute(f"UPDATE rules SET {sets},updated_at=? WHERE id=?",
                      (*updates.values(), db.now_utc(), rule_id))
         db.audit(conn, "owner", "rule_policy", "rules", str(rule_id), updates)
-    return {"ok": True}
+    updated = db.one(conn, "SELECT * FROM rules WHERE id=?", (rule_id,))
+    return {"ok": True, "changes": updates, "status": rule_status(conn, updated)}

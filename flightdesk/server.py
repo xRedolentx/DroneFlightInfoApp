@@ -397,23 +397,12 @@ def api_rule_service(ctx: Ctx) -> None:
 @route("POST", r"/api/rules/(\d+)/policy")
 def api_rule_policy(ctx: Ctx) -> None:
     body = ctx.json_body()
-    fields = {}
-    if "enabled" in body:
-        fields["enabled"] = 1 if body["enabled"] else 0
-    if "days_limit" in body:
-        value = body["days_limit"]
-        fields["days_limit"] = None if value in (None, "", 0) else int(value)
-    if "due_soon_pct" in body:
-        try:
-            fields["due_soon_pct"] = max(0.1, min(1.0, float(body["due_soon_pct"])))
-        except (TypeError, ValueError):
-            pass
-    for key in ("flights_limit", "air_minutes_limit", "charges_limit"):
-        if key in body and body[key] is not None:
-            try:
-                fields[key] = float(body[key])
-            except (TypeError, ValueError):
-                pass
+    # Values are passed through unchanged: set_rule_policy is the single place
+    # that validates them, so a cleared field (null) can switch a trigger off
+    # and a nonsense value is refused rather than quietly stored.
+    allowed = {"enabled", "due_soon_pct", "flights_limit", "air_minutes_limit",
+               "charges_limit", "days_limit"}
+    fields = {k: v for k, v in body.items() if k in allowed} if isinstance(body, dict) else {}
     _send_json(ctx.handler, maintenance.set_rule_policy(ctx.conn, int(ctx.params["1"]), **fields))
 
 
