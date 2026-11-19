@@ -56,6 +56,37 @@ Everything below was verified on this machine; nothing is aspirational.
 5. **The browser gate is portable.** It no longer hardcodes port 8787 and no
    longer attaches to an Edge internal page, both of which produced false
    failures on a fresh profile.
+6. **Photo and video counts are gone.** Removed at the owner's request across the
+   dashboard, flight detail, reconciliation, CSV exports, parser and schema; an
+   idempotent migration drops the three columns from existing databases.
+   `SCHEMA_VERSION` deliberately stays 1 so the owner's existing backups still
+   pass restore validation.
+
+## The owner's priority order for this app
+
+Recorded 2026-11-19. Use it to decide what to build next and what to skip.
+
+1. Retrieve and store an accessible log of every flight across all drones —
+   **done** (264 records, all decoded, all raw originals archived).
+2. An easy GUI to see flights and their information — **done**.
+3. Cumulative totals: hours flown, distance flown, missions — **done** (three
+   dashboard tiles).
+4. Per-flight location, speed, battery life and **warnings** — location, speed
+   and battery are stored. **Warnings are NOT captured.** The decoded frames do
+   carry them: `osd.voltageWarning`, `isCompassError`, `isMotorBlocked`,
+   `isNotEnoughForce`, `isPropellerCatapult`, `isOutOfLimit`, `isVibrating`,
+   `waveError`, `isBarometerDeadInAir`, `isAcceletorOverRange`,
+   `isImuPreheated`, `imuInitFailReason`, `motorStartFailedCause`,
+   `nonGpsCause`, plus `gimbal.isStuck` and `camera.sdCardState`. This is the one
+   real gap in the core requirements.
+5. A map showing where the track lies — **not done.** The track is drawn on a
+   locally computed metre grid with a "no tiles" caption, which was the brief's
+   privacy-first default. Real map imagery needs either a bundled offline tile
+   pack or an online provider the owner consents to.
+6. A maintenance page like AirData's — **done** (Upcoming / Completed / Service
+   list, per-rule counters and reasons).
+
+Media counts are explicitly out of scope: the owner does not care about them.
 
 ## What is NOT verified — needs you (in this order)
 
