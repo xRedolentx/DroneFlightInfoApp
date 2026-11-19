@@ -9,7 +9,7 @@ Everything below was verified on this machine; nothing is aspirational.
   Check the tip with `python tools\local_commit.py` or by reading
   `.git/refs/heads/master`.
 - Working tree: clean after the commit noted at the end of this file.
-- `python -m flightdesk selftest` → **153 tests, 0 failures, 0 errors**.
+- `python -m flightdesk selftest` → **155 tests, 0 failures, 0 errors**.
 - `node tools\ui_check.mjs <cdp-port> <outdir> <zip>` → **68 checks, 0 failures**.
 - `python tools\rehearse.py` → **13/13 steps** (import → capture → backup →
   restore into a new root → totals and statuses identical).
@@ -22,8 +22,9 @@ Everything below was verified on this machine; nothing is aspirational.
 - **The real archive is imported.** `tools\diag.py` reported 264 archive files
   (v8:7, v11:218, v14:39) plus 5 controller samples = **269 distinct hashes at
   7/222/40**, matching the brief's table. The live data root holds 264 raw files
-  and 264 authoritative flights; 39 v14 records are `pending_key` and carry
-  metadata only.
+  and 264 authoritative flights. **All 39 v14 records are now decoded** — the
+  owner entered the DJI developer key on 2026-11-19, Decode pending cached all 39
+  keychains and decoded every record to frames.
 - **The real equipment capture is applied.** 26 equipment rows (3 current
   aircraft, 3 archived aircraft that appear only in the service history,
   20 batteries including 3 identified placeholders for entries the capture
@@ -62,13 +63,16 @@ Everything below was verified on this machine; nothing is aspirational.
    controllers now. First attach imports eligible logs; the second must add
    zero. Record the Smart Controller and the RC 2 **separately**. The five
    supplied controller samples cannot certify live hardware.
-2. **DJI key, once.** Settings → DJI key → Save → Decode pending (39 records).
-   Then close the app, disconnect the network, reopen and reparse one decoded
-   v14 file to prove the cached keychain works offline.
-3. **Compare the decoded totals against AirData.** Records match (264), but air
-   time reads 24h21m against 24h10m and distance 95.0 mi against 108 mi, with 39
-   records still undecoded. Tick *Mark records as my real inputs* to see the
-   signed difference. **Keep AirData active while this is unexplained.**
+2. **Prove the offline keychain cache.** The key is entered and nothing is
+   pending. What remains is the offline proof: close the app, disconnect the
+   network, reopen, then **Settings → DJI key → Re-decode one record from
+   cache**. Expected: "Re-decoded a v14 record from its cached keychain".
+3. **Compare the totals against AirData** — this is now **explained** and needs
+   only your reading of it. Records 264 (match), distance 108.3 mi against 108
+   (match at displayed precision), air time 24h21m against 24h10m. The air-time
+   difference is exactly the **two newest flights** the reference export did not
+   contain: dropping them gives 24h10m and 108.0 mi simultaneously. Tick *Mark
+   records as my real inputs* and read the signed difference yourself.
 4. **Restore rehearsal on real data**, then the cutover decision (the renewal
    noted in the handoff is February 2027).
 
@@ -106,7 +110,7 @@ Everything below was verified on this machine; nothing is aspirational.
 
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
-python -m flightdesk selftest          # expect: 153 tests, 0 failures
+python -m flightdesk selftest          # expect: 155 tests, 0 failures
 python tools\fault_check.py            # expect: disk_full, no partial archive
 python tools\diag.py "<handoff zip>"   # expect: 269 distinct, 7/222/40
 flightdesk.cmd                          # or: python -m flightdesk serve

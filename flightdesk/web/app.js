@@ -1992,7 +1992,16 @@
     var unlock = document.getElementById("key-unlock-all");
     if (unlock) unlock.addEventListener("click", function () {
       api("/api/key/unlock", { method: "POST", body: { all: true } }).then(function (res) {
-        toast(res.ok ? "Decoded pending logs" : "Could not decode: " + (res.results[0] || {}).code);
+        var text;
+        if (res.nothing_pending) {
+          text = "Nothing pending — every encrypted record is already decoded.";
+        } else if (res.ok) {
+          text = "Decoded " + res.decoded + " encrypted record" + (res.decoded === 1 ? "" : "s") + ".";
+        } else {
+          text = "Decoded " + res.decoded + " of " + res.attempted + ", " + res.failed +
+            " failed: " + (res.codes && res.codes.length ? res.codes.join(", ") : "unknown reason");
+        }
+        toast(text);
         refreshState().then(renderSettings);
       });
     });

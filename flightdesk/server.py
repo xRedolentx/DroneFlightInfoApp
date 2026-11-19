@@ -653,9 +653,21 @@ def api_key_unlock(ctx: Ctx) -> None:
     for raw_id in targets:
         results.append({"raw_id": raw_id,
                         **keychain.unlock_raw(ctx.conn, ctx.app.root, raw_id, api_key)})
-    _send_json(ctx.handler, {"ok": all(r.get("ok") for r in results) if results else False,
-                             "results": results,
-                             "key_configured": keychain.has_key(ctx.app.root)})
+    decoded = sum(1 for r in results if r.get("ok"))
+    codes = sorted({str(r.get("code")) for r in results
+                    if not r.get("ok") and r.get("code")})
+    _send_json(ctx.handler, {
+        # Nothing pending is a finished state, not a failure: clicking Decode
+        # pending twice must not look like an error.
+        "ok": bool(results) and decoded == len(results),
+        "nothing_pending": not targets,
+        "attempted": len(results),
+        "decoded": decoded,
+        "failed": len(results) - decoded,
+        "codes": codes,
+        "results": results,
+        "key_configured": keychain.has_key(ctx.app.root),
+    })
 
 
 # ---------------------------------------------------------------------- usb

@@ -209,11 +209,19 @@ grouped).
     because that figure counts flights, not videos.
   - **Metadata-only records no longer carry unverified measurements.** Without
     the key, a v13/v14 record keeps its date, aircraft, battery serial and
-    duration; distance, height, speed, position and media become unknown. Real
-    evidence: 39 v14 records were storing a distance ~1000× too small, which
-    entered the archive total as near-zero. The reconciliation now reports
-    distance coverage (225 of 264) rather than presenting a partial total as
-    complete.
+    duration; distance, height, speed, position and media become unknown. The
+    reasoning that led here was right for the wrong reason: those 39 records were
+    not corrupt, they were in **kilometres** (see Stage 7). Keeping them out of
+    the total was still correct until the unit was understood.
+  - **v13/v14 distance unit corrected.** `distance_metres()` converts
+    kilometres to metres for v13 and later, measured at a ratio of 1000.006
+    against the frame-derived path across all 39 records.
+  - **"Could not decode" was a reporting bug, not a decode failure.** The
+    endpoint tested `all(results)` and showed `results[0].code`, so an empty
+    target list (clicking Decode pending a second time) was reported as a
+    failure, and a genuine failure could be masked by a successful first result.
+    It now returns `nothing_pending`, `decoded`, `failed` and the set of failure
+    codes, and the UI states which. Covered by two tests.
   - Backfill works: a reparse now refreshes the metrics of the flight it
     matches (equal weight refreshes, a poorer parse never replaces a richer
     one), and a reparse can no longer create a duplicate flight when a metric
@@ -242,29 +250,37 @@ grouped).
   coverage; the first archive report is frozen as a baseline so later imports
   do not move it.
 - CSVs are produced for flights, equipment and services, plus a redacted mode.
-- **Real reconciliation, measured 2026-11-18** against the brief's archive
-  reference (264 records · 24h10m · 108 mi): records **264 (match)**; air time
-  **24h21m / 1461 min (+11 min, 0.8 %)**; distance **95.0 mi, known for 225 of
-  264 records**; photos **983 (reference 749)**; video count **unknown**
-  (reference 459); decoded coverage **85 %**.
-- **Why distance is partial, not short.** The 39 v14 records previously carried
-  a distance read from the *encrypted* block without the key — roughly a
-  thousandth of the value their own duration implies (median 0.3 m of travel for
-  a 5.8-minute flight), so they added 0.02 km to a 152.9 km archive total while
-  looking like real readings. Metadata-only records now report distance, height,
-  speed, position and media as **unknown**, and the reconciliation states that
-  the miles figure is a partial total. The ~13 mi difference is what those 39
-  records still owe; the key is what settles it.
-- **Air time is the close one.** Metadata does supply v14 duration, so the 24h21m
-  covers all 264 records, not just the 225 decoded ones. The 11-minute gap is
-  0.8 %, consistent with the reference being recorded a few days earlier or with
-  a small displayed-rounding difference; it is not evidence of missing flights,
-  since the record count matches exactly (264).
+- **Real reconciliation, measured 2026-11-19 after the DJI key decoded all 39
+  encrypted records**: records **264 (match)**; distance **108.3 mi against the
+  108 mi reference** — a match at the reference's displayed precision; air time
+  **24h21m against 24h10m**; photos **983 against 749**; video count **unknown**
+  (reference 459); decoded coverage **100 %**.
+- **The distance figure is corroborated twice.** The log's own `totalDistance`
+  sums to 174.23 km and the path computed independently from the decoded frame
+  coordinates sums to 174.24 km — two unrelated measurement paths agreeing to
+  10 m across 264 flights.
+- **The v13/v14 distance unit was the cause, and it is fixed.** v6–v12 record
+  total distance in **metres**; v13/v14 record it in **kilometres**. Measured
+  from the archive: for v8 and v11 the log's figure matches the frame-derived
+  distance at a ratio of 1.0000, for v14 at 1000.006 across all 39 records. Read
+  unconverted, 39 real flights contributed 0.02 km instead of 21.3 km. An earlier
+  note here called those values "corrupt"; they were not — the unit was wrong.
+  `distance_metres()` now converts per version, and the synthetic v13/v14 fixture
+  writes kilometres so the fixture tells the truth.
+- **The remaining air-time gap is explained, and it is two records.** The
+  reference's own numbers are not self-consistent: no subset summing to 264
+  records produces 24h10m. Dropping exactly the **two newest flights** —
+  2026-08-06 21:03 (6.75 min) and 2026-08-12 05:53 (5.07 min) — makes **both**
+  reference figures land at once: 1449.3 min (24h10m) and 173.78 km (**108.0 mi
+  exactly**). Two independent quantities matching simultaneously is not a
+  coincidence; the AirData export the reference was taken from was short by
+  those two flights while the file inventory still counted 264. The brief itself
+  warns the count "counts files, not distinct flights".
 - **Photos remain unexplained** (983 against 749). Per-flight photo counts are a
   different quantity from an AirData media-library count, but that is a
   hypothesis, not a finding. **Keep AirData active.**
-- **Pending Kevin:** decide cutover. Keep AirData active while any material
-  difference is unexplained.
+- **Pending Kevin:** decide cutover. Keep AirData active until you have read the
+  reconciliation with *Mark records as my real inputs* ticked.
 
 ## Release gate
 
@@ -272,7 +288,7 @@ grouped).
 |---|---|---|---|
 | Fresh install + restart | **Verified** | Fresh empty root serves the app; `data_mode=empty`, 0 counts; launcher returns HTTP 200; restart keeps data | none |
 | Archive inventory (269 files) | **Verified 2026-11-18** | `tools\diag.py`: 264 archive (7/218/39) + 5 controller (0/4/1) = **269 distinct, 7/222/40**; re-import added 0 | none |
-| Decoded totals (264 · 24h10m · 108 mi) | **Partly explained** | 264 records match; air 24h21m (+11 min, 0.8 %); distance 95.0 mi **known for 225 of 264**, 39 await the key | Enter the DJI key, then re-read the signed difference |
+| Decoded totals (264 · 24h10m · 108 mi) | **Explained** | 264 records; 108.3 mi vs 108 (match at displayed precision); 24h21m vs 24h10m is exactly the 2 newest flights the reference export lacked; frames-derived distance agrees independently | Enter the key (done) and read the signed difference with *real inputs* ticked |
 | Due statuses at handover | **Verified on the real capture** | 188/100 + 1018/1000 Due; 19/20 and 16/20 Due soon; battery 30/20 Due | Re-check after any service record |
 | Both real USB devices | **Pending Kevin** | Simulated adapter covers 13 cases incl. interrupted copy and reconnect | Plug each controller in twice; expect zero new records on the second attach |
 | No duplicate imports | **Verified** | Folder, ZIP, renamed duplicate, race, re-scan and reparse all add zero | none |
@@ -286,7 +302,7 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 153 automated tests, all passing (`python -m flightdesk selftest`).
+- 155 automated tests, all passing (`python -m flightdesk selftest`).
 - 68 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).

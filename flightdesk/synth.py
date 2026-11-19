@@ -178,7 +178,7 @@ def make_v13_metadata_log(
             start_time=start,
             latitude=45.6789,
             longitude=12.3456,
-            total_distance_m=distance_m,
+            total_distance_m=distance_m / 1000.0,  # v13/v14 store kilometres
             total_time_s=duration_s,
             max_height_m=max_height_m,
             aircraft_name=profile["name"],

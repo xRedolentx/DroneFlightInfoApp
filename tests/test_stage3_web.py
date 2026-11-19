@@ -204,6 +204,15 @@ class ApiTest(ServerCase):
                 break
         self.assertEqual(seen, ids)
 
+    def test_decode_pending_reports_nothing_pending_as_finished(self) -> None:
+        # Clicking Decode pending twice used to answer "could not decode"
+        # because an empty target list counted as failure.
+        result = self.post_json("/api/key/unlock", {"all": True})
+        self.assertTrue(result["nothing_pending"])
+        self.assertEqual(result["attempted"], 0)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["codes"], [])
+
     def test_reparse_from_cache_says_when_there_is_no_cache(self) -> None:
         # On a root with no decoded encrypted record there is nothing cached to
         # re-decode, and the app must say so rather than fail silently.

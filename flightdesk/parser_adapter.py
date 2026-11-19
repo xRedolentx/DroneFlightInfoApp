@@ -63,8 +63,7 @@ def detect_version(path: Path) -> int | None:
     return None
 
 
-def _cstr(raw: bytes) -> str:
-    return raw.split(b"\x00", 1)[0].decode("utf-8", "replace").strip()
+def _cstr(raw: bytes) -> str:    return raw.split(b"\x00", 1)[0].decode("utf-8", "replace").strip()
 
 
 MASK64 = (1 << 64) - 1
@@ -139,7 +138,7 @@ def _parse_details_bytes(b: bytes, version: int) -> dict[str, Any] | None:
         "start_time_utc": start_utc,
         "longitude": sane_coord(lon, 180.0),
         "latitude": sane_coord(lat, 90.0),
-        "total_distance_m": sane_pos(distance),
+        "total_distance_m": distance_metres(sane_pos(distance), version),
         "total_time_s": round(total_ms / 1000.0, 3) if total_ms >= 0 else None,
         "max_height_m": max_height if math.isfinite(max_height) else None,
         "max_h_speed_mps": sane_pos(max_h_speed),
@@ -160,6 +159,29 @@ def _parse_details_bytes(b: bytes, version: int) -> dict[str, Any] | None:
 
 PHOTO_LIMIT = 100000
 VIDEO_TIME_LIMIT_S = 21600  # six hours, the longest plausible single flight
+
+# v13 and v14 record the flight's total distance in kilometres; v6-v12 record
+# metres. Measured from the archive itself: for v8 and v11 the log's own figure
+# matches the distance computed from the decoded frames (ratio 1.0000), while for
+# v14 it is exactly a thousand times smaller (ratio 1000.006 across all 39
+# records). Read unconverted, 39 real flights contributed 0.02 km instead of
+# 21.3 km to the archive total.
+DISTANCE_IN_KM_FROM_VERSION = 13
+
+
+def distance_metres(value: Any, version: int | None) -> float | None:
+    """Normalise a total-distance reading to metres for the format version."""
+    if value is None:
+        return None
+    try:
+        metres = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(metres) or metres < 0:
+        return None
+    if version is not None and version >= DISTANCE_IN_KM_FROM_VERSION:
+        metres *= 1000.0
+    return metres
 
 
 def bound_media(details: dict[str, Any]) -> dict[str, Any]:
@@ -502,7 +524,12 @@ def parse_file(path: Path, root: Path, keychain_json: list | None = None) -> Par
             ("max_h_speed_mps", "maxHorizontalSpeed"),
         ):
             if merged.get(local_key) is None and details_json.get(cli_key) is not None:
-                merged[local_key] = details_json[cli_key]
+                # The decoded payload uses the same unit for this version, so
+                # the same conversion applies to whichever source supplied it.
+                merged[local_key] = (
+                    distance_metres(details_json[cli_key], version)
+                    if local_key == "total_distance_m" else details_json[cli_key]
+                )
         merged["aircraft_name"] = merged.get("aircraft_name") or details_json.get("aircraftName")
         merged["aircraft_sn"] = merged.get("aircraft_sn") or details_json.get("aircraftSn")
         merged["camera_sn"] = merged.get("camera_sn") or details_json.get("cameraSn")

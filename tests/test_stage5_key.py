@@ -203,6 +203,23 @@ class OfflineReparseTest(TempCase):
         # The synthetic v13 file carries no records, so the keychain
         # decoded the container and details but produced no frames.
         self.assertEqual(row["metrics_source"], "keychain_details")
+        # v13/v14 store the flight's distance in kilometres. The synthetic file
+        # carries 46.9 m, so the stored value must come back as 46.9 — not
+        # 0.0469, which is what an unconverted read produced for 39 real v14
+        # records in the archive.
+        self.assertAlmostEqual(row["total_distance_m"], 46.9, places=1)
+
+    def test_distance_units_follow_the_format_version(self) -> None:
+        from flightdesk.parser_adapter import distance_metres
+
+        # v6-v12 report metres; v13/v14 report kilometres.
+        self.assertAlmostEqual(distance_metres(46.9, 11), 46.9)
+        self.assertAlmostEqual(distance_metres(0.0469, 13), 46.9)
+        self.assertAlmostEqual(distance_metres(0.0469, 14), 46.9)
+        self.assertAlmostEqual(distance_metres(46.9, 8), 46.9)
+        self.assertIsNone(distance_metres(None, 14))
+        self.assertIsNone(distance_metres(-1, 14))
+        self.assertIsNone(distance_metres("n/a", 14))
 
     def test_missing_cache_entry_does_not_create_flights(self) -> None:
         self.import_bytes(v13_bytes(4), "DJIFlightRecord_2026-08-15_[21-53-20].txt")
