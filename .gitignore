@@ -18,6 +18,9 @@ ui-shots/
 server.json
 *.log
 
+# Agent session config (working-hours policy), local to this checkout
+.codewhale/
+
 # Keep the fixtures and the build spec
 !fixtures/synthetic/*.md
 !FlightDesk-DeepSeek-Build.md
