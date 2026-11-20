@@ -1,24 +1,23 @@
 # CHECKPOINT — resume here
 
-Written 2026-11-19 23:30 UTC. Read this first, then `BUILD-STATUS.md`.
-Everything below was measured on this machine at the time of writing; nothing is
-aspirational.
+Updated 2026-11-20 23:59 UTC (owner session). Read this first, then
+`BUILD-STATUS.md`. Everything below was measured on this machine at the time of
+writing; nothing is aspirational.
 
 ## State at a glance
 
 - Local Git: a linear history on one branch; **no remote and nothing pushed**.
   Code tip: **`c58b2b7`** — "editable schedules, reversible restore, visible
-  capture gap". 
-  (This checkpoint file is committed immediately after it, so `git log -1` will
-  show a checkpoint commit whose parent is that code tip. That is expected and is
-  why the tip is named rather than derived.)
+  capture gap"; the launcher and landing-page work of 2026-11-20 is committed on
+  top of the checkpoint commits, so name the tip with `git log -1`.
 - Working tree: **clean**.
-- `python -m flightdesk selftest` → **275 tests, 0 failures, 0 errors**.
-- `node tools\ui_check.mjs <cdp-port> <outdir> <zip>` → **86 checks, 0 failures**.
+- `python -m flightdesk selftest` → **290 tests, 0 failures, 0 errors**.
+- `node tools\ui_check.mjs <cdp-port> <outdir> <zip>` → **87 checks, 0 failures**.
 - `python tools\rehearse.py` → **13/13 steps**.
 - `python tools\recon_check.py` → **9/9**.
 - `python tools\fault_check.py` → interrupted backup returns `disk_full` with no
   partial archive; interrupted **restore** leaves the target and its marker intact.
+- **Restore on the real backup: rehearsed 2026-11-20.** See below.
 
 ## Live data (measured, not remembered)
 
@@ -29,8 +28,11 @@ aspirational.
 - **57 flights** carry at least one counted fault.
 - **5 batteries** have exceeded the 40 °C limit (peaks 44.0–53.6 °C).
 - **`usb_scans = 0`** — no controller has ever been attached.
-- Last backup: **2026-11-19 19:57 UTC, status `ok`** — this predates the Stage 12
-  and 13 code changes, so take a fresh one.
+- Last backup: **2026-11-19 19:57 UTC, status `ok`**
+  (`FlightDesk-backup-20261119-125703.zip` on the Desktop, sidecar hash matches).
+  It predates the Stage 12/13 commits, but `backup.py` changed in them only in
+  `restore_backup`; the writing and validating paths are unchanged, and the file
+  validates clean against the current build. Inspected 2026-11-20.
 - Rollback copies of the data root taken before each change live in
   `%LOCALAPPDATA%\FlightDesk\data-before-*` (11 of them). Not in Git.
 
@@ -45,18 +47,47 @@ baseline by design — this is the feature working.
 If that click was unintended: **Maintenance → Completed → Undo** puts it back.
 Do not "fix" it by deleting the row: it is the owner's record and is audited.
 
+## Restore rehearsal on the real backup — passed 2026-11-20
+
+Run with the current build against `FlightDesk-backup-20261119-125703.zip`,
+restoring into a fresh empty folder. Nothing was activated and the live root was
+opened read-only throughout.
+
+- `restore_backup` → ok, **0 warnings**, 4.1 s; counts 264/264/26/49/14/80.
+- `integrity_check` ok, **0 foreign-key violations**, all 15 table counts and the
+  flight totals identical to the live root (264 · 87,668.8 s · 174,227.8 m).
+- **All 264 archive objects hash-identical** to the live originals.
+- The app served the restored root: `/api/health` ok, 264 flights listed,
+  maintenance at 1 due / 5 due soon / 27 ok / 16 unknown, the most-sampled
+  flight drawing 1,262 track points.
+- `views.flight_detail` compared for **all 264 flights, live vs restored: 0
+  differences** (279,994 telemetry samples, 263 flights with frames).
+- Refusals hold: restore at the live root → `refuses_live_root`; into a populated
+  folder without confirmation → `target_not_empty`.
+- The Stage 13 move-aside path was exercised for real: restore over a populated
+  folder with `allow_existing` → ok, old content gone, **no `.previous-*` or
+  `.restore-tmp` left anywhere**.
+
+**Two findings.** The **DJI key is not in the backup**: `keychains/dji_key.bin`
+lives in the data root but the archive carries only the database and originals,
+so a restored copy reports `key_configured: false`. The 39 cached keychains *are*
+in the database, so cache decoding works; the key would be re-entered only to
+fetch new keychains. Whether a backup should carry a DPAPI blob (it would only
+decrypt for this user on this machine) is an open decision, not a bug. Second:
+the restored copy has `real_inputs_selected: false`, so reconciliation still
+needs the owner to tick *Mark records as my real inputs*.
+
 ## What is NOT verified — needs the owner
 
 1. **Both controllers, twice each.** Still `usb_scans = 0`. Power one, choose
    file transfer, **Settings → USB controllers → Check controllers now**, record
    the result, unplug, replug, check again (expect **0 new**). Repeat for the
    second. Record the Smart Controller and the RC 2 **separately**.
-2. **A fresh backup**, then **Validate a backup…** on it. The existing one
-   predates the last two code changes.
-3. **Restore rehearsal on real data.** Restore into a *new empty folder* and
-   choose **Keep current data**. Switching roots is the cutover, which is the
-   owner's decision.
-4. **Backdate the real services.** Now possible: Maintenance → a rule → **Rule** →
+2. **Watch a restore yourself once** (optional now). The rehearsal above used the
+   same code the button calls, on the real backup. The browser route — Settings →
+   **Restore into a new root…** → **Keep current data** — has not been clicked
+   through on real data. Switching roots is the cutover, which is yours alone.
+3. **Backdate the real services.** Now possible: Maintenance → a rule → **Rule** →
    *Record a service on a past date*. The six DoneDoctor checks started counting
    on 2026-11-19, so without backdating they stay quiet for 60–90 days. Enter the
    real dates for props, deep-clean, IMU/compass calibration and battery cycles.
@@ -87,6 +118,14 @@ February 2027.
   the staged copy in. A crash between lost both. Fixed by moving the old root
   aside and putting it back on failure. The regression test **fails against the
   old code**, so it bites.
+- **The launcher booted on a field that never existed.** The first-run welcome
+  panel was gated on `state.app.flights`; `/api/state` sends `counts.flights` and
+  has never sent either of the others. Every cold start on the real root — 264
+  flights — opened on *"No records have been imported yet"*. The 86-check
+  browser gate could not catch it because every gate root is demo-seeded, and
+  `demo_seeded` short-circuits the same condition. Both halves are now pinned:
+  a static test that the page reads `counts.flights`, and a server test that the
+  payload carries it.
 - **The rule status payload did not expose the limit fields**, so an editing form
   would have opened blank and saving it would have erased every counter it could
   not see. The thresholds are now in the payload, with a test.
@@ -107,7 +146,7 @@ February 2027.
 
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
-python -m flightdesk selftest          # expect: 275 tests, 0 failures
+python -m flightdesk selftest          # expect: 290 tests, 0 failures
 python tools\fault_check.py            # expect: disk_full; restore survives
 python tools\recon_check.py            # expect: 9/9
 flightdesk.cmd                          # or: python -m flightdesk serve
@@ -127,16 +166,43 @@ node tools\ui_check.mjs <d> <outdir> out.zip
 Note: a probe that hangs on one *specific* flight is a probe problem, not an app
 problem — the same payload serves in ~0.02 s. Verify through the gate and the API.
 
+A headless render of the landing page is often enough for a UI question, and it
+needs no CDP:
+
+```powershell
+python -m flightdesk serve --root <root> --port 8765 --no-browser
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --headless=new --disable-gpu `
+  --user-data-dir="$env:TEMP\fd-chrome" --virtual-time-budget=15000 --dump-dom `
+  "http://127.0.0.1:8765/#/flights" > $env:TEMP\dom.html
+```
+
+Both the server and the browser must be started and read **inside one shell
+invocation**: the tool kills the process tree when a command returns.
+
+## The launcher
+
+`FlightDesk.cmd` → `python -m flightdesk serve` → browser at
+`http://127.0.0.1:<port>/#/flights`.
+
+- The **hash is explicit**, so a double-click always lands on the flight list
+  even if the tab's history or the JS default says otherwise.
+- A click while the app is **already serving the same data root** opens that page
+  instead of starting a second server on a fresh random port. An explicit
+  `--port` is never redirected. Detection requires all three: the pid in
+  `server.json` is alive, its recorded root matches, and the port answers with a
+  Flight Desk page.
+- A browser that will not open prints the address instead of failing silently.
+- **Caveat:** `server.json` is rewritten by any `serve`, so a scratch run can
+  leave it pointing at a dead root. That is harmless — the pid check rejects it
+  and the next real click starts a fresh server — but it means the *first* click
+  after a scratch session starts a new instance.
+
 ## When this session resumes
 
-The owner paused at **2026-11-19 16:40 local (23:40 UTC)** and expects to pick up
-at **21:00 local**, which is **2026-11-20 04:00 UTC**.
-
-That matters for cost: 04:00 UTC is the boundary where the 01:00–04:00 peak
-window ends, so the resume is **off-peak** — but only until **06:00 UTC**, which
-is **23:00 local**. Past 23:00 local, the 06:00–10:00 UTC weekday window is
-running and the working-hours rule applies. Do the timezone arithmetic rather
-than assuming the two clocks agree; they do not.
+The owner's 2026-11-19 handover window has been used; this section is kept for
+the cost boundary it explains. Peak is **01:00–04:00 and 06:00–10:00 UTC,
+Mon–Fri**; the next peak after 2026-11-20 23:59 UTC is **Monday 2026-11-23
+01:00 UTC**. Weekends are off-peak all day.
 
 ## Environment facts
 

@@ -113,6 +113,10 @@ await call("Page.navigate", { url: `${appOrigin}/` });
 await waitFor("!!document.querySelector('.flight-list li a')", 20000);
 check("dashboard renders flight rows",
   await evaluate("document.querySelectorAll('.flight-list li a').length > 0"));
+// A full root must open on the list. Landing on the welcome panel here is how
+// a wrong field name (`state.app.flights`) hid behind demo-seeded roots.
+check("a root with records opens on the flight list",
+  await evaluate("!/Welcome to Flight Desk/.test(document.getElementById('view').innerText)"));
 check("three summary tiles", await evaluate("document.querySelectorAll('.tile').length === 3"));
 check("media counts are gone from the dashboard",
   await evaluate("!/\\bphotos?\\b|video clips/i.test(document.getElementById('tiles').innerText)"));

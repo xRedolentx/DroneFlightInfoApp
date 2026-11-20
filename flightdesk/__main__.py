@@ -6,10 +6,101 @@ import json
 import os
 import sys
 import threading
+import urllib.request
 import webbrowser
 from pathlib import Path
 
 from . import db, paths
+
+# Where the launcher lands. The app defaults to this view anyway, but naming it
+# here means a double-click always arrives at the same page — even if the
+# history in the tab, or the default, points somewhere else.
+HOME_HASH = "#/flights"
+
+
+def home_url(port: int) -> str:
+    return f"http://127.0.0.1:{port}/{HOME_HASH}"
+
+
+def _pid_alive(pid: int) -> bool:
+    """Is this process still running? os.kill(pid, 0) is not usable on Windows:
+    any signal number other than CTRL_C/CTRL_BREAK terminates the process."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == STILL_ACTIVE
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _answers_as_flightdesk(port: int) -> bool:
+    """A live socket is not enough: the port may have been reused by something
+    else. The page's own meta tag is a cheap way to know what is answering."""
+    if not 0 < port < 65536:
+        return False
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2) as resp:
+            head = resp.read(8192).decode("utf-8", "replace")
+    except Exception:
+        return False
+    return 'name="fd-token"' in head
+
+
+def live_instance(root: Path, *, port: int | None = None) -> int | None:
+    """Port of a Flight Desk already serving this data root, else None.
+
+    Double-clicking the launcher a second time used to start a second server on
+    another free port, so the address changed on every click and the first
+    window looked abandoned. If the app is already up for this root, the click
+    should just bring the page back. An explicit --port is a request for a new
+    server and is never redirected.
+    """
+    if port:
+        return None
+    try:
+        state = json.loads((paths.app_home() / "server.json").read_text(encoding="utf-8"))
+        pid = int(state.get("pid") or 0)
+        candidate = int(state.get("port") or 0)
+        state_root = Path(str(state.get("root") or ""))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not pid or not candidate:
+        return None
+    try:
+        if state_root.resolve() != Path(root).resolve():
+            return None
+    except OSError:
+        return None
+    if not _pid_alive(pid) or not _answers_as_flightdesk(candidate):
+        return None
+    return candidate
+
+
+def _open_browser(url: str) -> None:
+    """Opening the page is the whole point of the click, so a browser that will
+    not start must say so rather than leave a blank-looking launch."""
+    try:
+        opened = webbrowser.open(url)
+    except Exception:
+        opened = False
+    if not opened:
+        print(f"Could not open a browser automatically. Open this address: {url}")
 
 
 def _root(value: str | None) -> Path:
@@ -30,16 +121,24 @@ def serve(args: argparse.Namespace) -> int:
     from .server import build_server, write_state
 
     root = _root(args.root)
+    already = live_instance(root, port=args.port)
+    if already is not None:
+        url = home_url(already)
+        print(f"Flight Desk is already running at {url}")
+        print("Opening that window; this launcher is not starting a second copy.")
+        if not args.no_browser:
+            _open_browser(url)
+        return 0
     paths.ensure_layout(root)
     server, app = build_server(root, args.port)
     write_state(root, app.port)
-    url = f"http://127.0.0.1:{app.port}/"
+    url = home_url(app.port)
     print(f"Flight Desk is running at {url}")
     print(f"Data root: {root}")
     if args.watch_usb:
         app.start_watcher()
     if not args.no_browser:
-        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.6, _open_browser, args=(url,)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -18,8 +18,12 @@ waiting on you, and the exact commands to re-check both.
 
 ## Start it
 
-Double-click **`FlightDesk.cmd`** in this folder. It opens
-<http://127.0.0.1:8765/> in your browser.
+Double-click **`FlightDesk.cmd`** in this folder. It opens your flight list at
+<http://127.0.0.1:8765/#/flights> in your browser.
+
+Double-clicking again while it is already running brings the same page back
+instead of starting a second copy. The console window stays open while the app
+runs; closing it stops the server.
 
 Requirements: Windows 10/11 and Python 3.11+ on `PATH`. Everything else is
 already installed under `%LOCALAPPDATA%\FlightDesk`.

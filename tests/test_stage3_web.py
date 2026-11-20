@@ -133,6 +133,17 @@ class StaticAssetTest(unittest.TestCase):
         self.assertIn('scope: "cached"', app_js)
         self.assertIn('id="key-unlock-all"', app_js)
 
+    def test_launcher_boots_on_a_count_the_server_actually_sends(self) -> None:
+        # The welcome panel belongs to an empty root. Gating it on
+        # `state.app.flights` — a key /api/state has never sent — meant every
+        # start on a root with 264 real flights opened on "no records have been
+        # imported yet". The demo-seeded browser gate could not catch it, since
+        # those roots have demo_seeded set. This pins the field name.
+        web = Path(__file__).resolve().parent.parent / "flightdesk" / "web"
+        app_js = (web / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn("state.app.flights", app_js)
+        self.assertIn("state.app.counts.flights", app_js)
+
     def test_browser_scripts_parse(self) -> None:
         import shutil
         import subprocess
@@ -165,6 +176,15 @@ class ApiTest(ServerCase):
         self.assertTrue(state["demo_seeded"])
         self.assertGreaterEqual(state["counts"]["flights"], 13)
         self.assertIn(state["unit_preference"], {"metric", "imperial"})
+
+    def test_state_exposes_the_count_the_launcher_boots_on(self) -> None:
+        """The page decides between the welcome panel and the flight list from
+        `counts.flights`. It once read `state.app.flights`, which /api/state has
+        never sent, so a root holding real flights opened on "no records have
+        been imported yet". Pin both halves of that contract."""
+        state = self.get_json("/api/state")
+        self.assertIn("flights", state["counts"])
+        self.assertNotIn("flights", state)
 
     def test_flights_filters_match_totals(self) -> None:
         everything = self.get_json("/api/flights")

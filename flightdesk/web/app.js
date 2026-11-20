@@ -3034,7 +3034,15 @@
       (bootParts[0] === "flights" && !bootParts[1]);
     // A deep link (for example #/import) is an explicit request: render it
     // rather than replacing it with the first-run welcome panel.
-    if (!state.app.flights && !state.app.demo_seeded && atFlights) {
+    //
+    // The count comes from `counts`, which is what /api/state actually sends.
+    // This used to read a `flights` key off the state payload — a key the
+    // server has never sent — so every start on a root full of real flights
+    // greeted the owner with "no records have been imported yet". The
+    // demo-seeded browser gate could not catch it: it runs on roots where
+    // `demo_seeded` was already true.
+    var flightCount = (state.app.counts && state.app.counts.flights) || 0;
+    if (!flightCount && !state.app.demo_seeded && atFlights) {
       // first run: offer the synthetic demo rather than an empty screen
       view.innerHTML = '<div class="panel" style="max-width:720px;margin:40px auto">' +
         '<div class="panel-head"><h2>Welcome to Flight Desk</h2></div>' +

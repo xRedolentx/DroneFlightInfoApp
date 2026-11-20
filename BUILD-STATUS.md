@@ -1,7 +1,7 @@
 # BUILD-STATUS
 
 Flight Desk · stage-by-stage status against `FlightDesk-DeepSeek-Build.md`.
-Last updated: 2026-11-18. **The real archive is now imported and the real
+Last updated: 2026-11-20. **The real archive is now imported and the real
 equipment capture is applied** to the live data root; the real-input checks that
 were pending are recorded below. Automated checks still use synthetic fixtures.
 Resume notes are in `CHECKPOINT.md`.
@@ -533,6 +533,40 @@ Three gaps closed without needing the owner.
   never shown, so the app silently looked complete. It now appears in the preview
   counts and in a plain-language notice: unaccounted, never invented.
 
+### Stage 14 · The launcher lands on the home page — **fixed from a real click**
+
+The owner double-clicked `FlightDesk.cmd` on 2026-11-20 and did not get the home
+page. Both halves of that were real and independent.
+
+- **The app opened on the first-run welcome panel, on a root holding 264
+  flights.** The boot gate read `state.app.flights`; `/api/state` sends
+  `counts.flights` and has never sent a top-level `flights` key. So the condition
+  was permanently true on any root where `demo_seeded` was false — that is, on
+  every real root. The 86-check browser gate could not see it, because gate roots
+  are demo-seeded and `demo_seeded` short-circuits the same expression. A cold
+  headless render of `/` reproduced it; after the fix the same render lists 264
+  flights and the three tiles.
+- **The address changed on every launch.** Each click started a fresh server on
+  whatever free port came up, and opened the bare origin. The URL now carries
+  `#/flights` explicitly, so a click lands on the flight list regardless of the
+  tab's history or the JS default.
+- **A second click started a second copy.** Now, when the app is already serving
+  the same data root, the launcher opens that page and exits instead of starting
+  another server on another port. Three conditions must all hold: the recorded pid
+  is alive, its recorded root matches the root being launched, and the port
+  answers with a Flight Desk page (a live socket alone is not enough — ports get
+  reused). An explicit `--port` is never redirected.
+- **A browser that will not open now says so**, with the address to paste. The
+  Stage 12 lesson — a click that appears to do nothing is never acceptable —
+  applies to the launcher too.
+- 13 new tests (`tests/test_launcher.py`) cover the URL, each rejection path
+  (no state file, unreadable state, dead pid, other root, nothing listening,
+  an explicit port not being redirected), reuse of a real running server, the
+  `--no-browser` path, and the visible failure. Two more pin the landing-page
+  contract from both sides: the page reads `counts.flights`, and the API sends it.
+  The browser gate gains a check that a root with records does not open on the
+  welcome panel — 87 checks, 0 failures.
+
 ## Release gate
 
 | Item | Verdict | Evidence | Next human action |
@@ -544,7 +578,8 @@ Three gaps closed without needing the owner.
 | Both real USB devices | **Pending Kevin** | Simulated adapter covers 13 cases incl. interrupted copy and reconnect | Plug each controller in twice; expect zero new records on the second attach |
 | No duplicate imports | **Verified** | Folder, ZIP, renamed duplicate, race, re-scan and reparse all add zero | none |
 | Key-cached offline reparse | **Verified 2026-11-19** | Real key decoded all 39 v14 records; one re-decode from cache at 16:15 UTC with the network off, no new flight | none |
-| Working backup recovery | **Verified** | 12 tests + 13-step rehearsal, including corrupted archive and live-root refusal | Do one rehearsal on your real data before cancelling |
+| Working backup recovery | **Verified on the real backup 2026-11-20** | 12 tests + 13-step rehearsal + `fault_check.py` (interrupted backup and interrupted restore). Then a real rehearsal: `FlightDesk-backup-20261119-125703.zip` restored with the current code into a fresh root — hashes, integrity and foreign keys clean, all 264 archive objects identical, `views.flight_detail` identical for **all 264 flights**, and the copy served over HTTP. Refusals held at the live root and on a populated folder | none for the backup itself; the cutover decision stays with Kevin |
+| Launcher lands on the home page | **Verified 2026-11-20** | A cold render of `/` on the real root opened on *"No records have been imported yet"*: the welcome panel was gated on a state field the server never sends. Fixed, and after the fix the same render shows the flight list with 264 rows. The URL now carries `#/flights` and a second click reuses the running instance | Click it and confirm the page looks right |
 | Video count comparison | **Removed** | Media counts are gone from the app at the owner's request; the reference claimed 749 photos while only 180 files exist | none |
 
 **Keep AirData active while any material difference is unexplained.** A final
@@ -553,8 +588,8 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 275 automated tests, all passing (`python -m flightdesk selftest`).
-- 86 scripted browser checks, all passing (including the no-egress and privacy
+- 290 automated tests, all passing (`python -m flightdesk selftest`).
+- 87 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).
 - 13-step backup/restore rehearsal, all passing.
@@ -574,22 +609,27 @@ still cannot decide on its own that records are real: until *Mark records as my
 real inputs* is ticked, the reconciliation screen refuses to show a signed
 difference against the 264/24h10m/108mi reference, and the header badge reads
 "synthetic". Ticking it is the owner's call.
-2. **Decoded totals disagree with the reference** (see Stage 7): air time
-   +11 minutes, distance −13.0 miles, photos +234, with 39 of 264 records still
-   undecoded. The direction of the air-time difference is unexplained.
+2. **The decoded-total gap is explained and closed.** Distance was the v13/v14
+   unit error (fixed); the air-time difference is exactly the two newest flights
+   the AirData export lacked; media counts were removed. All 39 v14 records are
+   decoded. What remains is the owner ticking *Mark records as my real inputs* so
+   the signed difference is shown against the reference.
 3. **The real capture accounts for 13 of the 21 service records it claims.**
    The 8 missing rows are reported, not invented. 16 battery rules are
    `unknown` because those batteries published no counter.
-4. **Physical USB and the DJI key remain unexercised.** Both are owner tasks.
+4. **Physical USB remains unexercised.** `usb_scans` is still 0; the DJI key is
+   not (see Stage 5 — the owner's real key decoded all 39 encrypted records, and
+   one re-decode was done from cache with the network off).
    `tools\Collect-DjiLogs.ps1` was executed on this machine with no controller
    attached and returned a clean `no_device` in 0.3 s, so the script parses and
    runs; it has never enumerated a real controller.
 5. **Screenshots 01/03/19/20/21–23 comparison** needs Kevin's reference images.
    The in-app comparison page pairs them without uploading.
-6. **Restore interruption** is only tested at its ends (validation failure,
-   live-root refusal, corrupted archive), not injected mid-extraction.
-   **Backup during an active USB scan** is covered by a settings-level test, not
-   a genuinely concurrent scan. Both are named in `CHECKPOINT.md`.
+6. **Backup during an active USB scan** is covered by a settings-level test, not
+   a genuinely concurrent scan. Restore interruption *is* injected mid-extraction
+   (`tools\fault_check.py`, Stage 13): the target and its marker survive and a
+   later restore still works. A restore on the real backup has now been rehearsed
+   end to end with the current code.
 7. **Video count and video seconds** are reported as seconds only; the capture
    publishes no video count, so `videos_count` stays `null` instead of being
    derived. Video seconds are now bounded by flight duration, but the field's

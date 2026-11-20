@@ -7,8 +7,10 @@ Short, plain English. Everything here runs on this laptop only.
 1. Install **Python 3.11 or newer** once, from
    <https://www.python.org/downloads/windows/>. Tick *Add python.exe to PATH*.
 2. Double-click **`FlightDesk.cmd`** in this folder.
-3. The browser opens at `http://127.0.0.1:8765`. Your data root is created at
-   `%LOCALAPPDATA%\FlightDesk\data` on first start.
+3. The browser opens on your flight list at `http://127.0.0.1:8765/#/flights`.
+   Your data root is created at `%LOCALAPPDATA%\FlightDesk\data` on first
+   start. Click it again later and it reopens the same page rather than starting
+   a second copy; the console window must stay open while you use the app.
 
 The first screen has two buttons: **Import my logs** and **Explore invented demo
 data**. Demo data is fake and stays labelled `SYNTHETIC` in the header.
