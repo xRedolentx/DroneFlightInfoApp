@@ -254,6 +254,19 @@ meant to say:
   failure, and a real failure could be masked by a successful first result. It
   now returns `nothing_pending`, `decoded`, `failed` and the distinct failure
   codes, and the UI says which.
+- **The RC 2's v14 log was decoded 2026-11-21** with the stored key: one
+  keychain fetched from `dev.dji.com` and cached, then the container decoded.
+  Fetch plus decode took **1.6 s**. The record is 18m10s, 718 m, 36 m max
+  height, **10,905 frames**, linked to the Air 3S and to `Bat-Air3S-G41V24`, no
+  fault flags, peak battery 39.4 °C (inside the 40 °C limit). The track draws
+  1,364 points with no gaps. Nothing is pending any more.
+- **A successful fetch was never audited.** Only `keychain_fetch_failed` was
+  recorded, so the one event that actually spends the owner's credential — an
+  outbound POST carrying the API key — left no trace when it worked, while
+  this file claimed the audit log recorded the fetch. `keychain_fetched` now
+  records the endpoint and the keychain count, never the key or the keychain
+  material, with tests for both a fetch and a cache hit that must not claim
+  one.
 - **Air 3S reference figures — checked 2026-11-21 against the decoded record.**
   The record is flight 260, 2026-08-12 05:53:56 UTC — one of the two flights the
   AirData export lacked. Five of the seven figures match exactly, and the other
@@ -718,7 +731,7 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 324 automated tests, all passing (`python -m flightdesk selftest`).
+- 326 automated tests, all passing (`python -m flightdesk selftest`).
 - 87 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).

@@ -11,7 +11,7 @@ writing; nothing is aspirational.
   capture gap"; the launcher and landing-page work of 2026-11-20 is committed on
   top of the checkpoint commits, so name the tip with `git log -1`.
 - Working tree: **clean**.
-- `python -m flightdesk selftest` → **308 tests, 0 failures, 0 errors**.
+- `python -m flightdesk selftest` → **326 tests, 0 failures, 0 errors**.
 - `node tools\ui_check.mjs <cdp-port> <outdir> <zip>` → **87 checks, 0 failures**.
 - `python tools\rehearse.py` → **13/13 steps**.
 - `python tools\recon_check.py` → **9/9**.
@@ -21,10 +21,11 @@ writing; nothing is aspirational.
 
 ## Live data (measured, not remembered)
 
-- **284 records · 282 authoritative + 2 unreadable** · 26.16 h · 115.6 mi ·
-  **1 awaiting the key** (the RC 2's v14 log from 2026-08-21).
+- **284 records · 282 authoritative + 2 unreadable** · 26.16 h · 116.0 mi ·
+  **0 awaiting the key** — the RC 2's v14 log from 2026-08-21 was decoded on
+  2026-11-21 with the stored key.
 - 419 raw originals archived (264 from the AirData export, 155 from the two
-  controllers); **39 keychains cached**.
+  controllers); **40 keychains cached**.
 - **Two unreadable flights, both the same defect**: a v11 log whose header stores
   a details offset of 0, so its block was never read. Flight 216 came from the
   export; flight 283 came from the controller on 2026-11-21 and is the same kind
@@ -33,7 +34,7 @@ writing; nothing is aspirational.
   16 unknown, 5 due soon, **1 due**.
 - **57 flights** carry at least one counted fault.
 - **5 batteries** have exceeded the 40 °C limit (peaks 44.0–53.6 °C).
-- **`usb_scans = 9`** — both controllers have been read; **both are now proven on
+- **`usb_scans = 10`** — both controllers have been read; **both are now proven on
   real hardware** (Smart Controller 259 logs, RC 2 17 logs, second attach adds 0).
 - Last backup: **2026-11-19 19:57 UTC, status `ok`**
   (`FlightDesk-backup-20261119-125703.zip` on the Desktop, sidecar hash matches).
@@ -155,6 +156,12 @@ changes until someone decides which figure the dashboard should show.
   That is arithmetic, not an observation.
 
 ## Things that bit us (so they do not bite again)
+- **A successful keychain fetch was never audited.** Only
+  `keychain_fetch_failed` was recorded, so the one event that actually spends
+  the owner's credential — an outbound POST carrying the API key — left no
+  trace when it worked, while this file claimed the audit log recorded it.
+  `keychain_fetched` now records the endpoint and the keychain count, never the
+  key or the material.
 
 - **Every controller defect was silence, not an error.** `CopyHere` on the source
   folder returned in 20 ms having done nothing; a `FolderItem` passed where a
@@ -225,7 +232,7 @@ changes until someone decides which figure the dashboard should show.
 
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
-python -m flightdesk selftest          # expect: 324 tests, 0 failures
+python -m flightdesk selftest          # expect: 326 tests, 0 failures
 python tools\fault_check.py            # expect: disk_full; restore survives
 python tools\recon_check.py            # expect: 9/9
 flightdesk.cmd                          # or: python -m flightdesk serve

@@ -232,5 +232,11 @@ def unlock_raw(conn: sqlite3.Connection, root: Path, raw_id: int,
                      {"code": result.get("code")})
             return {"ok": False, "code": result.get("code"), "message": result.get("message")}
         store_cache(conn, root, raw["sha256"], result["keychains"], "dji_official")
+        # A successful fetch is an outbound call to DJI carrying the owner's API
+        # key. It must leave a trace, or the archive has no record that the
+        # credential was used and when. Counts only: never the key, never the
+        # keychain contents.
+        db.audit(conn, "owner", "keychain_fetched", "raw_file", str(raw_id),
+                 {"endpoint": ENDPOINT, "keychains": len(result.get("keychains") or [])})
     outcome = importer.reparse_raw(raw_id)
     return outcome

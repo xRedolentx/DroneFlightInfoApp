@@ -245,3 +245,58 @@ class OfflineReparseTest(TempCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class FetchAuditTest(TempCase):
+    """An outbound call carrying the owner's API key must leave a trace.
+
+    Only failures were audited, so a successful fetch — the case that actually
+    spends the credential — was invisible in the audit log.
+    """
+
+    def test_a_successful_fetch_is_audited_with_counts_only(self) -> None:
+        from unittest import mock
+
+        raw_bytes = make_v13_keychain_log(start=base_time(4))
+        self.import_bytes(raw_bytes, "DJIFlightRecord_2026-08-15_[21-53-20].txt")
+        raw = db.one(self.conn, "SELECT * FROM raw_files")
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE action='keychain_fetched'"
+            ).fetchone()[0], 0)
+
+        keychains = [[{"featurePoint": "FR_Standardization_Feature_Base_1",
+                       "aesKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                       "aesIv": "AAAAAAAAAAAAAAAAAAAAAA=="}]]
+        with mock.patch.object(keychain, "fetch",
+                               return_value={"ok": True, "keychains": keychains}):
+            result = keychain.unlock_raw(self.conn, self.root, int(raw["id"]), "TEST-KEY-123456")
+
+        self.assertTrue(result.get("ok"), result)
+        rows = db.all_rows(self.conn,
+                           "SELECT * FROM audit_log WHERE action='keychain_fetched'")
+        self.assertEqual(len(rows), 1)
+        payload = json.loads(rows[0]["payload_json"] or "{}")
+        self.assertEqual(payload.get("keychains"), 1)
+        self.assertIn("dev.dji.com", payload.get("endpoint", ""))
+        # The audit row must not carry the key or the keychain material.
+        self.assertNotIn("TEST-KEY-123456", rows[0]["payload_json"] or "")
+        self.assertNotIn("aesKey", rows[0]["payload_json"] or "")
+
+    def test_a_cached_keychain_does_not_claim_a_fetch(self) -> None:
+        from unittest import mock
+
+        raw_bytes = v13_bytes(5)
+        self.import_bytes(raw_bytes, "DJIFlightRecord_2026-08-16_[21-53-20].txt")
+        raw = db.one(self.conn, "SELECT * FROM raw_files")
+        import hashlib
+        keychain.store_cache(self.conn, self.root, hashlib.sha256(raw_bytes).hexdigest(),
+                             [[{"featurePoint": "FR_Standardization_Feature_Base_1",
+                                "aesKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                                "aesIv": "AAAAAAAAAAAAAAAAAAAAAA=="}]], "unit-test")
+        with mock.patch.object(keychain, "fetch") as fetch_mock:
+            keychain.unlock_raw(self.conn, self.root, int(raw["id"]), "TEST-KEY-123456")
+        fetch_mock.assert_not_called()
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE action='keychain_fetched'"
+            ).fetchone()[0], 0)
