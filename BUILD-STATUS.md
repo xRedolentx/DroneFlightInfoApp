@@ -223,9 +223,11 @@ meant to say:
 - 29 automated checks pass (`tests/test_stage4_usb.py`): the simulated adapter's
   13 original cases, the unreadable-log rules, the skip list, the 200-second
   bounds, and the reporting contract above.
-- **Still unproven:** a physical unplug/replug of the RC 2. It was scanned three
-  times against the attached device and added nothing after the first, but the
-  replug itself is the owner's.
+- **Unplug/replug verified 2026-11-21.** The RC 2 was physically unplugged and
+  re-attached; the device re-enumerated and the next scan read 17 logs, found
+  all of them already archived, and added nothing: **0 imported, 17 duplicates,
+  1.0 s, attention 0**. That is the physical half of the acceptance criterion,
+  not just a repeat scan against an unchanged handle.
 
 ### Stage 5 · DJI key — **verified end to end with a real key**
 
@@ -717,7 +719,7 @@ same garbage for that file, so nothing downstream could tell.
 | Archive inventory (269 files) | **Verified 2026-11-18** | `tools\diag.py`: 264 archive (7/218/39) + 5 controller (0/4/1) = **269 distinct, 7/222/40**; re-import added 0 | none |
 | Decoded totals (264 · 24h10m · 108 mi) | **Explained** | 264 records; 108.3 mi vs 108 (match at displayed precision); 24h21m vs 24h10m is exactly the 2 newest flights the reference export lacked; frames-derived distance agrees independently | Enter the key (done) and read the signed difference with *real inputs* ticked |
 | Due statuses at handover | **Verified on the real capture, since superseded by one owner action** | 188/100 + 1018/1000 Due; 19/20 and 16/20 Due soon; battery 3402QS was 30/20 Due at handover. On 2026-11-19 19:55 the owner recorded a **completed service** on that battery, which resets its baseline to zero (now 0/20, `ok`). That is the feature working, not a regression; Maintenance → Completed → Undo reverses it if it was a misclick | Undo the service if unintended, or leave it if the battery really was serviced |
-| Both real USB devices | **Verified on both, 2026-11-21** | Smart Controller: 259 logs, 153 raw files, 18 new flights, second attach 0 in 6 s. RC 2: 17 logs, 1 new v14 record awaiting the key, second attach 0 in 1 s. Seven collector and reporting defects found and fixed | Unplug/replug the RC 2 once if you want the physical confirmation on record |
+| Both real USB devices | **Verified on both, 2026-11-21** | Smart Controller: 259 logs, 153 raw files, 18 new flights, second attach 0 in 6 s. RC 2: 17 logs, 1 new v14 record (since decoded), and after a **physical unplug/replug** a scan found all 17 already archived — 0 imported, 1.0 s. Seven collector and reporting defects found and fixed | none |
 | No duplicate imports | **Verified** | Folder, ZIP, renamed duplicate, race, re-scan and reparse all add zero | none |
 | Key-cached offline reparse | **Verified 2026-11-19** | Real key decoded all 39 v14 records; one re-decode from cache at 16:15 UTC with the network off, no new flight | none |
 | Working backup recovery | **Verified on the real backup 2026-11-20** | 12 tests + 13-step rehearsal + `fault_check.py` (interrupted backup and interrupted restore). Then a real rehearsal: `FlightDesk-backup-20261119-125703.zip` restored with the current code into a fresh root — hashes, integrity and foreign keys clean, all 264 archive objects identical, `views.flight_detail` identical for **all 264 flights**, and the copy served over HTTP. Refusals held at the live root and on a populated folder | none for the backup itself; the cutover decision stays with Kevin |

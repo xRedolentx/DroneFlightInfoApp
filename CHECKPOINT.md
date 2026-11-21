@@ -34,7 +34,7 @@ writing; nothing is aspirational.
   16 unknown, 5 due soon, **1 due**.
 - **57 flights** carry at least one counted fault.
 - **5 batteries** have exceeded the 40 °C limit (peaks 44.0–53.6 °C).
-- **`usb_scans = 10`** — both controllers have been read; **both are now proven on
+- **`usb_scans = 11`** — both controllers have been read; **both are now proven on
   real hardware** (Smart Controller 259 logs, RC 2 17 logs, second attach adds 0).
 - Last backup: **2026-11-19 19:57 UTC, status `ok`**
   (`FlightDesk-backup-20261119-125703.zip` on the Desktop, sidecar hash matches).
@@ -87,9 +87,10 @@ needs the owner to tick *Mark records as my real inputs*.
 
 ## What is NOT verified — needs the owner
 
-1. **Unplug and replug the RC 2 once.** Both controllers are now verified by
-   scan, and the second attach adds zero, but the unplug/replug itself has not
-   happened — it is the one physical step I cannot take.
+1. ~~Unplug and replug the RC 2~~ — **done 2026-11-21.** The device was
+   physically re-attached and the next scan read 17 logs, added nothing, and
+   took 1.0 s. Both controllers are now verified on real hardware including the
+   physical reconnect.
 2. **Watch a restore yourself once** (optional now). The rehearsal above used the
    same code the button calls, on the real backup. The browser route — Settings →
    **Restore into a new root…** → **Keep current data** — has not been clicked
