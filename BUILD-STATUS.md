@@ -146,20 +146,58 @@ grouped).
 - **Not verified:** side-by-side judgement against the 23 original screenshots
   (they are on Kevin's machine, not here). The comparison page exists for that.
 
-### Stage 4 · USB import — **simulated only; physical pending**
+### Stage 4 · USB import — **verified on a real Smart Controller 2026-11-21**
 
-- 13 automated checks pass (`tests/test_stage4_usb.py`) against a simulated
-  adapter: hidden extensions, duplicate storage, both devices together,
-  interrupted and unstable copies staying retryable, reconnect, watcher restart,
-  second plug-in adding zero, manual-import convergence, non-flight files
-  ignored.
-- The physical collector is `tools/Collect-DjiLogs.ps1` (Shell.Application,
-  read-only, `CopyHere` with stability/size waits, unique staging per transfer,
-  hash verification, bounded timeout, disconnected reads never marked imported).
-- **Pending Kevin:** plug in each powered controller in file-transfer mode;
-  first attach should import eligible logs, second should add zero. Results must
-  be recorded separately for the Smart Controller and RC 2. The supplied 5
-  controller samples cannot certify the live hardware path.
+The first physical controller was attached and the app's own scan path
+(Settings → *Check controllers now*) was driven over HTTP against the live root.
+The first attempt exposed three defects in the collector, all silent.
+
+- **`CopyHere` was called on the source folder.** It copies INTO the folder it is
+  invoked on, so calling it on the source was a no-op: it returned in ~20 ms and
+  wrote nothing. Measured: **0 bytes staged after 800 s** with 250 logs attached.
+  The destination is now a `NameSpace` folder object for each staging directory;
+  the same copy then took **0.3 s** for a 968,945-byte log.
+- **A `FolderItem` was passed where a `Folder` was expected.** `$storage.Items()`
+  throws on a FolderItem, the throw was caught, no error was recorded, and the
+  scan reported `no_files` while 250 logs sat on the device. `Get-Folder` now
+  normalises either shape, and lookup failures are recorded as errors.
+- **MTP reports `.Size = 0`, not null.** Taking that as a real size made every
+  copy look like a size mismatch. The size now comes from
+  `ExtendedProperty('System.Size')` (which correctly said 968,945), and a zero is
+  treated as unknown.
+- **Found while fixing:** the per-file wait was 60 s each, so a broken transfer
+  would have ground for four hours. Three consecutive failures now abort the
+  scan with `copy_not_progressing`.
+
+**Result on the live root: 259 logs read, 153 raw files imported.** 18 of those
+are genuinely new flights — including four on 2026-11-15 that exist only on the
+controller and were never in the AirData export; the other 135 raw files are
+variants of flights already held (different bytes, same flight by fingerprint),
+and both originals are kept. Totals moved from 264 records / 24.35 h / 108.3 mi
+to **283 records / 25.86 h / 115.6 mi**.
+
+**Second attach adds zero** — the acceptance criterion — and the scan was then
+re-run to confirm it repeatedly: 0 imported, 259 duplicates, 6 s.
+
+- **A plugged-in controller must not be re-copied on every watcher pass.** The
+  watcher rescans every 45 s; the first version copied all 182 MB each time. The
+  scan now sends the collector a list of names the archive already holds, and the
+  collector skips them before copying. Measured: **59 s → 6 s**, 0 bytes copied.
+- **Two logs on the device cannot be read at all** (details offset 0 — the same
+defect as flight 216, and one of them is byte-identical to that flight's log, so
+  the defect is in the file the aircraft wrote). They are now **kept** and marked
+  `details_unreadable` rather than discarded at the door: the size and hash have
+  already proved the bytes are what the device holds, and an unreadable flight on
+  the review screen is more honest than a silent absence.
+- 19 automated checks pass (`tests/test_stage4_usb.py`), including the simulated
+  adapter's 13 original cases plus: a zero details offset is identified, an
+  unreadable log is archived and flagged instead of dropped, a second attach
+  does not duplicate it, a truncated log is still refused at the door, and the
+  scan tells the collector what is already archived (and does not leave that
+  list on disk).
+- **Still pending:** the **RC 2** has never been attached. The Smart Controller
+  path is now proven; the RC 2 uses a different folder (`Android/data/dji.go.v5/…`)
+  and must be recorded separately.
 
 ### Stage 5 · DJI key — **verified end to end with a real key**
 
@@ -638,7 +676,7 @@ same garbage for that file, so nothing downstream could tell.
 | Archive inventory (269 files) | **Verified 2026-11-18** | `tools\diag.py`: 264 archive (7/218/39) + 5 controller (0/4/1) = **269 distinct, 7/222/40**; re-import added 0 | none |
 | Decoded totals (264 · 24h10m · 108 mi) | **Explained** | 264 records; 108.3 mi vs 108 (match at displayed precision); 24h21m vs 24h10m is exactly the 2 newest flights the reference export lacked; frames-derived distance agrees independently | Enter the key (done) and read the signed difference with *real inputs* ticked |
 | Due statuses at handover | **Verified on the real capture, since superseded by one owner action** | 188/100 + 1018/1000 Due; 19/20 and 16/20 Due soon; battery 3402QS was 30/20 Due at handover. On 2026-11-19 19:55 the owner recorded a **completed service** on that battery, which resets its baseline to zero (now 0/20, `ok`). That is the feature working, not a regression; Maintenance → Completed → Undo reverses it if it was a misclick | Undo the service if unintended, or leave it if the battery really was serviced |
-| Both real USB devices | **Pending Kevin** | Simulated adapter covers 13 cases incl. interrupted copy and reconnect | Plug each controller in twice; expect zero new records on the second attach |
+| Both real USB devices | **Smart Controller verified 2026-11-21; RC 2 pending** | 259 logs read, 153 raw files imported (18 new flights), second attach added 0, fifth scan 0 in 6 s. Three collector defects found and fixed: `CopyHere` on the wrong folder, a FolderItem passed as a Folder, and `.Size = 0` read as a real size | Attach the **RC 2** and run the same two-attach check |
 | No duplicate imports | **Verified** | Folder, ZIP, renamed duplicate, race, re-scan and reparse all add zero | none |
 | Key-cached offline reparse | **Verified 2026-11-19** | Real key decoded all 39 v14 records; one re-decode from cache at 16:15 UTC with the network off, no new flight | none |
 | Working backup recovery | **Verified on the real backup 2026-11-20** | 12 tests + 13-step rehearsal + `fault_check.py` (interrupted backup and interrupted restore). Then a real rehearsal: `FlightDesk-backup-20261119-125703.zip` restored with the current code into a fresh root — hashes, integrity and foreign keys clean, all 264 archive objects identical, `views.flight_detail` identical for **all 264 flights**, and the copy served over HTTP. Refusals held at the live root and on a populated folder | none for the backup itself; the cutover decision stays with Kevin |
@@ -652,7 +690,7 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 308 automated tests, all passing (`python -m flightdesk selftest`).
+- 314 automated tests, all passing (`python -m flightdesk selftest`).
 - 87 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).

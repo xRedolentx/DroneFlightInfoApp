@@ -444,8 +444,23 @@ class ApiTest(ServerCase):
         self.assertIn("watcher", data)
 
     def test_controller_scan_reports_absence_cleanly(self) -> None:
-        result = self.post_json("/api/usb/scan", {})
-        self.assertIn(result["status"], {"no_device", "no_files", "unavailable"})
+        # The collector now really reads whatever is plugged into this machine.
+        # A scan against attached hardware would copy its logs into a test root
+        # and take a minute, so substitute a collector that reports absence.
+        import tempfile
+        from flightdesk import usb
+
+        with tempfile.TemporaryDirectory() as folder:
+            stub = Path(folder) / "absent.ps1"
+            stub.write_text('Write-Output \'{"status":"none","files":[],"errors":[]}\'',
+                            encoding="utf-8")
+            original = usb.SCRIPT
+            usb.SCRIPT = stub
+            try:
+                result = self.post_json("/api/usb/scan", {})
+            finally:
+                usb.SCRIPT = original
+        self.assertIn(result["status"], {"no_device", "no_files", "unavailable", "all_known"})
         self.assertEqual(result["imported"], 0)
         self.assertEqual(result["mode"], "physical")
 

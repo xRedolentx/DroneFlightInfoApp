@@ -1,10 +1,11 @@
-"""Stage 4: read-only controller collection contract (simulated adapter)."""
+﻿"""Stage 4: read-only controller collection contract (simulated adapter)."""
 from __future__ import annotations
 
+import json
+import struct
 import unittest
 
 from support import TempCase, log_bytes
-
 from flightdesk import db, usb
 from flightdesk.usb import SimEntry, simulate, validate_flight_bytes
 
@@ -24,6 +25,56 @@ class ValidationTest(unittest.TestCase):
         ok, reason = validate_flight_bytes(log_bytes(11)[:110])
         self.assertFalse(ok)
         self.assertIn(reason, {"too_short", "bad_details_offset"})
+
+    def test_a_zero_details_offset_is_identified(self) -> None:
+        data = bytearray(log_bytes(11))
+        struct.pack_into("<Q", data, 0, 0)
+        ok, reason = validate_flight_bytes(bytes(data))
+        self.assertFalse(ok)
+        self.assertEqual(reason, "bad_details_offset")
+
+
+class UnreadableLogTest(TempCase):
+    """A log whose details block cannot be read is kept, not silently dropped.
+
+    Measured on a real Smart Controller: two of 259 logs store a details offset
+    of 0. One of them is byte-identical to a log already in the archive, so the
+    defect is in the file the aircraft wrote, not in the export or the copy.
+    """
+
+    def zero_offset_entry(self, name="DJIFlightRecord_2025-05-16_[10-14-39].txt"):
+        data = bytearray(log_bytes(11))
+        struct.pack_into("<Q", data, 0, 0)
+        return SimEntry(device="Smart Controller", target="sc", storage="s",
+                        name=name, data=bytes(data))
+
+    def test_the_bytes_are_archived_and_the_flight_is_flagged(self) -> None:
+        result = simulate(self.conn, self.root, [self.zero_offset_entry()])
+        self.assertEqual(result.imported, 1, result.notes)
+        self.assertEqual(result.attention, 0)
+        self.assertIn("kept_unreadable:bad_details_offset", result.notes)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM raw_files").fetchone()[0], 1)
+        row = db.one(self.conn, "SELECT * FROM flights")
+        self.assertEqual(row["identity_status"], "unresolved")
+        self.assertEqual(row["excluded_reason"], "details_unreadable")
+        self.assertIsNone(row["aircraft_name"])
+        self.assertIsNone(row["max_height_m"])
+
+    def test_a_second_attach_does_not_duplicate_it(self) -> None:
+        simulate(self.conn, self.root, [self.zero_offset_entry()])
+        again = simulate(self.conn, self.root, [self.zero_offset_entry()])
+        self.assertEqual(again.imported, 0)
+        self.assertEqual(again.duplicates, 1)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0], 1)
+
+    def test_a_truncated_log_is_still_refused_at_the_door(self) -> None:
+        short = SimEntry(device="Smart Controller", target="sc", storage="s",
+                         name="DJIFlightRecord_2025-05-16_[10-14-39].txt",
+                         data=log_bytes(11)[:110])
+        result = simulate(self.conn, self.root, [short])
+        self.assertEqual(result.imported, 0)
+        self.assertEqual(result.attention, 1)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM raw_files").fetchone()[0], 0)
 
 
 class SimulatedAdapterTest(TempCase):
@@ -131,3 +182,46 @@ class SimulatedAdapterTest(TempCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SkipKnownTest(TempCase):
+    """A plugged-in controller must not be re-copied on every watcher pass.
+
+    The watcher rescans every 45 s. Without a skip list each pass would re-copy
+    everything on the device - measured at 182 MB per scan on a Smart Controller.
+    """
+
+    def test_the_scan_tells_the_collector_what_is_already_archived(self) -> None:
+        from unittest import mock
+        self.import_bytes(log_bytes(11, days=1),
+                          "DJIFlightRecord_2026-08-12_[21-53-20].txt")
+        seen = {}
+
+        def fake(script, args, timeout=300):
+            seen["args"] = args
+            index = args.index("-SkipListPath")
+            with open(args[index + 1], encoding="utf-8") as fh:
+                seen["skip"] = json.load(fh)
+            return {"status": "all_known", "files": [], "errors": [], "skipped_known": 1}
+
+        with mock.patch.object(usb, "_ps_json", side_effect=fake):
+            result = usb.scan(self.conn, self.root)
+
+        self.assertIn("-SkipListPath", seen["args"])
+        self.assertEqual(seen["skip"][0]["name"], "DJIFlightRecord_2026-08-12_[21-53-20].txt")
+        self.assertGreater(seen["skip"][0]["size"], 0)
+        self.assertEqual(result.status, "all_known")
+        self.assertEqual(result.duplicates, 1)
+        self.assertEqual(result.scanned, 1)
+        self.assertEqual(result.imported, 0)
+        # The list holds device file names, so it does not outlive the scan.
+        skip_paths = list((self.root / "tmp").glob("usb-skip-*.json"))
+        self.assertEqual(skip_paths, [])
+
+    def test_a_device_with_nothing_known_is_still_reported_as_such(self) -> None:
+        from unittest import mock
+        with mock.patch.object(usb, "_ps_json",
+                               return_value={"status": "none", "files": [], "errors": []}):
+            result = usb.scan(self.conn, self.root)
+        self.assertEqual(result.status, "no_device")
+

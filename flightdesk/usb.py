@@ -127,9 +127,25 @@ def scan(conn, root: Path, *, staging_root: Path | None = None,
     staging = Path(staging_root) if staging_root else root / "tmp" / f"usb-{uuid.uuid4().hex}"
     staging.mkdir(parents=True, exist_ok=True)
     result = ScanResult(status="none", mode="physical")
+    skip_file: Path | None = None
     try:
-        data = _ps_json(SCRIPT, ["-StagingRoot", str(staging),
-                                 "-TimeoutSeconds", str(timeout_s)])
+        # Everything the archive already holds, by name and size. Without this a
+        # controller left plugged in makes the 45 s watcher re-copy the whole
+        # device on every pass: measured at 182 MB per scan on a Smart Controller.
+        skip_file = staging.parent / f"usb-skip-{uuid.uuid4().hex}.json"
+        try:
+            known = db.all_rows(
+                conn, "SELECT original_name AS name, size_bytes AS size FROM raw_files")
+            skip_file.write_text(
+                json.dumps([{"name": r["name"], "size": int(r["size"] or 0)}
+                            for r in known if r["name"]], separators=(",", ":")),
+                encoding="utf-8")
+        except OSError:
+            skip_file = None
+        args = ["-StagingRoot", str(staging), "-TimeoutSeconds", str(timeout_s)]
+        if skip_file is not None:
+            args += ["-SkipListPath", str(skip_file)]
+        data = _ps_json(SCRIPT, args)
         if data is None:
             result.status = "unavailable"
             result.notes.append("collector_unavailable")
@@ -137,18 +153,22 @@ def scan(conn, root: Path, *, staging_root: Path | None = None,
         status = str(data.get("status") or "none")
         errors = data.get("errors") or []
         files = data.get("files") or []
+        skipped = int(data.get("skipped_known") or 0)
         devices = sorted({str(f.get("device") or "") for f in files if f.get("device")})
         for device in devices:
             _note_device(conn, device, "connected")
         result.devices = devices
-        result.scanned = len(files)
+        result.scanned = len(files) + skipped
+        result.duplicates += skipped
         if status == "none":
             result.status = "no_device"
             return result
         if not files:
-            result.status = "no_files"
             result.attention = len(errors)
             result.notes = sorted({str(e.get("code")) for e in errors if e.get("code")})
+            # "all_known" means the device was read and everything on it is
+            # already archived — a success with nothing to do, not an absence.
+            result.status = "all_known" if status == "all_known" else "no_files"
             return result
         importer = Importer(root, conn)
         for entry in files:
@@ -165,10 +185,21 @@ def scan(conn, root: Path, *, staging_root: Path | None = None,
                 with open(path, "rb") as fh:
                     blob = fh.read()
                 ok, reason = validate_flight_bytes(blob)
-                if not ok:
+                if not ok and reason != "bad_details_offset":
                     result.attention += 1
                     result.notes.append(f"incomplete_or_invalid:{reason}")
                     continue
+                if not ok:
+                    # `bad_details_offset` is a defect in the file itself, not in
+                    # the copy: the size and hash above already proved the bytes
+                    # are exactly what the device holds. Measured on a real
+                    # controller, two logs carry a details offset of 0 — one of
+                    # them byte-identical to a log already in the archive.
+                    # Dropping them loses the only evidence; the importer keeps
+                    # them, marks them `details_unreadable` and shows them for
+                    # review, which is what the archive does for damaged files
+                    # everywhere else.
+                    result.notes.append(f"kept_unreadable:{reason}")
                 expected = entry.get("sha256")
                 if expected and hashlib.sha256(blob).hexdigest() != str(expected).lower():
                     result.attention += 1
@@ -213,6 +244,12 @@ def scan(conn, root: Path, *, staging_root: Path | None = None,
         return result
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+        if skip_file is not None:
+            # It holds device file names; it exists for the length of one scan.
+            try:
+                skip_file.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 class _BytesReader:
@@ -271,10 +308,15 @@ def simulate(conn, root: Path, entries: Iterable[SimEntry], *,
             result.notes.append("copy_incomplete_retryable")
             continue
         ok, reason = validate_flight_bytes(entry.data)
-        if not ok:
+        if not ok and reason != "bad_details_offset":
             result.attention += 1
             result.notes.append(f"incomplete_or_invalid:{reason}")
             continue
+        if not ok:
+            # Kept, not dropped, for the same reason as the physical path: the
+            # defect is in the file, and an unreadable flight is more honest on
+            # the review screen than an absence the owner never sees.
+            result.notes.append(f"kept_unreadable:{reason}")
         digest = hashlib.sha256(entry.data).hexdigest()
         if digest in seen_hashes:
             result.duplicates += 1
