@@ -66,6 +66,23 @@ def detect_version(path: Path) -> int | None:
 def _cstr(raw: bytes) -> str:    return raw.split(b"\x00", 1)[0].decode("utf-8", "replace").strip()
 
 
+def _printable_identity(value: Any) -> str | None:
+    """A serial or aircraft name is printable text, or it is not a serial.
+
+    A details block read from the wrong offset decodes to bytes that are not
+    UTF-8: `decode("utf-8", "replace")` turns them into U+FFFD and control
+    characters. Seen on one real v11 log whose stored details offset was 0, so
+    the file header was read as if it were the details block — the record then
+    carried a mojibake aircraft name and a height of -4.9e31.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or "\ufffd" in text or not text.isprintable():
+        return None
+    return text
+
+
 MASK64 = (1 << 64) - 1
 CRC64_POLY = 0x95AC9329AC4BC9B5
 XOR_MAGIC = 0x123456789ABCDEF0
@@ -126,6 +143,24 @@ def _parse_details_bytes(b: bytes, version: int) -> dict[str, Any] | None:
         except (OverflowError, OSError, ValueError):
             start_utc = None
 
+    # Identity is the alignment check. Five fixed-offset strings all decoding to
+    # unprintable bytes means the block is not where the offsets say it is, so
+    # none of its numbers can be trusted either — including the height, which
+    # passed the old fiteness-only test at -4.9e31.
+    identities = {
+        "aircraft_name": _printable_identity(aircraft_name),
+        "aircraft_sn": _printable_identity(aircraft_sn),
+        "camera_sn": _printable_identity(camera_sn),
+        "rc_sn": _printable_identity(rc_sn),
+        "battery_sn": _printable_identity(battery_sn),
+    }
+    present = [k for k, v in (
+        ("aircraft_name", aircraft_name), ("aircraft_sn", aircraft_sn),
+        ("camera_sn", camera_sn), ("rc_sn", rc_sn), ("battery_sn", battery_sn),
+    ) if v]
+    if present and not any(identities.values()):
+        return None
+
     def sane_coord(v: float, limit: float) -> float | None:
         return v if math.isfinite(v) and abs(v) <= limit and abs(v) > 1e-9 else None
 
@@ -143,11 +178,11 @@ def _parse_details_bytes(b: bytes, version: int) -> dict[str, Any] | None:
         "max_v_speed_mps": sane_pos(max_v_speed),
         "takeoff_altitude_m": takeoff_alt if math.isfinite(takeoff_alt) else None,
         "product_type": int(product_type),
-        "aircraft_name": aircraft_name or None,
-        "aircraft_sn": aircraft_sn or None,
-        "camera_sn": camera_sn or None,
-        "rc_sn": rc_sn or None,
-        "battery_sn": battery_sn or None,
+        "aircraft_name": identities["aircraft_name"],
+        "aircraft_sn": identities["aircraft_sn"],
+        "camera_sn": identities["camera_sn"],
+        "rc_sn": identities["rc_sn"],
+        "battery_sn": identities["battery_sn"],
         "app_platform": int(app_platform),
         "app_version": app_version,
     }
@@ -171,6 +206,11 @@ def distance_metres(value: Any, version: int | None) -> float | None:
     except (TypeError, ValueError):
         return None
     if not math.isfinite(metres) or metres < 0:
+        return None
+    # 0 < x < 1e-6 m is floating-point noise from a misread field, not a flight
+    # that moved a nanometre. One real record carried 1.96e-33 here and entered
+    # the archive as a flight of zero metres instead of an unknown.
+    if 0.0 < metres < 1e-6:
         return None
     if version is not None and version >= DISTANCE_IN_KM_FROM_VERSION:
         metres *= 1000.0
@@ -250,7 +290,11 @@ def read_details(path: Path, version: int) -> dict[str, Any] | None:
             if len(prefix) < 12:
                 return None
             offset = 100 if version == 12 else struct.unpack_from("<Q", prefix, 0)[0]
-            if offset < 0 or offset + DETAILS_LEN > size:
+            # The offset must land after the header and leave room for the whole
+            # block. One real v11 file stored 0 here, and reading offset 0 fed
+            # the file header in as a details block: garbage identity, a height
+            # of -4.9e31, and a distance of 1.96e-33 all became "measurements".
+            if offset < 12 or offset + DETAILS_LEN > size:
                 return None
             fh.seek(offset)
             b = fh.read(DETAILS_LEN)
@@ -560,10 +604,14 @@ def parse_file(path: Path, root: Path, keychain_json: list | None = None) -> Par
                     distance_metres(details_json[cli_key], version)
                     if local_key == "total_distance_m" else details_json[cli_key]
                 )
-        merged["aircraft_name"] = merged.get("aircraft_name") or details_json.get("aircraftName")
-        merged["aircraft_sn"] = merged.get("aircraft_sn") or details_json.get("aircraftSn")
-        merged["camera_sn"] = merged.get("camera_sn") or details_json.get("cameraSn")
-        merged["rc_sn"] = merged.get("rc_sn") or details_json.get("rcSn")
+        merged["aircraft_name"] = merged.get("aircraft_name") or _printable_identity(
+            details_json.get("aircraftName"))
+        merged["aircraft_sn"] = merged.get("aircraft_sn") or _printable_identity(
+            details_json.get("aircraftSn"))
+        merged["camera_sn"] = merged.get("camera_sn") or _printable_identity(
+            details_json.get("cameraSn"))
+        merged["rc_sn"] = merged.get("rc_sn") or _printable_identity(
+            details_json.get("rcSn"))
         samples = []
         for frame in data.get("frames") or []:
             if isinstance(frame, dict):
@@ -578,6 +626,11 @@ def parse_file(path: Path, root: Path, keychain_json: list | None = None) -> Par
             meta=meta,
         )
     details = read_details(path, version) or {}
+    if not details and 6 <= version <= 12:
+        # These versions always carry a details block. If it did not read, the
+        # block is not where the header says — record that, so the flight is
+        # marked unreadable instead of quietly authoritative with no facts.
+        meta["details_rejected"] = True
     try:
         data, cli_meta = _run_cli(path, root)
     except ParserUnavailable as exc:
@@ -598,10 +651,14 @@ def parse_file(path: Path, root: Path, keychain_json: list | None = None) -> Par
     for key in ("totalTime", "totalDistance", "maxHeight", "maxHorizontalSpeed"):
         if key in details_json and details_json[key] is not None:
             merged.setdefault("_cli_" + key, details_json[key])
-    merged["aircraft_name"] = merged.get("aircraft_name") or details_json.get("aircraftName")
-    merged["aircraft_sn"] = merged.get("aircraft_sn") or details_json.get("aircraftSn")
-    merged["camera_sn"] = merged.get("camera_sn") or details_json.get("cameraSn")
-    merged["rc_sn"] = merged.get("rc_sn") or details_json.get("rcSn")
+    merged["aircraft_name"] = merged.get("aircraft_name") or _printable_identity(
+        details_json.get("aircraftName"))
+    merged["aircraft_sn"] = merged.get("aircraft_sn") or _printable_identity(
+        details_json.get("aircraftSn"))
+    merged["camera_sn"] = merged.get("camera_sn") or _printable_identity(
+        details_json.get("cameraSn"))
+    merged["rc_sn"] = merged.get("rc_sn") or _printable_identity(
+        details_json.get("rcSn"))
     samples = []
     for frame in data.get("frames") or []:
         if isinstance(frame, dict):

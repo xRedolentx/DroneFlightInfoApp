@@ -1691,6 +1691,19 @@
 
   // --------------------------------------------------------------- import
 
+  // Machine reasons are stored, plain sentences are shown. A code in the table
+  // is honest but unreadable to the person who owns the data.
+  function reasonLabel(code) {
+    var map = {
+      details_unreadable: "The log's summary block could not be read, so this " +
+        "record has a date from the file name and nothing else.",
+      same_time_weak_match: "Another record has the same time and the evidence " +
+        "is too weak to merge them.",
+      no_start_time: "Neither the log nor the file name gave a start time."
+    };
+    return map[code] || code || "unresolved";
+  }
+
   function renderImport() {
     api("/api/import/history").then(function (data) {
       view.innerHTML = '<div class="workspace" style="grid-template-columns:minmax(0,1fr) 340px">' +
@@ -1751,7 +1764,7 @@
             return '<tr><td><a href="#/flights/' + f.id + '">' +
               esc(dateOnly(f.start_time_utc || f.filename_time)) + "</a></td><td>" +
               esc(f.aircraft_name || "—") + "</td><td class=\"small\">" +
-              esc(f.excluded_reason || "unresolved") + "</td><td>" +
+              esc(reasonLabel(f.excluded_reason)) + "</td><td>" +
               '<button type="button" class="link" data-act="merge" data-flight="' + f.id +
               '">Keep / merge</button></td></tr>';
           }).join("") + "</tbody></table>"

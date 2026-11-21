@@ -29,14 +29,41 @@ PLAUSIBLE_LIMITS = {
 }
 
 
+# Fields that cannot be negative at all. Altitude above sea level is absent from
+# this set on purpose: flying below sea level is real (the Dead Sea, Death
+# Valley), and -80 m is a reading while -4.9e31 m is not.
+NON_NEGATIVE_METRICS = {
+    "duration_s",
+    "recorder_duration_s",
+    "airborne_time_s",
+    "total_distance_m",
+    "path_length_m",
+    "max_home_distance_m",
+    "max_height_m",
+    "max_h_speed_mps",
+}
+
+
 def drop_implausible(m: "FlightMetrics") -> None:
-    """Clear measured values that cannot be a flight reading, and say so."""
+    """Clear measured values that cannot be a flight reading, and say so.
+
+    Two tests, each earned by a real record:
+
+    * **magnitude** — a misaligned details block yields a 191-hour duration or a
+      height of -4.9e31 as readily as a positive one, and `value > limit` let
+      every negative through.
+    * **sign** — a distance of -1 m is inside every magnitude limit and is still
+      not a measurement.
+    """
     for field_name, limit in PLAUSIBLE_LIMITS.items():
         value = getattr(m, field_name, None)
         if value is None:
             continue
         try:
-            implausible = float(value) > limit
+            number = float(value)
+            implausible = abs(number) > limit
+            if field_name in NON_NEGATIVE_METRICS and number < 0:
+                implausible = True
         except (TypeError, ValueError):
             implausible = True
         if implausible:

@@ -1,6 +1,6 @@
 # CHECKPOINT — resume here
 
-Updated 2026-11-20 23:59 UTC (owner session). Read this first, then
+Updated 2026-11-21 01:20 UTC (owner session). Read this first, then
 `BUILD-STATUS.md`. Everything below was measured on this machine at the time of
 writing; nothing is aspirational.
 
@@ -11,7 +11,7 @@ writing; nothing is aspirational.
   capture gap"; the launcher and landing-page work of 2026-11-20 is committed on
   top of the checkpoint commits, so name the tip with `git log -1`.
 - Working tree: **clean**.
-- `python -m flightdesk selftest` → **290 tests, 0 failures, 0 errors**.
+- `python -m flightdesk selftest` → **308 tests, 0 failures, 0 errors**.
 - `node tools\ui_check.mjs <cdp-port> <outdir> <zip>` → **87 checks, 0 failures**.
 - `python tools\rehearse.py` → **13/13 steps**.
 - `python tools\recon_check.py` → **9/9**.
@@ -21,8 +21,12 @@ writing; nothing is aspirational.
 
 ## Live data (measured, not remembered)
 
-- **264 flights · 24.35 h · 108.3 mi** · 100% decoded · **0 awaiting the key**.
+- **264 records · 263 authoritative + 1 unreadable** · 24.35 h · 108.3 mi ·
+  decoded coverage 100 % · **0 awaiting the key**.
 - 264 raw originals archived; **39 keychains cached**.
+- **Flight 216 is the unreadable one**: a v11 log whose header stores a details
+  offset of 0, so its block was never read. Repaired 2026-11-21 — no identity, no
+  metrics, `details_unreadable`, excluded from totals. Totals did not move.
 - **49 maintenance rules**: 43 AirData + 6 DoneDoctor. Statuses: 27 ok,
   16 unknown, 5 due soon, **1 due**.
 - **57 flights** carry at least one counted fault.
@@ -98,6 +102,28 @@ needs the owner to tick *Mark records as my real inputs*.
 Commercially: **keep AirData active** until the owner is satisfied. Renewal is
 February 2027.
 
+## The Air 3S reference figures — checked 2026-11-21, they hold
+
+The record is flight 260, 2026-08-12 05:53:56 UTC ("Antero Media Air 3S") — one
+of the two flights the AirData export lacked.
+
+- **154 ft** distance → 46.98 m = 154.1 ft. Match.
+- **148 ft** max height → frames 45.10 m = 148.0 ft. Match (the log's own rounded
+  field stores 45.0 m).
+- **14.54 mph** max speed → 6.50 m/s = 14.54 mph. Exact.
+- **94 % → 81 %** battery. Exact.
+- **82.9 °F** max battery temperature → 28.3 °C = 82.9 °F. Exact.
+- **49 ft** max distance → 14.97 m = 49.1 ft when measured **from the first GPS
+  fix**, which is what AirData does. The app measures from the aircraft's
+  recorded home point and reports 51.3 ft. Explained convention, 0.66 m.
+- **5m02s** duration → 302.1 s airborne (`on_ground` false from 2.1 s); 304.2 s
+  for the whole record, which is what the app stores and totals.
+
+**Open question for the owner (not a defect, a choice):** the app's air time is
+the record duration; AirData shows airborne time. Measured across all 263
+decodable flights the two differ by **8.5 minutes** (24h21m vs 24h11m). Nothing
+changes until someone decides which figure the dashboard should show.
+
 ## Known gaps that remain (reasoned, not measured)
 
 - **Backup while the USB watcher is running** is covered by a settings-level test,
@@ -111,6 +137,11 @@ February 2027.
   the owner's observation. Typing the path always works.
 - **"Missions"** is not modelled; the third tile counts flights. If a mission means
   something else, say so.
+- **Two flights have never been checked against anything.** Flight 216 is now
+  explicitly unreadable rather than falsely complete, but no attempt has been
+  made to recover it from a second source (the DJI Fly app cache, or AirData's
+  own copy of that flight). If the owner can re-download that one log, it may
+  parse cleanly.
 
 ## Things that bit us (so they do not bite again)
 
@@ -126,6 +157,17 @@ February 2027.
   `demo_seeded` short-circuits the same condition. Both halves are now pinned:
   a static test that the page reads `counts.flights`, and a server test that the
   payload carries it.
+- **One v11 log stores a details offset of 0.** `read_details` accepted it and
+  read the file *header* as a details block, so a flight carried a mojibake name
+  and a height of −4.9e31 m and was still `authoritative`. Three guards now:
+  the offset must land after the header, a wholly unprintable identity region
+  rejects the block, and `drop_implausible` tests magnitude **and sign**. The
+  pinned DJI parser reports the same garbage for that file, so only a guard
+  could have caught it.
+- **`COALESCE(?,column)` protects a reparse and blocks a repair.** The normal
+  backfill never overwrites a stored identity with null — right for backfill,
+  fatal for a value now known to be garbage. The repair path nulls those columns
+  by name instead.
 - **The rule status payload did not expose the limit fields**, so an editing form
   would have opened blank and saving it would have erased every counter it could
   not see. The thresholds are now in the payload, with a test.
@@ -146,7 +188,7 @@ February 2027.
 
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
-python -m flightdesk selftest          # expect: 290 tests, 0 failures
+python -m flightdesk selftest          # expect: 308 tests, 0 failures
 python tools\fault_check.py            # expect: disk_full; restore survives
 python tools\recon_check.py            # expect: 9/9
 flightdesk.cmd                          # or: python -m flightdesk serve

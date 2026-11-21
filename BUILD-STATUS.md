@@ -188,9 +188,30 @@ grouped).
   failure, and a real failure could be masked by a successful first result. It
   now returns `nothing_pending`, `decoded`, `failed` and the distinct failure
   codes, and the UI says which.
-- **Still unverified by observation:** the Air 3S reference figures (5m02s,
-  154 ft, 49 ft, 148 ft, 14.54 mph, 82.9°F, 94%→81%) have not been compared
-  against the decoded record. The data is now available to do it.
+- **Air 3S reference figures — checked 2026-11-21 against the decoded record.**
+  The record is flight 260, 2026-08-12 05:53:56 UTC — one of the two flights the
+  AirData export lacked. Five of the seven figures match exactly, and the other
+  two are conventions, not errors:
+
+  | Reference | Record | Verdict |
+  |---|---|---|
+  | 154 ft distance | 46.98 m = 154.1 ft | match |
+  | 148 ft max height | frames 45.10 m = 148.0 ft | match (the log's rounded field stores 45.0) |
+  | 14.54 mph max speed | 6.50 m/s = 14.54 mph | exact |
+  | 94% → 81% battery | 94 → 81 | exact |
+  | 82.9 °F max temp | 28.3 °C = 82.9 °F | exact |
+  | 49 ft max distance | 14.97 m = 49.1 ft **from the first GPS fix**; 15.63 m = 51.3 ft from the recorded home point | explained |
+  | 5m02s duration | 302.1 s airborne (`on_ground` false from 2.1 s); 304.2 s whole record | explained |
+
+  The two conventions are now written down rather than assumed. **Max distance:**
+  the app measures from the aircraft's recorded home point, which is the
+  aircraft's own datum and 0.66 m further out here; AirData measures from the
+  first fix. **Duration:** the app stores and totals the record duration; AirData
+  appears to show airborne time. Measured across all 263 decodable flights, the
+  airborne rule (`on_ground` false) totals **8.5 minutes less** — 24.19 h against
+  24.33 h. The archive total uses the record duration, so nothing in the totals
+  moves today; switching the headline to airborne time is a one-line change with
+  a 24h21m → 24h11m effect, and it is the owner's call, not a silent fix.
 
 ### Stage 6 · Offline analysis — **verified on synthetic + one real decode path**
 
@@ -567,6 +588,48 @@ page. Both halves of that were real and independent.
   The browser gate gains a check that a root with records does not open on the
   welcome panel — 87 checks, 0 failures.
 
+### Stage 15 · A details block that is not where it says it is
+
+One real record — flight 216, a v11 log from 2025-05-16 — carried a mojibake
+aircraft name and serials, a max height of **−4.9e31 m** and a total distance of
+**1.96e-33 m**, and was marked `authoritative`. The pinned DJI parser reports the
+same garbage for that file, so nothing downstream could tell.
+
+- **Cause.** A v6–v12 header stores the offset of the details block in its first
+  eight bytes. That file stores **0**. `read_details` accepted it, so the file
+  header was read as if it were a 380-byte details block: every field came from
+  the framing bytes. All 224 other v6–v12 files put the block at 86–99.98 % of
+  the file.
+- **Three guards, each with a test.** The offset must land after the header and
+  leave room for the block. A block whose whole identity region decodes to
+  unprintable bytes is rejected wholesale — identity is the alignment check, so
+  misalignment invalidates the numbers in it too; a single unreadable field is
+  dropped alone and the readable serials are kept. Distance values between 0 and
+  1e-6 m are floating-point noise, not a measurement.
+- **`drop_implausible` now tests magnitude and sign.** `value > limit` never
+  caught a *negative* absurdity, which is exactly the shape a misaligned block
+  produces. Fields that cannot be negative are now refused when negative;
+  altitude above sea level is deliberately exempt, because −80 m in Death Valley
+  is a reading.
+- **A flight nobody can read is still a flight.** It is kept with its file-name
+  date, marked `unresolved` with `excluded_reason='details_unreadable'`, and
+  `metrics_source='unavailable'` — visible on Import → **Needs review** in plain
+  English, and excluded from totals. Re-parsing repairs an existing record: the
+  identity columns are nulled **by name**, because the ordinary backfill uses
+  `COALESCE(?,column)` and a null can never overwrite the garbage.
+- **Applied to the live root** after a rollback copy
+  (`data-before-details-fix-20261121`): flight 216 re-parsed, audited,
+  264 records still, air time and distance identical to the second
+  (87,668.8 s · 174,227.79 m), 263 authoritative + 1 unresolved, rule statuses
+  untouched (27 ok / 16 unknown / 5 due soon / 1 due), reconciliation still
+  108.26 mi at 100 % decoded coverage.
+- 18 new tests (`tests/test_stage15_bad_details.py`): offset 0, an offset inside
+  the header, an offset past the end, a wholly misaligned identity region, one
+  bad field among good ones, denormal distance, negative height / distance /
+  speed, a negative altitude that must survive, an import with no invented
+  facts, a reparse that replaces a garbage record, and a reparse that never
+  degrades a good one.
+
 ## Release gate
 
 | Item | Verdict | Evidence | Next human action |
@@ -580,6 +643,7 @@ page. Both halves of that were real and independent.
 | Key-cached offline reparse | **Verified 2026-11-19** | Real key decoded all 39 v14 records; one re-decode from cache at 16:15 UTC with the network off, no new flight | none |
 | Working backup recovery | **Verified on the real backup 2026-11-20** | 12 tests + 13-step rehearsal + `fault_check.py` (interrupted backup and interrupted restore). Then a real rehearsal: `FlightDesk-backup-20261119-125703.zip` restored with the current code into a fresh root — hashes, integrity and foreign keys clean, all 264 archive objects identical, `views.flight_detail` identical for **all 264 flights**, and the copy served over HTTP. Refusals held at the live root and on a populated folder | none for the backup itself; the cutover decision stays with Kevin |
 | Launcher lands on the home page | **Verified 2026-11-20** | A cold render of `/` on the real root opened on *"No records have been imported yet"*: the welcome panel was gated on a state field the server never sends. Fixed, and after the fix the same render shows the flight list with 264 rows. The URL now carries `#/flights` and a second click reuses the running instance | Click it and confirm the page looks right |
+| Unreadable details block | **Fixed and applied 2026-11-21** | Flight 216's v11 header stores a details offset of 0, so the file header was read as a details block: mojibake identity, −4.9e31 m height. Guards added, the record repaired in place after a rollback copy, totals identical | none |
 | Video count comparison | **Removed** | Media counts are gone from the app at the owner's request; the reference claimed 749 photos while only 180 files exist | none |
 
 **Keep AirData active while any material difference is unexplained.** A final
@@ -588,7 +652,7 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 290 automated tests, all passing (`python -m flightdesk selftest`).
+- 308 automated tests, all passing (`python -m flightdesk selftest`).
 - 87 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).

@@ -98,6 +98,11 @@ def _metrics_source(outcome: ParseOutcome) -> str:
         return "keychain_details"
     if outcome.status == "pending_key":
         return "metadata_only"
+    if outcome.meta.get("details_rejected") and not outcome.samples:
+        # The file should have carried a details block and the one it points at
+        # is unreadable. Any keys left in `details` are placeholders, so
+        # "details" here would claim a source that produced nothing.
+        return "unavailable"
     return "details"
 
 
@@ -404,8 +409,26 @@ def _insert_or_link_flight(
             return flight_id, False, match
         if (not outcome.samples) and stored_samples > 0:
             return flight_id, False, match
-        if (not outcome.samples) and not outcome.details:
+        if (not outcome.samples) and not outcome.details and not outcome.meta.get(
+                "details_rejected"):
             return flight_id, False, match
+        if outcome.meta.get("details_rejected") and stored_samples == 0:
+            # This record was built from a details block that is not where its
+            # header said it was. Re-reading it now yields nothing, and an
+            # empty record is more truthful than the garbage it replaces: the
+            # stored name and serials were mojibake and the height was -4.9e31.
+            #
+            # The identity columns must be cleared by name, not left to the
+            # update below: that statement uses COALESCE(?,column) so a null
+            # never overwrites, which is right for ordinary backfill and wrong
+            # for a value we now know to be garbage.
+            conn.execute(
+                "UPDATE flights SET identity_status='unresolved', "
+                "excluded_reason='details_unreadable', aircraft_sn=NULL, "
+                "aircraft_name=NULL, battery_sn=NULL, camera_sn=NULL, rc_sn=NULL, "
+                "aircraft_equipment_id=NULL, battery_equipment_id=NULL WHERE id=?",
+                (flight_id,),
+            )
         # Equal weight is enough to refresh: this is the path a reparse takes
         # when a parser improves, and it must backfill the same logical flight
         # instead of keeping figures computed by the old parser.
@@ -420,6 +443,12 @@ def _insert_or_link_flight(
     if not start_utc and not filename_time:
         identity = "unresolved"
         excluded_reason = "no_start_time"
+    if outcome.meta.get("details_rejected") and not outcome.samples:
+        # A flight whose details block cannot be read is still a flight — the
+        # owner flew it — but it cannot be attributed to an aircraft, so it is
+        # kept, excluded from totals, and labelled with the reason.
+        identity = "unresolved"
+        excluded_reason = "details_unreadable"
 
     aircraft_equipment_id = resolve_equipment(conn, "aircraft", aircraft_sn, aircraft_name)
     battery_equipment_id = resolve_equipment(conn, "battery", battery_sn, None)
