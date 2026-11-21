@@ -145,7 +145,16 @@ changes until someone decides which figure the dashboard should show.
   explicitly unreadable rather than falsely complete, but no attempt has been
   made to recover it from a second source (the DJI Fly app cache, or AirData's
   own copy of that flight). If the owner can re-download that one log, it may
-  parse cleanly.
+  parse cleanly. Flight 283 is the same defect and exists **only** on the
+  controller; there is no second copy to try.
+- **`import_batches` grows by one row per file re-imported.** A controller scan
+  that copies 24 already-known files writes 24 batches, so the table reached
+  1,057 rows after five scans. The Import screen shows the last 40, so it reads
+  fine, but the history is noisier than it should be. A batch per scan, or no
+  batch for an all-duplicate import, would be the fix.
+- **The watcher has not been observed with a controller attached over a long
+  period.** One scan costs 6 s with the skip list; the interval default is 45 s.
+  That is arithmetic, not an observation.
 
 ## Things that bit us (so they do not bite again)
 
