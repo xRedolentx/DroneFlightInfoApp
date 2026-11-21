@@ -65,9 +65,10 @@ showing a guess — a partial total always says how many records it covers.
 
 What happens: Flight Desk sends exactly one request, to DJI's official
 keychain endpoint, with the key in a request header. The key is stored with
-Windows DPAPI for your user account — never in the database, a backup, a URL or
-a process argument. Each decoded log's keychain is cached against that file's
-hash, so later launches work offline.
+Windows DPAPI for your user account — never in the database text, never in a URL,
+never in a process argument. It **is** included in a backup, as the
+Windows-protected file itself (see §8). Each decoded log's keychain is cached
+against that file's hash, so later launches work offline.
 
 **After a Windows reinstall or a new machine** the DPAPI protection no longer
 applies. Re-enter the key; if the DJI app was deleted, create a new one at
@@ -130,8 +131,12 @@ view again.
    **Choose folder…**). Use a folder **outside** OneDrive/Dropbox/Google Drive —
    Flight Desk warns you if it is inside one. Typing the path always works, even
    if the Windows folder dialog does not appear.
-2. Press **Create backup…**. A backup is one file: the database snapshot plus
-   every archived original plus a hash manifest.
+2. Press **Create backup…**. A backup is one file: the database snapshot, every
+   archived original, a hash manifest, and **your DJI key** as a Windows-protected
+   file. Restoring on this machine gives the key back without re-typing it. The
+   protection is tied to your Windows account, so a copy taken to another machine
+   carries a key that cannot be unlocked there — re-enter it after such a restore.
+   Treat a backup file like your key: anyone who can open it as you can use it.
 3. **Validate** with **Validate a backup…** — type or choose the ZIP; it checks
    hashes without changing anything.
 4. **Rehearse:** **Restore into a new root…** — type or choose the backup ZIP and

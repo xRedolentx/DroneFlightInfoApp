@@ -1,15 +1,56 @@
 # CHECKPOINT — resume here
 
-Updated 2026-11-21 01:20 UTC (owner session). Read this first, then
-`BUILD-STATUS.md`. Everything below was measured on this machine at the time of
-writing; nothing is aspirational.
+Updated 2026-11-21 02:50 UTC, end of the 2026-11-20/21 session. Read this first,
+then `BUILD-STATUS.md`. Everything below was measured on this machine at the time
+of writing; nothing is aspirational.
+
+## What this session did (2026-11-20 23:00 → 2026-11-21 02:50 UTC)
+
+Nine commits. The five that wrote to the live data root each have a rollback
+copy; the other four changed code or documentation only. In order:
+
+1. `f9b3849` **Launcher opens the flight list.** The first-run welcome panel was
+   gated on a state field the server never sends, so every cold start on the real
+   root opened on "no records have been imported yet". A second click also started
+   a second server on a new port; it now reuses the running one.
+2. `390cc19` **An unreadable details block is not a flight record.** One v11 log
+   stores a details offset of 0, so the file header was read as a details block:
+   mojibake identity, height −4.9e31 m, distance 1.96e-33 m, marked
+   `authoritative`. Guards added; flight 216 repaired in place.
+3. `d901bf8` **The controller path actually copies.** `CopyHere` was called on the
+   source folder, so the Smart Controller import staged 0 bytes in 800 s. Fixed,
+   plus a skip list so a plugged-in device is not re-copied on every watcher pass
+   (59 s → 6 s).
+4. `2d42251` Records that import and its open warts.
+5. `e6136d1` **Nothing runs longer than 200 s without progress** (owner's rule):
+   the parser and collector bounds moved 300 s → 200 s, pinned by tests.
+6. `ce4b3b0` **The RC 2 reads, and the scan says what it did.** Seven reporting
+   defects in one pass: `imported 0` for a created record, attention with no
+   reason, unrecorded scans, devices reported as never seen, a volume counted
+   twice.
+7. `c411606` **Decode the RC 2 log, and audit the fetch that did it.** The v14 log
+   decoded in 1.6 s; a successful keychain fetch was not audited until now.
+8. `bb9f898` The physical RC 2 replug adds nothing, as it should.
+9. `2d9af30` **Backups carry the DJI key, and DoneDoctor is backdated** — the
+   three decisions the owner made at the end of the session.
+
+The archive grew from **264 records / 24.35 h / 108.3 mi** to **284 records /
+26.16 h / 116.0 mi** by reading both controllers: **20 new records and 155 new
+raw files**, all accounted for.
+
+- **18 decoded flights** from the Smart Controller (ids 265–282), four of them
+  on 2026-11-15 which the AirData export never had.
+- **1 unreadable record** from the Smart Controller (id 283): details offset 0,
+  kept and flagged, excluded from totals.
+- **1 decoded flight** from the RC 2 (id 284), decoded with the DJI key.
+- The other 135 raw files from the controllers are byte-different variants of
+  flights already held; both originals are kept and the flight is counted once.
 
 ## State at a glance
 
 - Local Git: a linear history on one branch; **no remote and nothing pushed**.
-  Code tip: **`c58b2b7`** — "editable schedules, reversible restore, visible
-  capture gap"; the launcher and landing-page work of 2026-11-20 is committed on
-  top of the checkpoint commits, so name the tip with `git log -1`.
+  Code tip: **`2d9af30`** — "backups carry the DJI key, and DoneDoctor is
+  backdated". Every claim below was re-measured at 02:50 UTC against that tip.
 - Working tree: **clean**.
 - `python -m flightdesk selftest` → **331 tests, 0 failures, 0 errors**.
 - `node tools\ui_check.mjs <cdp-port> <outdir> <zip>` → **87 checks, 0 failures**.
@@ -32,17 +73,25 @@ writing; nothing is aspirational.
   of file. Both are kept, marked `details_unreadable`, and excluded from totals.
 - **49 maintenance rules**: 43 AirData + 6 DoneDoctor. Statuses: 27 ok,
   16 unknown, 5 due soon, **1 due**.
-- **57 flights** carry at least one counted fault.
-- **5 batteries** have exceeded the 40 °C limit (peaks 44.0–53.6 °C).
+- **63 flights** carry at least one counted fault (44 battery-voltage, 32
+  not-enough-force, 11 compass, 5 SD card, 2 gimbal, 1 motor-blocked), plus 21
+  more with only a start-up compass transient, which is recorded but not counted.
+- **5 batteries** have exceeded the 40 °C limit (peaks 44.0–53.6 °C); **48**
+  flights carry a temperature reading at all, the rest report 0 for every sample.
 - **`usb_scans = 11`** — both controllers have been read; **both are now proven on
   real hardware** (Smart Controller 259 logs, RC 2 17 logs, second attach adds 0).
-- Last backup: **2026-11-19 19:57 UTC, status `ok`**
-  (`FlightDesk-backup-20261119-125703.zip` on the Desktop, sidecar hash matches).
-  It predates the Stage 12/13 commits, but `backup.py` changed in them only in
-  `restore_backup`; the writing and validating paths are unchanged, and the file
-  validates clean against the current build. Inspected 2026-11-20.
+- Last backup: **2026-11-21 02:43 UTC, status `ok`** —
+  `C:\Users\raven\Desktop\Backups\FlightDesk-backup-20261120-194306.zip`,
+  303,410,112 bytes (289.4 MiB), sha256 `79eecc71…f9b8`, 419 originals,
+  **key included**, validates with no errors and no warnings. Taken after the
+  key-in-backup change and after the DoneDoctor backdating.
+  The previous one (`…-20261119-125703.zip`, 264 records, no key) is kept: it is
+  a valid snapshot of the archive before the controllers were read.
 - Rollback copies of the data root taken before each change live in
-  `%LOCALAPPDATA%\FlightDesk\data-before-*` (11 of them). Not in Git.
+  `%LOCALAPPDATA%\FlightDesk\data-before-*` (**16** of them, 335 MB each at the
+  latest size — about 5 GB on disk). Not in Git. The 2026-11-21 set covers the
+  details fix, the Smart Controller import, the RC 2 import, the DJI decode and
+  the backdating.
 
 ## One thing that looks like a regression and is not
 
@@ -52,8 +101,10 @@ acceptance case. It now reads **0/20, `ok`**. Cause: the owner recorded a
 `service_completed`, rule 22, no notes). A completed service resets that rule's
 baseline by design — this is the feature working.
 
-If that click was unintended: **Maintenance → Completed → Undo** puts it back.
-Do not "fix" it by deleting the row: it is the owner's record and is audited.
+**The owner confirmed on 2026-11-21 that this service was real**, so nothing is
+to be undone. Do not "fix" it by deleting the row: it is the owner's record and
+is audited. (Undo remains available under Maintenance → Completed if a future
+entry is ever recorded by mistake.)
 
 ## Restore rehearsal on the real backup — passed 2026-11-20
 
@@ -146,7 +197,7 @@ reading becoming 0/20 `ok` is the feature working. Nothing to undo.
    rules (dated 11/19/26 13:00 local). The **AirData** counters need no backdating;
    they come from the capture. If a specific AirData rule was actually serviced on
    a date you know, record that separately — nothing has been invented here.
-5. **Read the comparison.** Settings → *Mark records as my real inputs* →
+4. **Read the comparison.** Settings → *Mark records as my real inputs* →
    Reconciliation → Generate report. 108.3 mi against 108; 24h21m against 24h10m,
    explained by the two newest flights the AirData export lacked.
 
@@ -211,26 +262,20 @@ changes until someone decides which figure the dashboard should show.
   `keychain_fetched` now records the endpoint and the keychain count, never the
   key or the material.
 
-- **Every controller defect was silence, not an error.** `CopyHere` on the source
-  folder returned in 20 ms having done nothing; a `FolderItem` passed where a
-  `Folder` was expected threw inside a `catch` that recorded nothing, so the scan
-  said `no_files` with 250 logs attached; MTP's `.Size = 0` was taken as a real
-  size. Then, on the RC 2, a created flight was reported as `imported 0`, and a
-  scan that found everything already archived wrote no history row at all. A
-  summary that says less than what happened is the same class of bug as one that
-  says nothing.
+- **Every controller defect was silence, not an error.** `CopyHere` on the *source*
+  folder returned in 20 ms having done nothing (it copies into the folder it is
+  called on); a `FolderItem` passed where a `Folder` was expected threw inside a
+  `catch` that recorded nothing, so the scan said `no_files` while 250 logs sat on
+  the device; MTP's `.Size = 0` was taken as a real size. Result: 0 bytes staged
+  after 800 s. Then, on the RC 2, a created flight was reported as `imported 0`,
+  and a scan that found everything already archived wrote no history row at all.
+  **A summary that says less than what happened is the same class of bug as one
+  that says nothing**, and a rejected path must record why.
 - **My own fix shipped a null.** The collector added `$deviceName` to the seen
   list on the line *before* it was assigned, so it reported no devices. Running
   the collector directly and reading its JSON caught it; the app's summary alone
   would have hidden it.
 
-- **The controller collector never copied a byte, and said nothing.** Three
-  faults stacked: `CopyHere` was invoked on the *source* folder (it copies into
-  the folder it is called on, so it returned in 20 ms having done nothing); a
-  `FolderItem` was passed where a `Folder` was expected, and the throw was caught
-  with no error recorded; and MTP reports `.Size = 0`, which was taken as a real
-  size. Result: `no_files` on a device holding 250 logs, and 0 bytes staged after
-  800 s. Every one of those was silent. A rejected path must record why.
 - **`@($pipeline | ConvertFrom-Json)` nests the whole array in PowerShell 5.1.**
   The JSON array arrives as one object, so `@()` wraps it into a single-element
   array and a `foreach` over it runs once with `.name` being every name joined by

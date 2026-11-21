@@ -1,10 +1,13 @@
 # BUILD-STATUS
 
 Flight Desk · stage-by-stage status against `FlightDesk-DeepSeek-Build.md`.
-Last updated: 2026-11-20. **The real archive is now imported and the real
-equipment capture is applied** to the live data root; the real-input checks that
-were pending are recorded below. Automated checks still use synthetic fixtures.
-Resume notes are in `CHECKPOINT.md`.
+Last updated: 2026-11-21. **The real archive is imported, the real equipment
+capture is applied, and both DJI controllers have been read from real hardware.**
+Live totals are **284 records · 419 raw originals · 26.16 h · 116.0 mi**, of which
+two records are unreadable and excluded; the AirData reference stays scoped to the
+264-record archive so the comparison keeps its meaning. The stage records below
+state the counts as they stood when each stage was verified. Automated checks still
+use synthetic fixtures. Resume notes are in `CHECKPOINT.md`.
 
 ## How to reproduce
 

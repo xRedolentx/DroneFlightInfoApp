@@ -72,7 +72,10 @@ It never writes to the controller.
 
 **Back up.** Settings → Create backup. Pick a folder that is *not* inside
 OneDrive/Dropbox/Google Drive — Flight Desk warns you if it is. A backup is one
-consistent database snapshot plus every archived original plus a hash manifest.
+consistent database snapshot plus every archived original plus a hash manifest,
+**and your DJI key** as its Windows-protected file. The protection is per-user and
+per-machine: a restore here needs no re-entry, a restore elsewhere must re-enter
+the key.
 
 **Rehearse a restore.** Settings → Restore into a new root. It extracts into a
 fresh folder, checks every hash and the database's foreign keys, and only then
@@ -91,7 +94,10 @@ The fourth button exports without serials or coordinates.
 
 The DJI key is stored separately at `%LOCALAPPDATA%\FlightDesk\keychains\dji_key.bin`
 and is encrypted with Windows DPAPI for your Windows user. It is never written
-to the database, a backup, a URL or a process argument.
+into the database text, a URL or a process argument. It **is** carried in a backup
+as that protected file, so a restore on this machine keeps working; the blob only
+decrypts for this Windows account, and anyone who can read the backup as you can
+use the key.
 
 ## If something looks wrong
 
