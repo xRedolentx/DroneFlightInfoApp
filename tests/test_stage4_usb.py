@@ -1,6 +1,7 @@
 ﻿"""Stage 4: read-only controller collection contract (simulated adapter)."""
 from __future__ import annotations
 
+import hashlib
 import json
 import struct
 import unittest
@@ -251,3 +252,118 @@ class LongRunningBoundTest(unittest.TestCase):
         import inspect
         default_per_file = inspect.signature(usb.scan).parameters["timeout_s"].default
         self.assertLessEqual(default_per_file * 3, self.LIMIT)
+
+class ScanReportingTest(TempCase):
+    """The summary must never say less than what happened.
+
+    Measured on a real RC 2: the scan reported "imported 0" while a flight had
+    been created, and raised attention: 1 with an empty reason list.
+    """
+
+    def scan_with(self, payload: dict):
+        from unittest import mock
+        with mock.patch.object(usb, "_ps_json", return_value=payload):
+            return usb.scan(self.conn, self.root)
+
+    def test_a_record_that_waits_for_the_key_still_counts_as_imported(self) -> None:
+        # A v14 log stores metadata and waits for the DJI key. A flight exists, so
+        # the summary must not say "imported 0" — which is what the real RC 2
+        # scan said while flight 284 had just been created.
+        from types import SimpleNamespace
+        from unittest import mock
+
+        data = log_bytes(11, days=5)
+        staged = self.root / "tmp" / "pending-layout"
+        staged.mkdir(parents=True, exist_ok=True)
+        path = staged / "FlightRecord_2026-08-21_[18-28-13].txt"
+        path.write_bytes(data)
+        payload = {"status": "ok", "devices": ["DJI RC 2"], "errors": [], "files": [{
+            "device": "DJI RC 2", "target": "DJI RC 2", "storage": "s",
+            "source_name": path.name, "staged_path": str(path),
+            "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+        }]}
+        batch = SimpleNamespace(totals={"discovered": 1, "awaiting_dji": 1,
+                                        "new_flight": 1, "already_imported": 0})
+        with mock.patch.object(usb, "_ps_json", return_value=payload), \
+                mock.patch.object(usb.Importer, "import_stream", return_value=batch):
+            result = usb.scan(self.conn, self.root)
+
+        self.assertEqual(result.imported, 1, result.as_dict())
+        self.assertEqual(result.attention, 1, result.as_dict())
+        self.assertIn("awaiting_dji_key", result.notes)
+
+    def test_a_new_decoded_record_is_not_double_counted(self) -> None:
+        # A decoded new log reports both `new` and `new_flight` for one file.
+        from types import SimpleNamespace
+        from unittest import mock
+
+        data = log_bytes(11, days=6)
+        staged = self.root / "tmp" / "decoded-layout"
+        staged.mkdir(parents=True, exist_ok=True)
+        path = staged / "FlightRecord_2026-08-22_[18-28-13].txt"
+        path.write_bytes(data)
+        payload = {"status": "ok", "devices": ["DJI RC 2"], "errors": [], "files": [{
+            "device": "DJI RC 2", "target": "DJI RC 2", "storage": "s",
+            "source_name": path.name, "staged_path": str(path),
+            "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+        }]}
+        batch = SimpleNamespace(totals={"discovered": 1, "new": 1, "new_flight": 1})
+        with mock.patch.object(usb, "_ps_json", return_value=payload), \
+                mock.patch.object(usb.Importer, "import_stream", return_value=batch):
+            result = usb.scan(self.conn, self.root)
+
+        self.assertEqual(result.imported, 1, result.as_dict())
+        self.assertEqual(result.attention, 0, result.as_dict())
+        self.assertNotIn("awaiting_dji_key", result.notes)
+
+    def test_attention_always_carries_a_reason(self) -> None:
+        result = self.scan_with({"status": "no_files", "devices": ["DJI RC 2"],
+                                 "errors": [{"device": "DJI RC 2", "code": "copy_timeout_or_empty"}],
+                                 "files": []})
+        self.assertEqual(result.attention, 1)
+        self.assertIn("copy_timeout_or_empty", result.notes)
+
+    def test_a_device_that_was_read_is_reported_even_with_nothing_new(self) -> None:
+        result = self.scan_with({"status": "all_known", "devices": ["DJI RC 2"],
+                                 "files": [], "errors": [], "skipped_known": 17})
+        self.assertEqual(result.devices, ["DJI RC 2"])
+        self.assertEqual(result.status, "all_known")
+        row = db.one(self.conn, "SELECT * FROM usb_devices WHERE device='DJI RC 2'")
+        self.assertIsNotNone(row)
+        self.assertIsNotNone(row["last_success"])
+
+
+class ScanHistoryTest(TempCase):
+    """Every scan leaves a row, including the ones that find nothing new."""
+
+    def scan_with(self, payload: dict):
+        from unittest import mock
+        with mock.patch.object(usb, "_ps_json", return_value=payload):
+            return usb.scan(self.conn, self.root)
+
+    def test_all_known_is_recorded_in_the_history(self) -> None:
+        result = self.scan_with({"status": "all_known", "devices": ["DJI RC 2"],
+                                 "files": [], "errors": [], "skipped_known": 17})
+        self.assertEqual(result.status, "all_known")
+        rows = db.all_rows(self.conn, "SELECT * FROM usb_scans")
+        self.assertEqual(len(rows), 1, "a second attach must leave a trace")
+        self.assertEqual(rows[0]["device"], "DJI RC 2")
+        self.assertEqual(rows[0]["scanned"], 17)
+        self.assertEqual(rows[0]["duplicates"], 17)
+        self.assertEqual(rows[0]["imported"], 0)
+
+    def test_no_files_is_recorded_in_the_history(self) -> None:
+        self.scan_with({"status": "no_files", "devices": ["DJI RC 2"],
+                        "files": [], "errors": []})
+        rows = db.all_rows(self.conn, "SELECT * FROM usb_scans")
+        self.assertEqual(len(rows), 1)
+
+    def test_an_absent_device_is_recorded_as_a_check_with_no_device(self) -> None:
+        # Clicking "Check controllers now" with nothing plugged in is still an
+        # event worth recording: it is the difference between "nobody looked" and
+        # "looked, nothing was there".
+        self.scan_with({"status": "none", "files": [], "errors": []})
+        rows = db.all_rows(self.conn, "SELECT * FROM usb_scans")
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0]["device"])
+        self.assertEqual(rows[0]["scanned"], 0)

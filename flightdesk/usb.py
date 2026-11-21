@@ -163,22 +163,57 @@ def scan(conn, root: Path, *, staging_root: Path | None = None,
         errors = data.get("errors") or []
         files = data.get("files") or []
         skipped = int(data.get("skipped_known") or 0)
-        devices = sorted({str(f.get("device") or "") for f in files if f.get("device")})
+        # The collector reports the devices it saw, not just the ones it copied
+        # from. A second attach finds everything already archived, and reporting
+        # no device at all made the review screen say "never seen" about a
+        # controller that had just been read.
+        devices = sorted({str(d) for d in (data.get("devices") or []) if d})
+        devices += sorted({str(f.get("device") or "") for f in files if f.get("device")})
+        devices = sorted(set(devices))
         for device in devices:
             _note_device(conn, device, "connected")
         result.devices = devices
         result.scanned = len(files) + skipped
         result.duplicates += skipped
+
+        def record() -> ScanResult:
+            """Write the scan row and return, on every exit path.
+
+            The first version returned early for `no_files` and `all_known`, so a
+            second attach — the exact evidence the owner is asked to produce —
+            left no trace in the scan history at all.
+            """
+            if errors:
+                result.notes.extend(
+                    sorted({str(e.get("code")) for e in errors if e.get("code")}))
+            result.notes = sorted(set(result.notes))
+            with db.tx(conn):
+                conn.execute(
+                    "INSERT INTO usb_scans(at,device,scanned,imported,duplicates,attention,detail) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    (db.now_utc(), ",".join(result.devices) or None, result.scanned,
+                     result.imported, result.duplicates, result.attention,
+                     ",".join(result.notes)[:1000] or None),
+                )
+            return result
+
         if status == "none":
             result.status = "no_device"
-            return result
+            return record()
+        # A device that was read without copy errors counts as a success even if
+        # it had nothing new: "last success" then answers "was this controller
+        # read?", which is the question the owner is actually asking.
+        failed_devices = {str(e.get("device") or "") for e in errors if e.get("device")}
+        for device in devices:
+            if device not in failed_devices:
+                _mark_success(conn, device)
         if not files:
             result.attention = len(errors)
             result.notes = sorted({str(e.get("code")) for e in errors if e.get("code")})
             # "all_known" means the device was read and everything on it is
             # already archived — a success with nothing to do, not an absence.
             result.status = "all_known" if status == "all_known" else "no_files"
-            return result
+            return record()
         importer = Importer(root, conn)
         for entry in files:
             path = Path(str(entry.get("staged_path") or ""))
@@ -227,12 +262,25 @@ def scan(conn, root: Path, *, staging_root: Path | None = None,
                     member_path=f"{entry.get('target') or 'unknown'}/{name}",
                 )
                 totals = batch.totals
-                result.imported += int(totals.get("new", 0))
+                # A v14 log carries metadata but waits for the DJI key. It is a
+                # record the archive now holds, so it belongs in "imported";
+                # `max` rather than a sum because a decoded new log reports both
+                # `new` and `new_flight` for the same file. Measured on a real
+                # RC 2: the scan said "imported 0" while a flight had in fact
+                # been created.
+                stored = max(int(totals.get("new", 0)), int(totals.get("new_flight", 0)))
+                result.imported += stored
                 result.duplicates += int(totals.get("already_imported", 0))
-                result.attention += int(totals.get("needs_attention", 0)) + int(
-                    totals.get("awaiting_dji", 0)
-                )
-                if totals.get("new"):
+                awaiting = int(totals.get("awaiting_dji", 0))
+                broken = int(totals.get("needs_attention", 0))
+                result.attention += awaiting + broken
+                # Attention without a reason is the silence this project keeps
+                # getting bitten by. Every count that raises attention names why.
+                if awaiting:
+                    result.notes.append("awaiting_dji_key")
+                if broken:
+                    result.notes.append("not_importable")
+                if stored:
                     _mark_success(conn, device)
             finally:
                 try:
@@ -240,17 +288,7 @@ def scan(conn, root: Path, *, staging_root: Path | None = None,
                 except OSError:
                     pass
         result.status = "ok" if result.scanned else "no_files"
-        if errors:
-            result.notes.extend(sorted({str(e.get("code")) for e in errors if e.get("code")}))
-        with db.tx(conn):
-            conn.execute(
-                "INSERT INTO usb_scans(at,device,scanned,imported,duplicates,attention,detail) "
-                "VALUES(?,?,?,?,?,?,?)",
-                (db.now_utc(), ",".join(result.devices) or None, result.scanned,
-                 result.imported, result.duplicates, result.attention,
-                 ",".join(result.notes)[:1000] or None),
-            )
-        return result
+        return record()
     finally:
         shutil.rmtree(staging, ignore_errors=True)
         if skip_file is not None:

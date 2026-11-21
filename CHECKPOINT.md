@@ -21,10 +21,10 @@ writing; nothing is aspirational.
 
 ## Live data (measured, not remembered)
 
-- **283 records · 281 authoritative + 2 unreadable** · 25.86 h · 115.6 mi ·
-  **0 awaiting the key**.
-- 418 raw originals archived (264 from the AirData export, 154 from the
-  controller); **39 keychains cached**.
+- **284 records · 282 authoritative + 2 unreadable** · 26.16 h · 115.6 mi ·
+  **1 awaiting the key** (the RC 2's v14 log from 2026-08-21).
+- 419 raw originals archived (264 from the AirData export, 155 from the two
+  controllers); **39 keychains cached**.
 - **Two unreadable flights, both the same defect**: a v11 log whose header stores
   a details offset of 0, so its block was never read. Flight 216 came from the
   export; flight 283 came from the controller on 2026-11-21 and is the same kind
@@ -33,8 +33,8 @@ writing; nothing is aspirational.
   16 unknown, 5 due soon, **1 due**.
 - **57 flights** carry at least one counted fault.
 - **5 batteries** have exceeded the 40 °C limit (peaks 44.0–53.6 °C).
-- **`usb_scans = 5`** — the **Smart Controller** has been read five times. The
-  **RC 2** has never been attached.
+- **`usb_scans = 9`** — both controllers have been read; **both are now proven on
+  real hardware** (Smart Controller 259 logs, RC 2 17 logs, second attach adds 0).
 - Last backup: **2026-11-19 19:57 UTC, status `ok`**
   (`FlightDesk-backup-20261119-125703.zip` on the Desktop, sidecar hash matches).
   It predates the Stage 12/13 commits, but `backup.py` changed in them only in
@@ -86,11 +86,9 @@ needs the owner to tick *Mark records as my real inputs*.
 
 ## What is NOT verified — needs the owner
 
-1. **The RC 2, twice.** The Smart Controller path is now proven on real hardware
-   (`usb_scans = 5`, second attach adds zero, 6 s per scan). The RC 2 uses a
-   different folder (`Android/data/dji.go.v5/files/FlightRecord`) and has never
-   been seen. Attach it, run *Check controllers now*, unplug, replug, check again
-   (expect 0 new).
+1. **Unplug and replug the RC 2 once.** Both controllers are now verified by
+   scan, and the second attach adds zero, but the unplug/replug itself has not
+   happened — it is the one physical step I cannot take.
 2. **Watch a restore yourself once** (optional now). The rehearsal above used the
    same code the button calls, on the real backup. The browser route — Settings →
    **Restore into a new root…** → **Keep current data** — has not been clicked
@@ -158,6 +156,19 @@ changes until someone decides which figure the dashboard should show.
 
 ## Things that bit us (so they do not bite again)
 
+- **Every controller defect was silence, not an error.** `CopyHere` on the source
+  folder returned in 20 ms having done nothing; a `FolderItem` passed where a
+  `Folder` was expected threw inside a `catch` that recorded nothing, so the scan
+  said `no_files` with 250 logs attached; MTP's `.Size = 0` was taken as a real
+  size. Then, on the RC 2, a created flight was reported as `imported 0`, and a
+  scan that found everything already archived wrote no history row at all. A
+  summary that says less than what happened is the same class of bug as one that
+  says nothing.
+- **My own fix shipped a null.** The collector added `$deviceName` to the seen
+  list on the line *before* it was assigned, so it reported no devices. Running
+  the collector directly and reading its JSON caught it; the app's summary alone
+  would have hidden it.
+
 - **The controller collector never copied a byte, and said nothing.** Three
   faults stacked: `CopyHere` was invoked on the *source* folder (it copies into
   the folder it is called on, so it returned in 20 ms having done nothing); a
@@ -214,7 +225,7 @@ changes until someone decides which figure the dashboard should show.
 
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
-python -m flightdesk selftest          # expect: 314 tests, 0 failures
+python -m flightdesk selftest          # expect: 324 tests, 0 failures
 python tools\fault_check.py            # expect: disk_full; restore survives
 python tools\recon_check.py            # expect: 9/9
 flightdesk.cmd                          # or: python -m flightdesk serve

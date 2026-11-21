@@ -146,11 +146,12 @@ grouped).
 - **Not verified:** side-by-side judgement against the 23 original screenshots
   (they are on Kevin's machine, not here). The comparison page exists for that.
 
-### Stage 4 · USB import — **verified on a real Smart Controller 2026-11-21**
+### Stage 4 · USB import — **both controllers verified on real hardware, 2026-11-21**
 
-The first physical controller was attached and the app's own scan path
-(Settings → *Check controllers now*) was driven over HTTP against the live root.
-The first attempt exposed three defects in the collector, all silent.
+The Smart Controller was attached and scanned, then the **DJI RC 2** was attached
+and scanned through the app's own path (Settings → *Check controllers now*, driven
+over HTTP against the live root). Each first attempt exposed real defects, all
+silent.
 
 - **`CopyHere` was called on the source folder.** It copies INTO the folder it is
   invoked on, so calling it on the source was a no-op: it returned in ~20 ms and
@@ -169,35 +170,62 @@ The first attempt exposed three defects in the collector, all silent.
   would have ground for four hours. Three consecutive failures now abort the
   scan with `copy_not_progressing`.
 
-**Result on the live root: 259 logs read, 153 raw files imported.** 18 of those
-are genuinely new flights — including four on 2026-11-15 that exist only on the
-controller and were never in the AirData export; the other 135 raw files are
-variants of flights already held (different bytes, same flight by fingerprint),
-and both originals are kept. Totals moved from 264 records / 24.35 h / 108.3 mi
-to **283 records / 25.86 h / 115.6 mi**.
+**Smart Controller: 259 logs read, 153 raw files imported.** 18 are genuinely new
+flights — including four on 2026-11-15 that exist only on the controller and were
+never in the AirData export; the other 135 raw files are variants of flights
+already held (different bytes, same flight by fingerprint), and both originals
+are kept.
 
-**Second attach adds zero** — the acceptance criterion — and the scan was then
-re-run to confirm it repeatedly: 0 imported, 259 duplicates, 6 s.
+**RC 2: 17 logs read, 1 new record.** It is `FlightRecord_2026-08-21`, a **v14
+encrypted log** — stored as `pending_key` with its metadata (date, aircraft,
+1090.4 s duration) and no measurements, which is the documented rule for an
+encrypted record without its keychain.
+
+Both pass the acceptance criterion — **the second attach adds zero**: Smart
+Controller 0 imported / 259 duplicates in 6 s; RC 2 0 imported / 17 duplicates
+in 1 s. Live totals: **284 records · 26.16 h · 115.6 mi**.
+
+Reporting defects found by reading what the scan actually said, not what it was
+meant to say:
+
+- **"imported 0" while a flight had been created.** A v14 record lands in
+  `awaiting_dji`, which was not counted as imported. `imported` now counts stored
+  records (`max(new, new_flight)`, so a decoded log reporting both is not
+  double-counted), and `awaiting_dji_key` is named in the notes.
+- **`attention: 1` with an empty reason list.** Every count that raises attention
+  now names its cause.
+- **`all_known` scans left no trace.** The early return skipped the scan row, so
+  the second attach — the exact evidence the owner is asked to produce — was not
+  recorded at all. Every exit path now writes the row, including a check that
+  found no device ("looked, nothing was there" is not "nobody looked").
+- **A read device reported as never seen.** The collector listed devices from
+  copied files only, so a scan that found everything already archived reported no
+  device. It now reports the devices it read, and `last_success` means "this
+  controller was read", not "this controller supplied something new".
+- **One volume counted twice.** The RC 2 exposes the same volume as two storage
+  handles, so `scanned` read 34 for 17 logs. Files are deduped by name per device
+  before anything is counted.
+- **A defect in the fix itself:** the collector added `$deviceName` to the seen
+  list *before* assigning it, so it reported no devices at all. Caught by running
+  the collector directly rather than trusting the app's summary.
 
 - **A plugged-in controller must not be re-copied on every watcher pass.** The
   watcher rescans every 45 s; the first version copied all 182 MB each time. The
   scan now sends the collector a list of names the archive already holds, and the
-  collector skips them before copying. Measured: **59 s → 6 s**, 0 bytes copied.
-- **Two logs on the device cannot be read at all** (details offset 0 — the same
-defect as flight 216, and one of them is byte-identical to that flight's log, so
-  the defect is in the file the aircraft wrote). They are now **kept** and marked
-  `details_unreadable` rather than discarded at the door: the size and hash have
-  already proved the bytes are what the device holds, and an unreadable flight on
-  the review screen is more honest than a silent absence.
-- 19 automated checks pass (`tests/test_stage4_usb.py`), including the simulated
-  adapter's 13 original cases plus: a zero details offset is identified, an
-  unreadable log is archived and flagged instead of dropped, a second attach
-  does not duplicate it, a truncated log is still refused at the door, and the
-  scan tells the collector what is already archived (and does not leave that
-  list on disk).
-- **Still pending:** the **RC 2** has never been attached. The Smart Controller
-  path is now proven; the RC 2 uses a different folder (`Android/data/dji.go.v5/…`)
-  and must be recorded separately.
+  collector skips them before copying. Measured: **59 s → 6 s** on the Smart
+  Controller and **0.7 s** on the RC 2, with 0 bytes copied.
+- **Two logs on the Smart Controller cannot be read at all** (details offset 0 —
+  the same defect as flight 216, and one is byte-identical to that flight's log,
+  so the defect is in the file the aircraft wrote). They are now **kept** and
+  marked `details_unreadable` rather than discarded at the door: size and hash
+  have already proved the bytes are what the device holds, and an unreadable
+  flight on the review screen is more honest than a silent absence.
+- 29 automated checks pass (`tests/test_stage4_usb.py`): the simulated adapter's
+  13 original cases, the unreadable-log rules, the skip list, the 200-second
+  bounds, and the reporting contract above.
+- **Still unproven:** a physical unplug/replug of the RC 2. It was scanned three
+  times against the attached device and added nothing after the first, but the
+  replug itself is the owner's.
 
 ### Stage 5 · DJI key — **verified end to end with a real key**
 
@@ -676,7 +704,7 @@ same garbage for that file, so nothing downstream could tell.
 | Archive inventory (269 files) | **Verified 2026-11-18** | `tools\diag.py`: 264 archive (7/218/39) + 5 controller (0/4/1) = **269 distinct, 7/222/40**; re-import added 0 | none |
 | Decoded totals (264 · 24h10m · 108 mi) | **Explained** | 264 records; 108.3 mi vs 108 (match at displayed precision); 24h21m vs 24h10m is exactly the 2 newest flights the reference export lacked; frames-derived distance agrees independently | Enter the key (done) and read the signed difference with *real inputs* ticked |
 | Due statuses at handover | **Verified on the real capture, since superseded by one owner action** | 188/100 + 1018/1000 Due; 19/20 and 16/20 Due soon; battery 3402QS was 30/20 Due at handover. On 2026-11-19 19:55 the owner recorded a **completed service** on that battery, which resets its baseline to zero (now 0/20, `ok`). That is the feature working, not a regression; Maintenance → Completed → Undo reverses it if it was a misclick | Undo the service if unintended, or leave it if the battery really was serviced |
-| Both real USB devices | **Smart Controller verified 2026-11-21; RC 2 pending** | 259 logs read, 153 raw files imported (18 new flights), second attach added 0, fifth scan 0 in 6 s. Three collector defects found and fixed: `CopyHere` on the wrong folder, a FolderItem passed as a Folder, and `.Size = 0` read as a real size | Attach the **RC 2** and run the same two-attach check |
+| Both real USB devices | **Verified on both, 2026-11-21** | Smart Controller: 259 logs, 153 raw files, 18 new flights, second attach 0 in 6 s. RC 2: 17 logs, 1 new v14 record awaiting the key, second attach 0 in 1 s. Seven collector and reporting defects found and fixed | Unplug/replug the RC 2 once if you want the physical confirmation on record |
 | No duplicate imports | **Verified** | Folder, ZIP, renamed duplicate, race, re-scan and reparse all add zero | none |
 | Key-cached offline reparse | **Verified 2026-11-19** | Real key decoded all 39 v14 records; one re-decode from cache at 16:15 UTC with the network off, no new flight | none |
 | Working backup recovery | **Verified on the real backup 2026-11-20** | 12 tests + 13-step rehearsal + `fault_check.py` (interrupted backup and interrupted restore). Then a real rehearsal: `FlightDesk-backup-20261119-125703.zip` restored with the current code into a fresh root — hashes, integrity and foreign keys clean, all 264 archive objects identical, `views.flight_detail` identical for **all 264 flights**, and the copy served over HTTP. Refusals held at the live root and on a populated folder | none for the backup itself; the cutover decision stays with Kevin |
@@ -690,7 +718,7 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 314 automated tests, all passing (`python -m flightdesk selftest`).
+- 324 automated tests, all passing (`python -m flightdesk selftest`).
 - 87 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).

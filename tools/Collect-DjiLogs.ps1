@@ -37,6 +37,7 @@ if ($SkipListPath -and (Test-Path -LiteralPath $SkipListPath)) {
 }
 $seen = @{}
 $foundDevice = $false
+$seenDevices = New-Object System.Collections.ArrayList
 
 function Get-ItemSize($item) {
     # An MTP item reports .Size = 0, not $null. Taking that as a real size made
@@ -86,6 +87,10 @@ try {
     foreach ($device in $deviceItems) {
         $foundDevice = $true
         $deviceName = $device.Name
+        # After the assignment, not before: the first version added $deviceName
+        # while it was still $null, so the collector reported no devices at all
+        # after reading one successfully.
+        if (-not $seenDevices.Contains($deviceName)) { [void]$seenDevices.Add($deviceName) }
         $storages = @()
         try { $storages = @($device.GetFolder.Items()) } catch {
             $result.errors += @{ device = $deviceName; code = 'storage_enumeration_failed' }
@@ -121,6 +126,14 @@ try {
                     if (-not ($name -like 'DJIFlightRecord_*' -or $name -like 'FlightRecord_*')) {
                         continue
                     }
+                    # The same volume can appear as two storage handles on one
+                    # controller (measured on an RC 2: two "Internal shared
+                    # storage" entries, 17 logs each). Counting a file twice makes
+                    # "scanned" read 34 for 17 logs. Dedupe by name per device
+                    # before anything else is counted.
+                    $identity = "$deviceName|$name"
+                    if ($seen.ContainsKey($identity)) { continue }
+                    $seen[$identity] = $true
                     if ($skipNames.ContainsKey($name)) {
                         # Already archived under this name. A DJI log's name is its
                         # start time, so a re-save keeps it; the archive keeps the
@@ -135,8 +148,7 @@ try {
                         continue
                     }
                     $key = "$deviceName|$name|$size"
-                    if ($seen.ContainsKey($key)) { continue }
-                    $seen[$key] = $true
+                    if ($seen.ContainsKey($key)) { continue }                    $seen[$key] = $true
                     $dest = Join-Path $StagingRoot ([guid]::NewGuid().ToString('N'))
                     New-Item -ItemType Directory -Force -Path $dest | Out-Null
                     # CopyHere copies INTO the Folder it is called on. Calling it
@@ -231,6 +243,6 @@ if (-not $foundDevice) {
     # The device holds logs; all of them are already archived.
     $result.status = 'all_known'
 }
-$result.devices = @($files | ForEach-Object { $_.device } | Sort-Object -Unique)
+$result.devices = @($seenDevices | Sort-Object -Unique)
 $result | Add-Member -NotePropertyName files -NotePropertyValue @($files)
 $result | ConvertTo-Json -Depth 6 -Compress
