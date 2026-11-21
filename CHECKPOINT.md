@@ -11,7 +11,7 @@ writing; nothing is aspirational.
   capture gap"; the launcher and landing-page work of 2026-11-20 is committed on
   top of the checkpoint commits, so name the tip with `git log -1`.
 - Working tree: **clean**.
-- `python -m flightdesk selftest` → **326 tests, 0 failures, 0 errors**.
+- `python -m flightdesk selftest` → **331 tests, 0 failures, 0 errors**.
 - `node tools\ui_check.mjs <cdp-port> <outdir> <zip>` → **87 checks, 0 failures**.
 - `python tools\rehearse.py` → **13/13 steps**.
 - `python tools\recon_check.py` → **9/9**.
@@ -76,14 +76,61 @@ opened read-only throughout.
   folder with `allow_existing` → ok, old content gone, **no `.previous-*` or
   `.restore-tmp` left anywhere**.
 
-**Two findings.** The **DJI key is not in the backup**: `keychains/dji_key.bin`
-lives in the data root but the archive carries only the database and originals,
-so a restored copy reports `key_configured: false`. The 39 cached keychains *are*
-in the database, so cache decoding works; the key would be re-entered only to
-fetch new keychains. Whether a backup should carry a DPAPI blob (it would only
-decrypt for this user on this machine) is an open decision, not a bug. Second:
-the restored copy has `real_inputs_selected: false`, so reconciliation still
-needs the owner to tick *Mark records as my real inputs*.
+**One finding, since resolved.** That rehearsal showed the **DJI key was not in
+the backup**: `keychains/dji_key.bin` lives in the data root but the archive
+carried only the database and originals, so a restored copy reported
+`key_configured: false`. **The owner decided on 2026-11-21 that backups must
+carry the key**, and they now do (see below). Separately, the restored copy
+has `real_inputs_selected: false`, so reconciliation still needs the owner to
+tick *Mark records as my real inputs*.
+
+## Backups carry the DJI key (decided 2026-11-21)
+
+The key is `keychains/dji_key.bin`, a DPAPI blob beside the database. Backups
+now include it as `keychains/dji_key.bin` with its own hash in the manifest,
+`key_included: true`, and a plain-language note about what that means.
+
+- **Restore puts it back.** It extracts with everything else, and a rehearsal
+  of the new backup restored a key that decrypts and is byte-identical to the
+  live one.
+- **Validation checks the hash** and reports `key_checksum_mismatch` as an
+  error, `key_missing_from_backup` if the manifest promises one that is absent,
+  and `key_not_decryptable_on_this_account` as a **warning** when the blob
+  belongs to another Windows account — the data is intact and the key can be
+  re-entered, so that must not block a restore.
+- **The exposure, stated plainly:** a ZIP that carries the key is only as safe
+  as the account that can read it. The blob decrypts only for this Windows user
+  on this machine, so a copy taken off the machine is inert elsewhere — but
+  anyone who can read the ZIP *as this user* can use the key. The owner accepted
+  that on 2026-11-21 and keeps backups on the same disk.
+- **Fresh backup taken after the change:**
+  `C:\Users\raven\Desktop\Backups\FlightDesk-backup-20261120-194306.zip`,
+  303.4 MB, 419 originals, validates clean with no warnings, key included.
+
+## DoneDoctor schedules backdated (owner instruction, 2026-11-21)
+
+The six DoneDoctor rules (three drones x frequent-flights and quarterly-days)
+each received a **completed service dated 2026-11-19 20:00 UTC**, which is
+**13:00 on 11/19/26 at UTC-07:00** — the owner's local clock, and the reading
+that makes the app display the date they asked for. Recorded through the app's
+own route, so each one is audited as `service_completed`.
+
+- Every one now reports `basis: service` at that timestamp instead of
+  `basis: rule_added`. The clock runs from work actually done, not from the day
+  the rule was created.
+- Statuses did not change: `27 ok / 16 unknown / 5 due soon / 1 due`, because
+  they were already `ok` and are still `ok`. What changed is what the card says
+  it is measuring. The 16 `unknown` are the battery rules with no published
+  counter, unchanged.
+- The 43 AirData rules were not touched (`pre_existing_rules_changed=0`).
+- **If 13:00 was meant as UTC**, say so: shifting to `2026-11-19T13:00:00Z`
+  moves each due date 7 hours and the display reads 11/19 06:00 local.
+
+## Battery 3402QS service — confirmed intended
+
+The owner confirmed on 2026-11-21 that the completed service on
+`Bat-Mavic2-3402QS` at 19:55:41 UTC on 2026-11-19 was real, so its 30/20 `Due`
+reading becoming 0/20 `ok` is the feature working. Nothing to undo.
 
 ## What is NOT verified — needs the owner
 
@@ -95,10 +142,10 @@ needs the owner to tick *Mark records as my real inputs*.
    same code the button calls, on the real backup. The browser route — Settings →
    **Restore into a new root…** → **Keep current data** — has not been clicked
    through on real data. Switching roots is the cutover, which is yours alone.
-3. **Backdate the real services.** Now possible: Maintenance → a rule → **Rule** →
-   *Record a service on a past date*. The six DoneDoctor checks started counting
-   on 2026-11-19, so without backdating they stay quiet for 60–90 days. Enter the
-   real dates for props, deep-clean, IMU/compass calibration and battery cycles.
+3. ~~Backdate the real services~~ — **done 2026-11-21** for the six DoneDoctor
+   rules (dated 11/19/26 13:00 local). The **AirData** counters need no backdating;
+   they come from the capture. If a specific AirData rule was actually serviced on
+   a date you know, record that separately — nothing has been invented here.
 5. **Read the comparison.** Settings → *Mark records as my real inputs* →
    Reconciliation → Generate report. 108.3 mi against 108; 24h21m against 24h10m,
    explained by the two newest flights the AirData export lacked.
@@ -233,7 +280,7 @@ changes until someone decides which figure the dashboard should show.
 
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
-python -m flightdesk selftest          # expect: 326 tests, 0 failures
+python -m flightdesk selftest          # expect: 331 tests, 0 failures
 python tools\fault_check.py            # expect: disk_full; restore survives
 python tools\recon_check.py            # expect: 9/9
 flightdesk.cmd                          # or: python -m flightdesk serve

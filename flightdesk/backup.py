@@ -19,6 +19,11 @@ BACKUP_PREFIX = "FlightDesk-backup-"
 LOCK_NAME = "backup.lock"
 MANIFEST = "manifest.json"
 DB_NAME = "flightdesk.sqlite3"
+# The DJI key lives beside the database, not in it, so it has to be carried
+# explicitly. It is stored as a Windows DPAPI blob, so what travels is a blob
+# that only this Windows user on this machine can decrypt — useful for a restore
+# here, useless anywhere else. The manifest says so in plain words.
+KEY_MEMBER = "keychains/dji_key.bin"
 
 
 def _sha256_file(path: Path) -> str:
@@ -119,6 +124,20 @@ def create_backup(conn: sqlite3.Connection, root: Path, destination: Path,
             archive_manifest.append({
                 "rel": rel, "sha256": row["sha256"], "size": row["size_bytes"],
             })
+        key_manifest = None
+        src_key = root / KEY_MEMBER
+        if src_key.is_file():
+            dst_key = staging / KEY_MEMBER
+            dst_key.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_key, dst_key)
+            key_manifest = {
+                "name": KEY_MEMBER,
+                "sha256": _sha256_file(dst_key),
+                "size": dst_key.stat().st_size,
+                "protection": "dpapi_user",
+            }
+            if _sha256_file(dst_key) != _sha256_file(src_key):
+                return {"ok": False, "code": "key_copy_checksum_failed"}
         manifest = {
             "app": "FlightDesk",
             "app_version": __version__,
@@ -128,11 +147,19 @@ def create_backup(conn: sqlite3.Connection, root: Path, destination: Path,
                    "size": backup_db.stat().st_size},
             "archive": archive_manifest,
             "counts": counts,
-            "key_included": False,
+            "key_included": key_manifest is not None,
+            "key": key_manifest,
             "keychains_note": (
                 "Cached keychain blobs are in the database but are DPAPI-bound to "
                 "this Windows user and machine; after a reinstall, reauthorize DJI."
             ),
+            "key_note": (
+                "The DJI key is included as its DPAPI-protected blob. It can be "
+                "decrypted only by this Windows user on this machine, so a restore "
+                "here needs no re-entry and a restore elsewhere must re-enter the "
+                "key. Anyone who can read this ZIP as this user can therefore use "
+                "the key."
+            ) if key_manifest else None,
             "note": note,
         }
         manifest_path = staging / MANIFEST
@@ -151,6 +178,8 @@ def create_backup(conn: sqlite3.Connection, root: Path, destination: Path,
                 zf.write(backup_db, DB_NAME)
                 for item in archive_manifest:
                     zf.write(staging / "archive" / item["rel"], f"archive/{item['rel']}")
+                if key_manifest is not None:
+                    zf.write(staging / KEY_MEMBER, KEY_MEMBER)
             os.replace(partial, target)
         except OSError as exc:
             partial.unlink(missing_ok=True)
@@ -178,6 +207,7 @@ def create_backup(conn: sqlite3.Connection, root: Path, destination: Path,
             "sha256": zip_sha,
             "size": target.stat().st_size,
             "counts": counts,
+            "key_included": key_manifest is not None,
             "manifest_sha256": manifest_sha,
             "warnings": warnings,
         }
@@ -234,6 +264,22 @@ def validate_backup(path: Path, *, max_members: int = 20000,
                             h.update(chunk)
                     if h.hexdigest() != item.get("sha256"):
                         errors.append("archive_checksum_mismatch")
+            key_info = manifest.get("key") or {}
+            if KEY_MEMBER in names:
+                key_bytes = zf.read(KEY_MEMBER)
+                if key_info.get("sha256") and hashlib.sha256(key_bytes).hexdigest() != key_info["sha256"]:
+                    errors.append("key_checksum_mismatch")
+                if manifest.get("key_included") is False:
+                    warnings.append("key_present_but_manifest_says_no")
+                # An included key that this account cannot decrypt is not a
+                # broken backup: the data is intact and the key is intact as
+                # bytes. It is a restore that will need the key re-entered.
+                try:
+                    security.dpapi_unprotect(key_bytes)
+                except (security.SecretError, ValueError, OSError):
+                    warnings.append("key_not_decryptable_on_this_account")
+            elif manifest.get("key_included"):
+                warnings.append("key_missing_from_backup")
             tmp = Path(os.environ.get("TEMP", ".")) / f"fd-validate-{os.getpid()}-{time.time_ns()}.sqlite3"
             try:
                 tmp.write_bytes(db_bytes)

@@ -2202,8 +2202,11 @@
               '<div id="usb-result" class="small" style="margin-top:10px"></div>' +
               usbTable(usbData)) +
             section("Backup and export", '<p class="small muted">A backup is a consistent ' +
-              "SQLite snapshot plus every archived original and a hash manifest. Keep it off " +
-              "cloud-sync folders.</p>" +
+              "SQLite snapshot plus every archived original, a hash manifest, and your " +
+              "DJI key as a Windows-protected blob. The blob only decrypts for this " +
+              "Windows account on this machine, so a restore here needs no re-entry and " +
+              "a restore elsewhere must re-enter the key. Keep backups off cloud-sync " +
+              "folders.</p>" +
               '<div class="row" style="margin-top:10px"><button type="button" class="primary" ' +
               'id="backup-now">Create backup…</button>' +
               '<button type="button" class="secondary" id="backup-validate">Validate a backup…</button>' +

@@ -403,6 +403,17 @@ consent. OSM's own tile policy was read in full before implementing
   refuses the live root, refuses a populated target without confirmation, and
   refuses a corrupted archive.
 - A cloud-sync destination is refused unless explicitly confirmed.
+- **The DJI key is included (owner decision, 2026-11-21).** The key lives at
+  `keychains/dji_key.bin` beside the database rather than inside it, so it is
+  carried as `keychains/dji_key.bin` with its own hash in the manifest and
+  `key_included: true`. Restore extracts it like any other member. Validation
+  treats a hash mismatch as an error, a promised-but-absent key as a warning
+  (`key_missing_from_backup`), and a blob belonging to another Windows account
+  as a warning (`key_not_decryptable_on_this_account`) rather than a failure —
+  the data is intact and the key can simply be re-entered. Rehearsed on the
+  real root: a 303.4 MB backup whose restored key decrypts and is identical to
+  the live one. **Exposure, stated in the manifest and in Settings:** a ZIP
+  carrying the blob is only as safe as the Windows account that can read it.
 - Reconciliation reports archive / supplied controller / later controller /
   combined separately with signed differences, excluded counts, and decoded
   coverage; the first archive report is frozen as a baseline so later imports
@@ -558,6 +569,10 @@ counter-based.
   - *every 10–15 flights* → due at 15, due soon at 10 (67%)
   - *every 2–3 months* → due at 90 days, due soon at 60 days (67%)
   Live: **6 rules added across 3 drones**, all starting at 0 and correctly not due.
+- **Backdated 2026-11-21 at the owner's instruction:** each of the six carries a
+  completed service dated **2026-11-19 20:00 UTC** (13:00 on 11/19/26 local), so
+  every one reports `basis: service` rather than `basis: rule_added`. Statuses were
+  already `ok` and remain `ok` — what changed is what the card says it measures.
 - **A new rule's clock starts when it was added.** Counting a drone's whole
   history against a check nobody has ever performed would report "overdue since
   records began" on day one. The baseline is recorded as `rule_added` and shown,
@@ -723,6 +738,7 @@ same garbage for that file, so nothing downstream could tell.
 | No duplicate imports | **Verified** | Folder, ZIP, renamed duplicate, race, re-scan and reparse all add zero | none |
 | Key-cached offline reparse | **Verified 2026-11-19** | Real key decoded all 39 v14 records; one re-decode from cache at 16:15 UTC with the network off, no new flight | none |
 | Working backup recovery | **Verified on the real backup 2026-11-20** | 12 tests + 13-step rehearsal + `fault_check.py` (interrupted backup and interrupted restore). Then a real rehearsal: `FlightDesk-backup-20261119-125703.zip` restored with the current code into a fresh root — hashes, integrity and foreign keys clean, all 264 archive objects identical, `views.flight_detail` identical for **all 264 flights**, and the copy served over HTTP. Refusals held at the live root and on a populated folder | none for the backup itself; the cutover decision stays with Kevin |
+| The DJI key travels with a backup | **Verified 2026-11-21** | `key_included: true` with its own hash; a restored copy decrypts a key identical to the live one; a tampered blob fails validation, a foreign-account blob warns instead of failing | none |
 | Launcher lands on the home page | **Verified 2026-11-20** | A cold render of `/` on the real root opened on *"No records have been imported yet"*: the welcome panel was gated on a state field the server never sends. Fixed, and after the fix the same render shows the flight list with 264 rows. The URL now carries `#/flights` and a second click reuses the running instance | Click it and confirm the page looks right |
 | Unreadable details block | **Fixed and applied 2026-11-21** | Flight 216's v11 header stores a details offset of 0, so the file header was read as a details block: mojibake identity, −4.9e31 m height. Guards added, the record repaired in place after a rollback copy, totals identical | none |
 | Video count comparison | **Removed** | Media counts are gone from the app at the owner's request; the reference claimed 749 photos while only 180 files exist | none |
@@ -733,7 +749,7 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 326 automated tests, all passing (`python -m flightdesk selftest`).
+- 331 automated tests, all passing (`python -m flightdesk selftest`).
 - 87 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).

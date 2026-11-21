@@ -283,3 +283,119 @@ class RestoreInterruptionTest(TempCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class DjIKeyInBackupTest(TempCase):
+    """The DJI key travels with the backup, as its DPAPI blob.
+
+    Requested by the owner on 2026-11-21. The key lives beside the database
+    rather than inside it, so it has to be carried explicitly or a restored copy
+    silently loses it.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.imp.import_stream(io.BytesIO(log_bytes(11)),
+                               "DJIFlightRecord_2026-08-11_[21-53-20].txt",
+                               source_kind="archive", source_label="test")
+        self.dest = Path(tempfile.mkdtemp(prefix="fd-keybackup-"))
+
+    def tearDown(self) -> None:
+        super().tearDown()
+        import shutil
+        shutil.rmtree(self.dest, ignore_errors=True)
+
+    def test_the_key_is_included_and_survives_a_restore(self) -> None:
+        from flightdesk import keychain
+        self.assertTrue(keychain.set_key(self.root, "TEST-KEY-1234567890")["ok"])
+        result = backup.create_backup(self.conn, self.root, self.dest, "with key")
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["key_included"])
+
+        import json as _json
+        import zipfile
+        with zipfile.ZipFile(result["path"]) as zf:
+            self.assertIn("keychains/dji_key.bin", zf.namelist())
+            manifest = _json.loads(zf.read("manifest.json"))
+        self.assertTrue(manifest["key_included"])
+        self.assertEqual(manifest["key"]["protection"], "dpapi_user")
+        self.assertIn("only by this Windows user", manifest["key_note"])
+
+        validation = backup.validate_backup(Path(result["path"]))
+        self.assertTrue(validation["ok"], validation["errors"])
+        self.assertNotIn("key_missing_from_backup", validation["warnings"])
+
+        target = Path(tempfile.mkdtemp(prefix="fd-keyrestore-")) / "restored"
+        restored = backup.restore_backup(Path(result["path"]), target)
+        self.assertTrue(restored["ok"], restored)
+        self.assertTrue((target / "keychains" / "dji_key.bin").is_file())
+        self.assertEqual(keychain.load_key(target), "TEST-KEY-1234567890")
+
+    def test_a_backup_without_a_key_says_so(self) -> None:
+        result = backup.create_backup(self.conn, self.root, self.dest, "no key")
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["key_included"])
+        validation = backup.validate_backup(Path(result["path"]))
+        self.assertTrue(validation["ok"], validation["errors"])
+
+    def test_a_tampered_key_is_refused(self) -> None:
+        from flightdesk import keychain
+        keychain.set_key(self.root, "TEST-KEY-1234567890")
+        result = backup.create_backup(self.conn, self.root, self.dest, "with key")
+        # Rebuild the ZIP with a different key blob, leaving the manifest alone.
+        import zipfile
+        original = Path(result["path"])
+        tampered = original.with_name("tampered.zip")
+        with zipfile.ZipFile(original) as src, zipfile.ZipFile(tampered, "w") as dst:
+            for item in src.infolist():
+                data = src.read(item.filename)
+                if item.filename == "keychains/dji_key.bin":
+                    data = data + b"\x00"
+                dst.writestr(item, data)
+        validation = backup.validate_backup(tampered)
+        self.assertFalse(validation["ok"])
+        self.assertIn("key_checksum_mismatch", validation["errors"])
+
+    def test_a_key_from_another_account_is_a_warning_not_a_failure(self) -> None:
+        # The data is what matters; an undecryptable key is recoverable by
+        # re-entering it, so it must not block a restore.
+        import json as _json
+        import zipfile
+        from unittest import mock
+        from flightdesk import security
+
+        result = backup.create_backup(self.conn, self.root, self.dest, "no key")
+        rebuilt = Path(result["path"]).with_name("foreign-key.zip")
+        blob = b"\x01\x02\x03not-a-dpapi-blob"
+        with zipfile.ZipFile(result["path"]) as src, zipfile.ZipFile(rebuilt, "w") as dst:
+            manifest = _json.loads(src.read("manifest.json"))
+            for item in src.infolist():
+                data = src.read(item.filename)
+                if item.filename == "manifest.json":
+                    manifest["key_included"] = True
+                    manifest["key"] = {"name": "keychains/dji_key.bin",
+                                       "sha256": __import__("hashlib").sha256(blob).hexdigest(),
+                                       "size": len(blob), "protection": "dpapi_user"}
+                    data = _json.dumps(manifest).encode()
+                dst.writestr(item, data)
+            dst.writestr("keychains/dji_key.bin", blob)
+
+        validation = backup.validate_backup(rebuilt)
+        self.assertTrue(validation["ok"], validation["errors"])
+        self.assertIn("key_not_decryptable_on_this_account", validation["warnings"])
+
+    def test_a_missing_key_is_flagged_when_the_manifest_promises_one(self) -> None:
+        import json as _json
+        import zipfile
+        from flightdesk import keychain
+
+        keychain.set_key(self.root, "TEST-KEY-1234567890")
+        result = backup.create_backup(self.conn, self.root, self.dest, "with key")
+        stripped = Path(result["path"]).with_name("stripped.zip")
+        with zipfile.ZipFile(result["path"]) as src, zipfile.ZipFile(stripped, "w") as dst:
+            for item in src.infolist():
+                if item.filename == "keychains/dji_key.bin":
+                    continue
+                dst.writestr(item, src.read(item.filename))
+        validation = backup.validate_backup(stripped)
+        self.assertTrue(validation["ok"], validation["errors"])
+        self.assertIn("key_missing_from_backup", validation["warnings"])
