@@ -21,7 +21,10 @@ from . import paths
 from .archive import CHUNK
 
 MAX_JSON_BYTES = 512 * 1024 * 1024
-PARSER_TIMEOUT_S = 300
+# 200 s, not 300: the project rule is that nothing runs longer than 200 s without
+# progress. One DJI log parses in well under a second, so this is ~200x headroom
+# on a per-file bound and only ever reached by a stalled parser.
+PARSER_TIMEOUT_S = 200
 DETAILS_LEN = 380
 
 

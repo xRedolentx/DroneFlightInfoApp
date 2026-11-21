@@ -225,3 +225,29 @@ class SkipKnownTest(TempCase):
             result = usb.scan(self.conn, self.root)
         self.assertEqual(result.status, "no_device")
 
+
+class LongRunningBoundTest(unittest.TestCase):
+    """Nothing may run longer than 200 s without progress (project rule).
+
+    Two constants used to sit at 300 s. They are the only places in the codebase
+    that bound a subprocess this long, so they are pinned here rather than left to
+    drift.
+    """
+
+    LIMIT = 200
+
+    def test_the_controller_collector_is_bounded_at_the_rule(self) -> None:
+        import inspect
+        signature = inspect.signature(usb._ps_json)
+        self.assertLessEqual(signature.parameters["timeout"].default, self.LIMIT)
+
+    def test_the_log_parser_is_bounded_at_the_rule(self) -> None:
+        from flightdesk import parser_adapter
+        self.assertLessEqual(parser_adapter.PARSER_TIMEOUT_S, self.LIMIT)
+
+    def test_a_stalled_copy_is_reported_before_the_rule_expires(self) -> None:
+        # Per-file deadline x the consecutive-failure abort must finish inside the
+        # window, or the collector would spend the whole 200 s saying nothing.
+        import inspect
+        default_per_file = inspect.signature(usb.scan).parameters["timeout_s"].default
+        self.assertLessEqual(default_per_file * 3, self.LIMIT)

@@ -81,7 +81,16 @@ class ScanResult:
         }
 
 
-def _ps_json(script: Path, args: list[str], timeout: int = 300) -> dict[str, Any] | None:
+def _ps_json(script: Path, args: list[str], timeout: int = 200) -> dict[str, Any] | None:
+    """Run a collector script and read its JSON, bounded at 200 s.
+
+    The bound matches the project rule that nothing runs longer than 200 s
+    without progress. A first import of this controller took 58 s for 259 logs,
+    and a repeat scan takes 6 s, so 200 s is several times the observed cost.
+    Within the run the collector also bounds each copy (60 s) and aborts after
+    three consecutive failures, so a stall is reported in about 180 s rather than
+    consuming the whole window.
+    """
     if os.name != "nt" or not script.exists():
         return None
     command = [
