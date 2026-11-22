@@ -6,8 +6,9 @@ import json
 import struct
 import unittest
 
-from support import TempCase, log_bytes
+from support import TempCase, base_time, log_bytes
 from flightdesk import db, usb
+from flightdesk.synth import make_v13_metadata_log
 from flightdesk.usb import SimEntry, simulate, validate_flight_bytes
 
 
@@ -266,13 +267,16 @@ class ScanReportingTest(TempCase):
             return usb.scan(self.conn, self.root)
 
     def test_a_record_that_waits_for_the_key_still_counts_as_imported(self) -> None:
-        # A v14 log stores metadata and waits for the DJI key. A flight exists, so
-        # the summary must not say "imported 0" — which is what the real RC 2
-        # scan said while flight 284 had just been created.
-        from types import SimpleNamespace
+        # A v13/v14 log stores metadata and waits for the DJI key. A record
+        # exists, so the summary must not say "imported 0" - which is what the
+        # real RC 2 scan said while flight 284 had just been created.
+        #
+        # This feeds a real encrypted container through the scan rather than a
+        # mocked batch, so the check covers the counting AND the importer seam
+        # the scan now uses.
         from unittest import mock
 
-        data = log_bytes(11, days=5)
+        data = make_v13_metadata_log(start=base_time(5))
         staged = self.root / "tmp" / "pending-layout"
         staged.mkdir(parents=True, exist_ok=True)
         path = staged / "FlightRecord_2026-08-21_[18-28-13].txt"
@@ -282,19 +286,17 @@ class ScanReportingTest(TempCase):
             "source_name": path.name, "staged_path": str(path),
             "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
         }]}
-        batch = SimpleNamespace(totals={"discovered": 1, "awaiting_dji": 1,
-                                        "new_flight": 1, "already_imported": 0})
-        with mock.patch.object(usb, "_ps_json", return_value=payload), \
-                mock.patch.object(usb.Importer, "import_stream", return_value=batch):
+        with mock.patch.object(usb, "_ps_json", return_value=payload):
             result = usb.scan(self.conn, self.root)
 
         self.assertEqual(result.imported, 1, result.as_dict())
         self.assertEqual(result.attention, 1, result.as_dict())
         self.assertIn("awaiting_dji_key", result.notes)
+        statuses = [r["status"] for r in db.all_rows(self.conn, "SELECT status FROM raw_files")]
+        self.assertEqual(statuses, ["pending_key"], statuses)
 
     def test_a_new_decoded_record_is_not_double_counted(self) -> None:
         # A decoded new log reports both `new` and `new_flight` for one file.
-        from types import SimpleNamespace
         from unittest import mock
 
         data = log_bytes(11, days=6)
@@ -307,9 +309,7 @@ class ScanReportingTest(TempCase):
             "source_name": path.name, "staged_path": str(path),
             "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
         }]}
-        batch = SimpleNamespace(totals={"discovered": 1, "new": 1, "new_flight": 1})
-        with mock.patch.object(usb, "_ps_json", return_value=payload), \
-                mock.patch.object(usb.Importer, "import_stream", return_value=batch):
+        with mock.patch.object(usb, "_ps_json", return_value=payload):
             result = usb.scan(self.conn, self.root)
 
         self.assertEqual(result.imported, 1, result.as_dict())

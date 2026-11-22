@@ -1,6 +1,13 @@
 param(
     [Parameter(Mandatory = $true)][string]$StagingRoot,
     [int]$TimeoutSeconds = 60,
+    # Stop after this many copied files and report `truncated = true`. The app
+    # then imports what arrived and the next scan continues with the rest, so a
+    # controller with a large backlog makes progress in every pass instead of
+    # losing a whole 200 s window at the end. 0 means no limit: a measured pass
+    # over 259 logs takes 58 s, well inside the window, so the default changes
+    # nothing for real hardware.
+    [int]$MaxFilesPerRun = 0,
     # A JSON array of { name, size } that the archive already holds. Skipping
     # these before copying is not an optimisation: with a controller left
     # plugged in, the watcher rescans every 45 s, and without this each pass
@@ -9,7 +16,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$result = [ordered]@{ status = 'ok'; devices = @(); errors = @(); skipped_known = 0 }
+$result = [ordered]@{ status = 'ok'; devices = @(); errors = @(); skipped_known = 0; truncated = $false }
 $files = New-Object System.Collections.ArrayList
 # Two keys, and the pair is what decides. A name in the list triggers ONE size
 # read; the file is skipped only when that exact name+size is already held. A
@@ -280,6 +287,13 @@ try {
                         sha256 = $hash
                     })
                     if ($abort) { break }
+                    if ($MaxFilesPerRun -gt 0 -and $files.Count -ge $MaxFilesPerRun) {
+                        # Bounded progress: report what was copied and let the
+                        # next pass take the rest.
+                        $result.truncated = $true
+                        $abort = $true
+                        break
+                    }
                 }
                 if ($abort) { break }
             }

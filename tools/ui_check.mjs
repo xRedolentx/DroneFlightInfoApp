@@ -1,7 +1,13 @@
 // Local UI verification: drives the running Flight Desk app through Edge's
 // DevTools protocol. Prints one PASS/FAIL line per check and writes screenshots.
 // Everything stays on this machine.
-//   node tools/ui_check.mjs [port] [outdir]
+//   node tools/ui_check.mjs [port] [outdir] [zip] [app-url]
+//
+// `app-url` is optional. Without it the gate uses whatever loopback page the
+// browser is already on, and refuses to run if there is none. It used to fall
+// back to the first page it saw, which could be `about:blank`: the derived
+// origin was then the string "null", every navigation went to `null/`, and the
+// run printed ~70 failures that described an error page rather than the app.
 import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
@@ -9,21 +15,31 @@ import { join as joinPath } from "node:path";
 const debugPort = process.argv[2] || "9222";
 const outDir = process.argv[3] || "ui-shots";
 const zipPath = process.argv[4] || "";
+const appUrlArg = process.argv[5] || "";
 mkdirSync(outDir, { recursive: true });
+
+const isLoopbackApp = (url) => /^http:\/\/127\.0\.0\.1(:\d+)?\//.test(url || "");
 
 const targets = await fetch(`http://127.0.0.1:${debugPort}/json`).then((r) => r.json());
 // A fresh Edge profile can expose its own pages (sync confirmation, new tab)
-// beside the app. Attach to the loopback app page, never to the first page
-// that happens to be listed, or every check silently fails.
+// beside the app. Attach to the loopback app page, never to the first page that
+// happens to be listed, or every check silently fails.
 const pages = targets.filter((t) => t.type === "page");
-const isLoopbackApp = (url) => /^http:\/\/127\.0\.0\.1(:\d+)?\//.test(url || "");
-const page = pages.find((t) => isLoopbackApp(t.url)) || (pages.length === 1 ? pages[0] : null);
-if (!page) {
+const page = pages.find((t) => isLoopbackApp(t.url));
+if (!page && !appUrlArg) {
   console.error("FAIL no loopback app page target (saw: " +
-    pages.map((t) => t.url).join(", ") + ")");
-  process.exit(1);
+    pages.map((t) => t.url || "(no url)").join(", ") + ")");
+  console.error("Open the app in the browser you are debugging, or pass its URL " +
+    "as the fifth argument: node tools/ui_check.mjs <port> <outdir> <zip> " +
+    "http://127.0.0.1:<app-port>/");
+  process.exit(2);
 }
-const ws = new WebSocket(page.webSocketDebuggerUrl);
+const pageTarget = page || pages[0];
+if (!pageTarget) {
+  console.error("FAIL the debugger exposes no page target at all");
+  process.exit(2);
+}
+const ws = new WebSocket(pageTarget.webSocketDebuggerUrl);
 let nextId = 1;
 const pending = new Map();
 ws.addEventListener("message", (event) => {
@@ -61,6 +77,7 @@ ws.addEventListener("message", (event) => {
 });
 
 const failures = [];
+const evaluateErrors = [];
 let total = 0;
 function check(name, condition, detail = "") {
   total += 1;
@@ -73,9 +90,18 @@ async function evaluate(expression) {
     expression, returnByValue: true, awaitPromise: true,
   });
   if (res.result?.exceptionDetails) {
-    return { __error: res.result.exceptionDetails.text };
+    // Returning a marker object here used to crash the run later, on
+    // `.slice()` of the marker, which hid every check after it. A failed
+    // evaluation is a failed check: return null, record why, keep going.
+    const text = res.result.exceptionDetails.exception?.description ||
+      res.result.exceptionDetails.text || "evaluate failed";
+    evaluateErrors.push(text.split("\n")[0].slice(0, 160));
+    return null;
   }
   return res.result?.result?.value;
+}
+function text(value) {
+  return value === null || value === undefined ? "" : String(value);
 }
 async function waitFor(expression, timeoutMs = 15000) {
   const started = Date.now();
@@ -102,8 +128,15 @@ async function goto(hash) {
 
 // Drive whichever app instance the browser is already on. The port is not
 // fixed: a scratch root runs on its own port, and hardcoding one silently
-// pointed every check at a dead origin.
-const appOrigin = new URL(page.url).origin;
+// pointed every check at a dead origin. An explicit URL wins when one is given.
+const appOrigin = appUrlArg
+  ? new URL(appUrlArg).origin
+  : new URL(pageTarget.url).origin;
+if (!/^http:\/\/127\.0\.0\.1(:\d+)?$/.test(appOrigin)) {
+  console.error(`FAIL could not resolve a loopback app origin (got ${JSON.stringify(appOrigin)} ` +
+    `from ${JSON.stringify(pageTarget.url)}); pass the app URL as the fifth argument`);
+  process.exit(2);
+}
 
 // --- desktop dashboard -----------------------------------------------------
 await call("Emulation.setDeviceMetricsOverride", {
@@ -427,8 +460,8 @@ if (!zipPath) {
   const appeared = await waitFor(
     "document.querySelectorAll('#batch-result .result-cell').length >= 6", 60000);
   check("ZIP upload shows a batch summary", appeared);
-  const firstSummary = await evaluate(
-    "document.getElementById('batch-result').innerText.replace(/\\s+/g, ' ').trim()");
+  const firstSummary = text(await evaluate(
+    "document.getElementById('batch-result').innerText.replace(/\\s+/g, ' ').trim()"));
   const discovered = await evaluate(`(() => {
     const cells = [...document.querySelectorAll('#batch-result .result-cell')];
     const cell = cells.find(c => /Discovered/.test(c.innerText));
@@ -484,8 +517,8 @@ if (!zipPath) {
   const firstWasFresh = freshFlights > 0;
 
   await new Promise((r) => setTimeout(r, 2500));
-  const laterSummary = await evaluate(
-    "document.getElementById('batch-result').innerText.replace(/\\s+/g, ' ').trim()");
+  const laterSummary = text(await evaluate(
+    "(document.getElementById('batch-result')||{}).innerText?.replace(/\\s+/g, ' ').trim() || ''"));
   check("import summary survives the page refresh",
     laterSummary.length > 0 && laterSummary === firstSummary,
     laterSummary.slice(0, 80));
@@ -515,8 +548,8 @@ if (!zipPath) {
     "/Nothing was imported/.test(document.getElementById('batch-result').innerText)",
     30000);
   check("a bad ZIP says why nothing was imported", refused,
-    (await evaluate("document.getElementById('batch-result').innerText")).slice(0, 120)
-      .replace(/\s+/g, " "));
+    text(await evaluate("document.getElementById('batch-result').innerText"))
+      .slice(0, 120).replace(/\s+/g, " "));
 }
 
 // --- equipment capture through the real file input --------------------------
@@ -570,11 +603,18 @@ if (!zipPath) {
   await evaluate(`(() => { const i = document.getElementById('backup-dest');
     i.value = ${JSON.stringify(backupDir)}; return true; })()`);
   await evaluate("document.getElementById('backup-now').click(); true");
+  // Reading the backup list needs the same double-submit pair every API call
+  // needs: the session cookie AND the X-FD-Token header. A bare fetch from the
+  // page is refused with 403 by design, so the first version of this check
+  // reported a working backup as a failure.
+  const backupList = "fetch('/api/backups', {headers:{'X-FD-Token': " +
+    "document.querySelector('meta[name=fd-token]').content}}).then(r => r.json())";
   const wrote = await waitFor(
-    "fetch('/api/backups').then(r => r.json()).then(d => " +
-    "d.rows.length > 0 && d.rows.some(x => x.status === 'ok'))", 120000);
+    backupList + ".then(d => Array.isArray(d.rows) && " +
+    "d.rows.some(x => x.status === 'ok'))", 120000);
   check("backup is written to the typed folder", wrote,
-    String(await evaluate("fetch('/api/backups').then(r=>r.json()).then(d => JSON.stringify(d.rows[0] || {}).slice(0,80))")));
+    String(await evaluate(backupList +
+      ".then(d => JSON.stringify(d.rows[0] || {}).slice(0,80))")));
 }
 
 // --- exports and destination pickers ---------------------------------------
@@ -626,6 +666,10 @@ await evaluate(`(() => { const b = document.getElementById('f-clear'); if (b) b.
 console.log(`SUMMARY ${failures.length === 0 ? "PASS" : "FAIL"} checks=${total} failures=${failures.length}`);
 check("no request left loopback", externalRequests.length === 0,
   externalRequests.slice(0, 3).join(" | "));
+if (evaluateErrors.length) {
+  // A page-side exception is a finding, not noise: report it once, deduped.
+  console.log("EVALUATE_ERRORS " + [...new Set(evaluateErrors)].slice(0, 5).join(" | "));
+}
 if (failures.length) console.log("FAILED_CHECKS " + failures.join(", "));
 console.log(`SUMMARY_FINAL ${failures.length === 0 ? "PASS" : "FAIL"} checks=${total} failures=${failures.length}`);
 ws.close();

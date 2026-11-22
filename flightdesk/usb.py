@@ -166,7 +166,7 @@ def _mark_success(conn, device: str) -> None:
 
 
 def _import_staged_file(importer: Importer, conn, result: ScanResult, *,
-                        path: Path, name: str, device: str,
+                        batch, path: Path, name: str, device: str,
                         target: str | None) -> bool:
     """Validate and import one staged file. Returns True if a record was stored.
 
@@ -180,20 +180,24 @@ def _import_staged_file(importer: Importer, conn, result: ScanResult, *,
         if not path.is_file():
             result.attention += 1
             result.notes.append("staged_file_missing")
+            importer.note_rejected(batch, code="staged_file_missing")
             return False
         if path.stat().st_size > MAX_COPY_BYTES:
             result.attention += 1
             result.notes.append("staged_file_too_large")
+            importer.note_rejected(batch, code="staged_file_too_large")
             return False
         blob = path.read_bytes()
     except OSError:
         result.attention += 1
         result.notes.append("staged_file_unreadable")
+        importer.note_rejected(batch, code="staged_file_unreadable")
         return False
     ok, reason = validate_flight_bytes(blob)
     if not ok and reason != "bad_details_offset":
         result.attention += 1
         result.notes.append(f"incomplete_or_invalid:{reason}")
+        importer.note_rejected(batch, code=f"incomplete_or_invalid:{reason}", detail=name)
         return False
     if not ok:
         # `bad_details_offset` is a defect in the file itself, not in the copy.
@@ -205,23 +209,32 @@ def _import_staged_file(importer: Importer, conn, result: ScanResult, *,
     if not is_flight_filename(name):
         result.attention += 1
         result.notes.append("filename_not_allowlisted")
+        importer.note_rejected(batch, code="filename_not_allowlisted", detail=name)
         return False
-    batch = importer.import_stream(
+    # Per-file deltas: the batch accumulates across the whole scan, so a plain
+    # read of `totals` would report the running total as this file's outcome.
+    before = dict(batch.totals)
+    importer.add_stream(
+        batch,
         _BytesReader(blob), name,
         source_kind="usb", source_label=f"USB {device}",
         member_path=f"{target or 'unknown'}/{name}",
     )
     totals = batch.totals
+
+    def delta(key: str) -> int:
+        return int(totals.get(key, 0)) - int(before.get(key, 0))
+
     # A v14 log carries metadata but waits for the DJI key. It is a record the
     # archive now holds, so it belongs in "imported"; `max` rather than a sum
     # because a decoded new log reports both `new` and `new_flight` for the same
     # file. Measured on a real RC 2: the scan said "imported 0" while a flight
     # had in fact been created.
-    stored = max(int(totals.get("new", 0)), int(totals.get("new_flight", 0)))
+    stored = max(delta("new"), delta("new_flight"))
     result.imported += stored
-    result.duplicates += int(totals.get("already_imported", 0))
-    awaiting = int(totals.get("awaiting_dji", 0))
-    broken = int(totals.get("needs_attention", 0))
+    result.duplicates += delta("already_imported")
+    awaiting = delta("awaiting_dji")
+    broken = delta("needs_attention")
     result.attention += awaiting + broken
     # Attention without a reason is the silence this project keeps getting
     # bitten by. Every count that raises attention names why.
@@ -234,7 +247,7 @@ def _import_staged_file(importer: Importer, conn, result: ScanResult, *,
     return bool(stored)
 
 
-def _salvage_staged(conn, root: Path, staging: Path, result: ScanResult) -> None:
+def _salvage_staged(conn, root: Path, staging: Path, result: ScanResult, batch) -> None:
     """Import files the collector already copied before it timed out.
 
     A timeout used to discard the whole staging folder, so a controller with a
@@ -249,8 +262,8 @@ def _salvage_staged(conn, root: Path, staging: Path, result: ScanResult) -> None
             continue
         salvaged += 1
         try:
-            _import_staged_file(importer, conn, result, path=path, name=path.name,
-                                device="controller", target=None)
+            _import_staged_file(importer, conn, result, batch=batch, path=path,
+                                name=path.name, device="controller", target=None)
         finally:
             try:
                 path.unlink(missing_ok=True)
@@ -261,7 +274,7 @@ def _salvage_staged(conn, root: Path, staging: Path, result: ScanResult) -> None
 
 
 def scan(conn, root: Path, *, staging_root: Path | None = None,
-         timeout_s: int = 60) -> ScanResult:
+         timeout_s: int = 60, max_files: int = 0) -> ScanResult:
     root = Path(root)
     staging = Path(staging_root) if staging_root else root / "tmp" / f"usb-{uuid.uuid4().hex}"
     staging.mkdir(parents=True, exist_ok=True)
@@ -302,6 +315,8 @@ def scan(conn, root: Path, *, staging_root: Path | None = None,
         except OSError:
             skip_file = None
         args = ["-StagingRoot", str(staging), "-TimeoutSeconds", str(timeout_s)]
+        if max_files > 0:
+            args += ["-MaxFilesPerRun", str(int(max_files))]
         if skip_file is not None:
             args += ["-SkipListPath", str(skip_file)]
         try:
@@ -310,12 +325,21 @@ def scan(conn, root: Path, *, staging_root: Path | None = None,
             result.status = "unavailable"
             result.notes.append(exc.category)
             if exc.category == "collector_timeout":
-                _salvage_staged(conn, root, staging, result)
+                importer = Importer(root, conn)
+                salvage_batch = importer.open_batch("USB salvage", "usb", deferred=True)
+                _salvage_staged(conn, root, staging, result, salvage_batch)
+                importer.close_batch(salvage_batch)
             return record()
         status = str(data.get("status") or "none")
         errors = data.get("errors") or []
         files = data.get("files") or []
         skipped = int(data.get("skipped_known") or 0)
+        if data.get("truncated"):
+            # The collector stopped at its per-run cap with files still to copy.
+            # Saying so is what makes the next pass make sense to the owner;
+            # silently reporting a partial scan as complete is the failure mode
+            # this project keeps finding.
+            result.notes.append("more_files_remain")
         # The collector reports the devices it saw, not just the ones it copied
         # from. A second attach finds everything already archived, and reporting
         # no device at all made the review screen say "never seen" about a
@@ -350,19 +374,28 @@ def scan(conn, root: Path, *, staging_root: Path | None = None,
             result.status = "all_known" if status == "all_known" else "no_files"
             return record()
         importer = Importer(root, conn)
+        # One batch for the whole scan. A controller re-scan used to write a
+        # batch per copied file, which is where 927 empty rows came from.
+        scan_batch = importer.open_batch(
+            f"USB {', '.join(devices) or 'controller'}", "usb", deferred=True)
         for entry in files:
             path = Path(str(entry.get("staged_path") or ""))
             try:
                 name = str(entry.get("source_name") or path.name)
                 device = str(entry.get("device") or "controller")
-                _import_staged_file(importer, conn, result, path=path, name=name,
-                                    device=device, target=entry.get("target"))
+                _import_staged_file(importer, conn, result, batch=scan_batch,
+                                    path=path, name=name, device=device,
+                                    target=entry.get("target"))
             finally:
                 try:
                     path.unlink(missing_ok=True)
                 except OSError:
                     pass
+        importer.close_batch(scan_batch)
         result.status = "ok" if result.scanned else "no_files"
+        if "more_files_remain" in result.notes:
+            # Not a failure: the device was read and everything copied arrived.
+            result.status = "partial"
         return record()
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -419,6 +452,10 @@ def simulate(conn, root: Path, entries: Iterable[SimEntry], *,
     result.devices = devices
     for device in devices:
         _note_device(conn, device, "connected")
+    # One batch for the whole simulated scan, on the same rule as the physical
+    # path: a scan that finds nothing new leaves no row in the import history.
+    scan_batch = importer.open_batch(
+        f"USB {', '.join(devices) or 'controller'}", "usb", deferred=True)
     for entry in entries:
         display = entry.name
         if not display.lower().endswith(".txt"):
@@ -449,6 +486,8 @@ def simulate(conn, root: Path, entries: Iterable[SimEntry], *,
         if not ok and reason != "bad_details_offset":
             result.attention += 1
             result.notes.append(f"incomplete_or_invalid:{reason}")
+            importer.note_rejected(scan_batch, code=f"incomplete_or_invalid:{reason}",
+                                   detail=display)
             continue
         if not ok:
             # Kept, not dropped, for the same reason as the physical path: the
@@ -468,19 +507,24 @@ def simulate(conn, root: Path, entries: Iterable[SimEntry], *,
                 result.attention += 1
                 result.notes.append("copy_interrupted_retryable")
                 continue
-        batch = importer.import_stream(
+        before = dict(scan_batch.totals)
+        importer.add_stream(
+            scan_batch,
             _BytesReader(entry.data), display,
             source_kind="usb", source_label=f"USB {entry.device}",
             member_path=f"{entry.target}/{display}",
         )
-        totals = batch.totals
-        result.imported += int(totals.get("new", 0))
-        result.duplicates += int(totals.get("already_imported", 0))
-        result.attention += int(totals.get("needs_attention", 0)) + int(
-            totals.get("awaiting_dji", 0)
-        )
-        if totals.get("new"):
+        totals = scan_batch.totals
+
+        def delta(key: str) -> int:
+            return int(totals.get(key, 0)) - int(before.get(key, 0))
+
+        result.imported += delta("new")
+        result.duplicates += delta("already_imported")
+        result.attention += delta("needs_attention") + delta("awaiting_dji")
+        if delta("new"):
             _mark_success(conn, entry.device)
+    importer.close_batch(scan_batch)
     if not entries:
         result.status = "no_device"
     with db.tx(conn):

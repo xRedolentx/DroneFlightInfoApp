@@ -51,6 +51,16 @@ class BatchResult:
     )
     items: list[dict[str, Any]] = field(default_factory=list)
     note: str | None = None
+    # A deferred batch gathers many files under one batch row and is written
+    # only when it is closed. A USB scan uses this: re-scanning a controller
+    # writes one batch instead of one per file, and a scan that found nothing
+    # new writes none at all.
+    deferred: bool = False
+    started_at: str | None = None
+    source_label: str = ""
+    source_kind: str = ""
+    pending_items: list[tuple] = field(default_factory=list)
+    persisted: bool = True
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -58,6 +68,7 @@ class BatchResult:
             "totals": self.totals,
             "items": self.items,
             "note": self.note,
+            "persisted": self.persisted,
         }
 
 
@@ -596,6 +607,104 @@ class Importer:
                 ),
             )
 
+    def open_batch(
+        self,
+        source_label: str,
+        source_kind: str,
+        batch_id: str | None = None,
+        *,
+        deferred: bool = False,
+    ) -> BatchResult:
+        """Start a batch that may collect many files.
+
+        A deferred batch writes nothing until `close_batch`, so a scan that only
+        re-read known files leaves no row behind.
+        """
+        if not deferred:
+            batch_id = self.begin_batch(source_label, source_kind, batch_id)
+        return BatchResult(
+            batch_id=batch_id or uuid.uuid4().hex,
+            deferred=deferred,
+            started_at=db.now_utc(),
+            source_label=source_label,
+            source_kind=source_kind,
+        )
+
+    def add_stream(
+        self,
+        result: BatchResult,
+        src: BinaryIO,
+        filename: str,
+        *,
+        source_kind: str,
+        source_label: str,
+        member_path: str | None = None,
+    ) -> None:
+        """Add one file to an open batch."""
+        self._ingest(
+            src,
+            filename,
+            source_kind=source_kind,
+            source_label=source_label,
+            member_path=member_path or filename,
+            result=result,
+        )
+
+    def note_rejected(self, result: BatchResult, *, code: str,
+                      detail: str | None = None) -> None:
+        """Record a file the scan refused before it ever reached the importer.
+
+        Without this, a scan that found a truncated file wrote no import batch
+        at all, so the history said nothing happened — the same silence that
+        `usb_scans` was fixed for. The item carries no raw file, because none
+        was stored.
+        """
+        self._item(result, None, "needs_attention", code, detail)
+
+    def close_batch(self, result: BatchResult, *,
+                    keep_when_empty: bool = False) -> BatchResult:
+        """Finish a batch, writing it only if it recorded something.
+
+        "Nothing new" means every file was already imported. Writing a batch for
+        that filled the import history with one row per re-scanned file: 927 of
+        1,082 rows on the live archive held no new flight. Such a batch is not
+        persisted; its counts are still returned to the caller.
+        """
+        if not result.deferred:
+            self.finish_batch(result)
+            return result
+        meaningful = any(
+            int(result.totals.get(key) or 0)
+            for key in ("new", "new_flight", "needs_attention", "awaiting_dji", "unsupported")
+        )
+        if not meaningful and not result.note and not keep_when_empty:
+            result.persisted = False
+            result.pending_items = []
+            return result
+        with db.tx(self.conn):
+            self.conn.execute(
+                "INSERT INTO import_batches(id,started_at,finished_at,source_label,"
+                "source_kind,status,totals_json,note) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    result.batch_id,
+                    result.started_at or db.now_utc(),
+                    db.now_utc(),
+                    result.source_label,
+                    result.source_kind,
+                    "done" if not result.note else "attention",
+                    json.dumps(result.totals, separators=(",", ":")),
+                    result.note,
+                ),
+            )
+            if result.pending_items:
+                self.conn.executemany(
+                    "INSERT INTO import_items(batch_id,raw_file_id,outcome,code,detail,"
+                    "created_at) VALUES(?,?,?,?,?,?)",
+                    result.pending_items,
+                )
+            result.pending_items = []
+        return result
+
     def _item(
         self,
         result: BatchResult,
@@ -612,11 +721,15 @@ class Importer:
         result.totals[key] = result.totals.get(key, 0) + 1
         if new_flight:
             result.totals["new_flight"] = result.totals.get("new_flight", 0) + 1
-        self.conn.execute(
-            "INSERT INTO import_items(batch_id,raw_file_id,outcome,code,detail,created_at) "
-            "VALUES(?,?,?,?,?,?)",
-            (result.batch_id, raw_id, outcome, code, (detail or "")[:500], db.now_utc()),
-        )
+        row = (result.batch_id, raw_id, outcome, code, (detail or "")[:500], db.now_utc())
+        if result.deferred:
+            result.pending_items.append(row)
+        else:
+            self.conn.execute(
+                "INSERT INTO import_items(batch_id,raw_file_id,outcome,code,detail,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                row,
+            )
         result.items.append(
             {"outcome": outcome, "code": code, "raw_id": raw_id, "flight_id": flight_id}
         )
