@@ -2626,9 +2626,13 @@
       var out = document.getElementById("usb-result");
       out.textContent = "Checking controllers…";
       api("/api/usb/scan", { method: "POST", body: {} }).then(function (res) {
-        out.innerHTML = '<div class="notice small">' + esc(res.status) + " · scanned " +
-          res.scanned + " · new " + res.imported + " · duplicates " + res.duplicates +
-          " · attention " + res.attention + "</div>";
+        out.innerHTML = '<div class="notice small">' + esc(res.status) + " \u00b7 scanned " +
+          res.scanned + " \u00b7 new " + res.imported + " \u00b7 duplicates " + res.duplicates +
+          " \u00b7 attention " + res.attention +
+          (res.status === "partial"
+            ? ". The device still holds logs it has not read yet; the next check " +
+              "continues from what is left."
+            : "") + "</div>";
         refreshState().then(renderSettings);
       }).catch(function (e) { out.textContent = "Scan failed: " + e.message; });
     });

@@ -77,6 +77,12 @@ class LayoutTest(unittest.TestCase):
                        "Turn your network off first"):
             self.assertIn(phrase, APP_JS)
 
+    def test_a_partial_scan_explains_itself(self) -> None:
+        # A bounded collector run reports `partial`. The owner must not be left
+        # with a bare word for it.
+        self.assertIn('res.status === "partial"', APP_JS)
+        self.assertIn("The device still holds logs it has not read yet", APP_JS)
+
 
 class DistanceLabelTest(unittest.TestCase):
     def test_a_record_card_no_longer_calls_the_log_total_a_path(self) -> None:

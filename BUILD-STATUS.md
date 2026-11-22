@@ -780,11 +780,10 @@ a dry run and waits for the owner (see below).
 Headless Chrome renders of Settings, Flights, Maintenance and a flight detail
 confirm the new text and layout; the removed wording is gone.
 
-**The browser gate could not be run here.** `tools\ui_check.mjs` fails against
-untouched `HEAD` in this environment — same failures, including a crash inside
-the gate itself (`firstSummary.slice is not a function`) — so its 87-check
-result is not reproducible on this machine today. That is a gate/environment
-problem, not a claim about this change.
+**The browser gate did not run for that change, and the reason was the gate.**
+`tools\ui_check.mjs` failed against untouched `HEAD` too, with the same ~70
+failures and a crash at `firstSummary.slice()`. Stage 17 found why and fixed it;
+the gate now passes 87/87 with this code in place.
 
 **Fingerprint repair, dry run on the live archive:** 284 flights checked, 284
 fingerprints differ (the scheme gained a source tag, so every value changes),
@@ -792,6 +791,34 @@ fingerprints differ (the scheme gained a source tag, so every value changes),
 disagree about the date — **77 by a second and 17 by exactly two hours**. None
 contradicts: the link was made on the decoded start times, which agree within
 three seconds. Nothing was written.
+
+
+### Stage 17 · The browser gate, batch noise, and a concurrent proof — **all three measured**
+
+- **The gate was broken, not the app.** It attached to whatever page the browser
+  listed; opened at `about:blank`, the derived origin was the string `"null"`, so
+  `Page.navigate` went to `null/` and every check described an error page. It also
+  returned a marker object from a failed `Runtime.evaluate`, so the first real
+  failure crashed the run at `.slice()`. Fixed: a loopback page or an explicit
+  app URL is required (exit 2 otherwise), a page-side exception is a failed check
+  rather than a crash, and the one check that read an API from inside the page
+  now sends the `X-FD-Token` header the server requires. **87 checks, 0
+  failures**, on a full run that exercises the Stage 16 UI changes.
+- **One import batch per scan.** A controller re-scan wrote one batch per copied
+  file — 927 of the 1,082 live batches held no new flight. A scan now writes a
+  single deferred batch, and a scan that found nothing new writes none; the scan
+  itself is still recorded in `usb_scans`. A file refused before it reached the
+  importer is recorded as an item, so a truncated copy is not silence.
+- **A bounded collector run.** `-MaxFilesPerRun` lets a pass stop deliberately and
+  report `truncated: true` (`status: partial`), so a large backlog makes progress
+  in every pass. Unlimited by default: a measured pass over 259 logs takes 58 s.
+- **Backup during a real scan.** Two threads: one imports 40 files, one takes six
+  backups. Every backup is checked for a consistent archive and manifest, and the
+  flight count must move between backups, so the test cannot pass by finishing
+  the backups first.
+
+**Measured:** 393 tests, 0 failures (was 378). `tools\recon_check.py` 9/9;
+`tools\fault_check.py` exit 0; browser gate 87/87.
 
 
 ## Release gate
@@ -817,7 +844,7 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 331 automated tests, all passing (`python -m flightdesk selftest`).
+- 393 automated tests, all passing (`python -m flightdesk selftest`).
 - 87 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).

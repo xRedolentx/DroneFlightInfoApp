@@ -1,8 +1,40 @@
 # CHECKPOINT — resume here
 
-Updated 2026-11-21 02:50 UTC, end of the 2026-11-20/21 session. Read this first,
+Updated 2026-11-22 05:05 UTC, end of the 2026-11-21 session. Read this first,
 then `BUILD-STATUS.md`. Everything below was measured on this machine at the time
 of writing; nothing is aspirational.
+
+## What the last session did (2026-11-21, three commits)
+
+1. `84f332d` **Fixes from the independent review.** Items 1-8 of the outside
+   review: the fingerprint identity bug (two unreadable logs merged into one
+   flight), the controller skip-by-name bug, silent watcher and route failures,
+   the "path" label that showed the log header's total distance, the
+   contradicting on-screen text, the UI polish list, the raw-log export feature,
+   and `tools\real_file_check.py`. Full detail in `BUILD-STATUS.md` Stage 16.
+   **No live data was changed**; the fingerprint repair is still a dry run.
+2. `7f0e164` **A working browser gate, one import batch per scan, and a
+   concurrent backup proof.** Three things:
+   - The gate never loaded the app. It attached to whatever page the browser
+     listed, and with `about:blank` open the derived origin was the string
+     `"null"`, so every navigation went to `null/` and the run printed ~70
+     failures describing an error page. It now requires a loopback page or an
+     explicit app URL, refuses to run otherwise, turns a page-side exception
+     into a failed check instead of a crash, and sends the `X-FD-Token` header
+     where it reads an API from inside the page. **87 checks, 0 failures.**
+   - `import_batches` noise. A controller re-scan wrote one batch per copied
+     file: 927 of 1,082 rows held no new flight. A scan now writes one batch,
+     and a scan that found nothing new writes none. A file refused before it
+     reached the importer is recorded, so a broken copy is not silence.
+   - A real concurrent test: one thread imports while another takes six
+     backups. Each backup is checked for a consistent archive and manifest, and
+     the flight count must move between backups, so the test cannot pass by
+     finishing them first.
+
+3. The collector can now bound a single run (`-MaxFilesPerRun`) and say
+   `truncated: true`, so a large backlog makes progress in every pass instead of
+   losing a whole 200 s window. Default is unlimited: a measured pass over 259
+   logs takes 58 s.
 
 ## What this session did (2026-11-20 23:00 → 2026-11-21 02:50 UTC)
 
@@ -49,11 +81,14 @@ raw files**, all accounted for.
 ## State at a glance
 
 - Local Git: a linear history on one branch; **no remote and nothing pushed**.
-  Code tip: **`2d9af30`** — "backups carry the DJI key, and DoneDoctor is
-  backdated". Every claim below was re-measured at 02:50 UTC against that tip.
+  Code tip: **`7f0e164`** — "a working browser gate, one import batch per
+  scan, and a concurrent backup proof". Every claim below was re-measured at
+  05:05 UTC against that tip.
 - Working tree: **clean**.
-- `python -m flightdesk selftest` → **331 tests, 0 failures, 0 errors**.
-- `node tools\ui_check.mjs <cdp-port> <outdir> <zip>` → **87 checks, 0 failures**.
+- `python -m flightdesk selftest` → **393 tests, 0 failures, 0 errors**.
+- `node tools\ui_check.mjs <cdp-port> <outdir> <zip> <app-url>` → **87 checks, 0 failures**.
+  The app URL is the fifth argument and is required unless the browser is already
+  on a loopback page; see the recipe under *How to resume*.
 - `python tools\rehearse.py` → **13/13 steps**.
 - `python tools\recon_check.py` → **9/9**.
 - `python tools\fault_check.py` → interrupted backup returns `disk_full` with no
@@ -228,8 +263,10 @@ changes until someone decides which figure the dashboard should show.
 
 ## Known gaps that remain (reasoned, not measured)
 
-- **Backup while the USB watcher is running** is covered by a settings-level test,
-  not a genuinely concurrent scan.
+- ~~**Backup while a scan is running**~~ — **closed 2026-11-21.** Two real
+  threads now: one imports, one takes six backups. Each backup is validated, and
+  the flight count must move between them, so the test cannot pass by finishing
+  the backups first (`tests/test_stage21_concurrent_backup.py`).
 - **Visual parity** for Flights / Selected Flight / Batteries has not been
   compared against the brief's 23 screenshots. The nine supplied so far are
   AirData *maintenance* pages only; they settled the rule model.
@@ -245,16 +282,25 @@ changes until someone decides which figure the dashboard should show.
   own copy of that flight). If the owner can re-download that one log, it may
   parse cleanly. Flight 283 is the same defect and exists **only** on the
   controller; there is no second copy to try.
-- **`import_batches` grows by one row per file re-imported.** A controller scan
-  that copies 24 already-known files writes 24 batches, so the table reached
-  1,057 rows after five scans. The Import screen shows the last 40, so it reads
-  fine, but the history is noisier than it should be. A batch per scan, or no
-  batch for an all-duplicate import, would be the fix.
+- ~~**`import_batches` grows by one row per file re-imported**~~ — **closed
+  2026-11-21.** A scan writes one batch, and a scan that found nothing new writes
+  none at all (927 of the 1,082 live rows were exactly that kind of noise, which
+  stays in the existing history but is not created any more). A file refused
+  before it reached the importer is recorded as an item, so a broken copy is not
+  silence. `tests/test_stage20_batching.py`.
 - **The watcher has not been observed with a controller attached over a long
   period.** One scan costs 6 s with the skip list; the interval default is 45 s.
   That is arithmetic, not an observation.
 
 ## Things that bit us (so they do not bite again)
+- **The browser gate attached to the wrong page and blamed the app.** It opened
+  the browser at `about:blank`, derived the origin `"null"`, navigated to
+  `null/`, and printed ~70 failures that all described an error page. It also
+  returned a marker object from a failed evaluation, so the first real failure
+  crashed the run at `.slice()`. Both were gate defects wearing the costume of
+  app defects, and they hid the app's own results entirely. **A harness that
+  cannot fail honestly is worse than no harness.**
+
 - **A successful keychain fetch was never audited.** Only
   `keychain_fetch_failed` was recorded, so the one event that actually spends
   the owner's credential — an outbound POST carrying the API key — left no
@@ -325,7 +371,7 @@ changes until someone decides which figure the dashboard should show.
 
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
-python -m flightdesk selftest          # expect: 331 tests, 0 failures
+python -m flightdesk selftest          # expect: 393 tests, 0 failures
 python tools\fault_check.py            # expect: disk_full; restore survives
 python tools\recon_check.py            # expect: 9/9
 flightdesk.cmd                          # or: python -m flightdesk serve
@@ -338,9 +384,17 @@ ZIP checks fail because the ZIP is already imported):
 python tools\make_synthetic_handoff.py out.zip
 python -m flightdesk seed-demo --root <freshdir>
 python -m flightdesk serve --root <freshdir> --port <p> --no-browser
-# Edge --headless=new --remote-debugging-port=<d> --disable-extensions --disable-sync
-node tools\ui_check.mjs <d> <outdir> out.zip
+# The browser must already be ON the app page. Opening it at about:blank makes
+# the gate derive the origin "null" and every check fail against an error page.
+start msedge --headless=new --remote-debugging-port=<d> `
+  --disable-extensions --disable-sync --no-first-run `
+  --user-data-dir=$env:TEMP\edge-fd "http://127.0.0.1:<p>/"
+node tools\ui_check.mjs <d> <outdir> out.zip "http://127.0.0.1:<p>/"
 ```
+
+Pass the app URL as the fifth argument and the gate tolerates a browser that is
+not on the page yet; it exits 2 with a clear message when it cannot resolve a
+loopback origin, which is the bug that hid ~70 checks behind one crash.
 
 Note: a probe that hangs on one *specific* flight is a probe problem, not an app
 problem — the same payload serves in ~0.02 s. Verify through the gate and the API.
