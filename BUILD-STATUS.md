@@ -817,8 +817,50 @@ three seconds. Nothing was written.
   flight count must move between backups, so the test cannot pass by finishing
   the backups first.
 
-**Measured:** 393 tests, 0 failures (was 378). `tools\recon_check.py` 9/9;
+**Measured:** 407 tests, 0 failures (was 393). `tools\recon_check.py` 11/11;
 `tools\fault_check.py` exit 0; browser gate 87/87.
+
+
+### Stage 18 · Air time means off the ground, and the repaired archive — **measured on the live data**
+
+Three owner decisions from 2026-11-22, applied and verified.
+
+- **Fingerprint repair applied.** All 284 rows rewritten from a rollback copy
+  (`data-before-fingerprint-repair-20261122`). Verified after: flights 284,
+  authoritative 282, log duration 94,183.4 s, distance 186,689.94 m,
+  `flight_files` 419 and identical row for row, 0 foreign-key violations,
+  0 shared fingerprints. A second run reports 0 differences: it is idempotent.
+- **Air time is now time off the ground.** The app counted "motors on", which
+  came to 24h19m — nearly the log duration, so the two figures were the same
+  number wearing two names. Counting samples where `on_ground` is false gives
+  24h10m, which is what AirData displays. Both are shown and named:
+
+  | View | Air time | Log time |
+  |---|---|---|
+  | Our archive scope (264 files) | 24h10m | 24h21m |
+  | AirData dashboard | 24h10m | 24h20m |
+
+  The "unexplained 8.5 minutes" in the earlier checkpoint was two quantities
+  being compared with each other. It is now 0.1 minutes on air time and about
+  1 minute on log time, both from rounding to the displayed minute.
+- **Every original re-read.** `tools\reparse_all.py --apply`: 419 files,
+  0 failures, 95 s, after a rollback copy (`data-before-airtime-reparse-20261122`).
+  Log duration and distance were unchanged to the byte; only air time moved
+  (1,567.1 → 1,556.6 min across all 282 authoritative flights), and no flight
+  reports more air time than log time.
+- **Per-flight confirmation.** The Air 3S flight of 2026-08-11 measures 302.2 s
+  off the ground against AirData's displayed 5m02s (302 s).
+- **Real-file check stood up.** `%LOCALAPPDATA%\FlightDesk\realcheck\` holds one
+  real log with the AirData figures recorded for it, a README and a template.
+  `tools\real_file_check.py` compares like with like — air time with air time,
+  log time with log time — after a first version compared air time with the
+  record duration and reported a correct decode as a failure. It passes:
+  302.2 s measured against 302 s.
+- **Photo and video fields stay gone.** They were removed earlier; four tests now
+  refuse to let them return to the schema, the API, the CSV or the owner docs.
+- **Maintenance counters were deliberately not changed.** They still count log
+  minutes: moving them would reshuffle 49 rule statuses for a difference of about
+  0.5 %. Recorded here so the choice is visible rather than accidental.
 
 
 ## Release gate
@@ -844,12 +886,12 @@ the cancellation decision is Kevin's.
 
 ## Overall counts
 
-- 393 automated tests, all passing (`python -m flightdesk selftest`).
+- 407 automated tests, all passing (`python -m flightdesk selftest`).
 - 87 scripted browser checks, all passing (including the no-egress and privacy
   assertions, a real ZIP import through the picker, and the equipment-capture
   preview gate).
 - 13-step backup/restore rehearsal, all passing.
-- 9/9 reconciliation checks (`python tools\recon_check.py`) and the
+- 11/11 reconciliation checks (`python tools\recon_check.py`) and the
   interrupted-backup fault check (`python tools\fault_check.py`).
 - Real-input aggregate diagnostics: 269 distinct files at versions 7/222/40;
   real capture applied with the four due-status criteria met.

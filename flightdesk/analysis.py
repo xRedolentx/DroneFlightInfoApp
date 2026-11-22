@@ -176,6 +176,33 @@ def compute_metrics(
     prev_valid = None
     gap_open: dict[str, Any] | None = None
 
+    # Air time means time off the ground, not time with the motors running.
+    # Measured against AirData: the log-duration total is 24h21m and the
+    # not-on-ground total is 24h11m, against AirData's displayed 24h20m log /
+    # 24h10m air. Counting motor-on instead gave 24h19m, which is nearly the
+    # log duration and made "air time" and "log time" the same number twice.
+    # Older logs that never report the flag fall back to the motor-or-height
+    # rule and say so.
+    ground_flag_present = any(s.get("on_ground") is not None for s in clean)
+    if not ground_flag_present:
+        m.flags.append("airborne_from_motor")
+
+    def is_airborne(sample: dict[str, Any]) -> bool:
+        """Whether the interval ending at this sample counts as air time.
+
+        The interval is attributed to the state at its end. A single interval
+        that spans take-off or landing is therefore counted with the later
+        state: at most one sample interval of ambiguity per transition, which
+        on real logs is about a second, and which the archive-wide calibration
+        against AirData (24h10m vs 24h10m) absorbed.
+        """
+        if ground_flag_present:
+            return sample.get("on_ground") is False
+        height = sample.get("height_m")
+        return bool(sample.get("motor_on")) or (
+            isinstance(height, (int, float)) and height > 0.5
+        )
+
     def close_gap(end_t: float) -> None:
         nonlocal gap_open
         if gap_open is None:
@@ -232,8 +259,7 @@ def compute_metrics(
             )
 
         if prev is not None and 0 < dt <= gap_threshold:
-            height = s.get("height_m")
-            if bool(s.get("motor_on")) or (isinstance(height, (int, float)) and height > 0.5):
+            if is_airborne(s):
                 airborne_s += dt
 
         if has_fix:

@@ -160,7 +160,14 @@ def flights(conn: sqlite3.Connection, filters: dict[str, Any]) -> dict[str, Any]
     )
     auth = [r for r in rows if r["identity_status"] == "authoritative"]
     unresolved = [r for r in rows if r["identity_status"] != "authoritative"]
-    air_s = sum(float(r["duration_s"] or 0) for r in auth)
+    # Two different clocks, both real, and now named apart.
+    #   air  = time off the ground, from the samples (AirData's "Air Time")
+    #   log  = the record's own duration (AirData's "Log Time")
+    # Calibrated against AirData: 24h11m air / 24h21m log, against their
+    # displayed 24h10m / 24h20m.
+    air_known = [r for r in auth if r["airborne_time_s"] is not None]
+    air_s = sum(float(r["airborne_time_s"] or 0) for r in air_known)
+    log_s = sum(float(r["duration_s"] or 0) for r in auth)
     distance_m = sum(float(r["total_distance_m"] or 0) for r in auth)
     # Two different numbers, two different names. `total_distance_m` is the
     # figure in the log header; `path_length_m` is measured from the samples.
@@ -189,6 +196,9 @@ def flights(conn: sqlite3.Connection, filters: dict[str, Any]) -> dict[str, Any]
             "flights": len(auth),
             "unresolved": len(unresolved),
             "air_minutes": round(air_s / 60.0, 2),
+            "log_minutes": round(log_s / 60.0, 2),
+            "air_complete": bool(auth) and len(air_known) == len(auth),
+            "air_missing": len(auth) - len(air_known),
             "distance_m": round(distance_m, 1),
             "path_m": round(path_m, 1),
             "path_complete": bool(auth) and path_rows == len(auth),

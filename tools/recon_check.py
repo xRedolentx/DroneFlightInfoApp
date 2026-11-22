@@ -51,7 +51,13 @@ def main() -> int:
     checks = [
         ("archive files", archive["raw_files"], 3),
         ("archive flights", archive["logical_flights"], 3),
-        ("archive air minutes", round(archive["air_minutes"], 3), 30.0),
+        # Air time is time off the ground, computed from the samples. These
+        # fixtures are details-only, so air time is unknown and the log time is
+        # the whole 30 minutes. Reporting one as the other is exactly the
+        # mistake this change fixed, so both are pinned here.
+        ("archive air minutes unknown", round(archive["air_minutes"], 3), 0.0),
+        ("archive air records unknown", archive["air_records_unknown"], 3),
+        ("archive log minutes", round(archive["log_minutes"], 3), 30.0),
         ("archive miles", round(archive["miles"], 3), 3.0),
         ("controller extra counted separately",
          data["groups"]["supplied_controller"]["raw_files"], 1),

@@ -485,6 +485,17 @@
     }).catch(function (err) { toast("Could not load flights: " + err.message); });
   }
 
+  function airTile(totals) {
+    // Two clocks, named as AirData names them. "Air time" is off the ground;
+    // "log time" is the whole record. The subtitle carries the second figure
+    // so neither number has to be guessed at.
+    var logHours = (totals.log_minutes || 0) / 60;
+    var missing = totals.air_missing || 0;
+    return tile("Air time", ((totals.air_minutes || 0) / 60).toFixed(1), "h",
+      "log time " + logHours.toFixed(1) + " h" +
+      (missing ? " \u00b7 " + missing + " without samples" : ""));
+  }
+
   function distanceTile(totals) {
     // The log header stores a total distance; the samples give a path length.
     // They are different numbers, so the tile names which one it is showing
@@ -501,13 +512,21 @@
       : { value: f.path_length_m, label: "path" };
   }
 
+  // Air time is time off the ground. The record's own duration is the log
+  // time; AirData shows both, and so does this app. A flight whose samples
+  // could not be read falls back to the log duration and says which it is.
+  function flightAir(f) {
+    return (f.airborne_time_s === null || f.airborne_time_s === undefined)
+      ? { value: f.duration_s, label: "log" }
+      : { value: f.airborne_time_s, label: "air" };
+  }
+
   function renderResults(data) {
     var totals = data.totals;
     document.getElementById("tiles").innerHTML =
       tile("Flights", totals.flights, "", totals.unresolved ?
         totals.unresolved + " need review" : "authoritative only") +
-      tile("Air time", (totals.air_minutes / 60).toFixed(1), "h",
-        Math.round(totals.air_minutes) + " air minutes") +
+      airTile(totals) +
       distanceTile(totals);
     var list = document.getElementById("flight-list");
     var records = document.getElementById("records");
@@ -538,7 +557,8 @@
       return '<a class="record" href="#/flights/' + f.id + '">' +
         '<div class="top"><span class="title">' + esc(f.aircraft_name || "Unknown") + "</span>" +
         '<span class="when">' + esc(dateOnly(f.start_time_utc || f.filename_time)) + "</span></div>" +
-        '<div class="metrics"><span><b>' + esc(fmtDuration(f.duration_s)) + "</b> air</span>" +
+        '<div class="metrics"><span><b>' + esc(fmtDuration(flightAir(f).value)) + "</b> " +
+        esc(flightAir(f).label) + "</span>" +
         "<span><b>" + esc(fmtDistance(flightDistance(f).value)) + "</b> " +
         esc(flightDistance(f).label) + "</span>" +
         "<span><b>" + esc(height.v) + "</b> " + esc(height.u) + " max alt</span></div>" +
@@ -606,7 +626,8 @@
     var overviewHtml =
       '<div class="track-layout">' +
       '<div class="metric-stack" data-left="1">' +
-      metricCard("Air time", fmtDuration(f.duration_s), "", "log details") +
+      metricCard("Air time", fmtDuration(flightAir(f).value), "",
+        flightAir(f).label === "air" ? "off the ground" : "log duration") +
       metricCard(flightDistance(f).label === "path" ? "Path distance" : "Distance (log)",
         fmtDistance(flightDistance(f).value), "",
         flightDistance(f).label === "path" ? "flown, from samples" : "from log details") +
@@ -620,7 +641,7 @@
         "% → " + (f.battery_end_pct !== null ? Math.round(f.battery_end_pct) : "—") + "%", "",
         "start → end") +
       metricCard("Battery temp", tempMax.v, tempMax.u, "max during flight") +
-      metricCard("Airborne", fmtDuration(f.airborne_time_s), "", "from samples") +
+      metricCard("Log time", fmtDuration(f.duration_s), "", "whole record") +
       "</div></div>" +
       '<div class="row between" style="margin-top:10px">' +
       '<div class="legend small muted">' +
@@ -670,9 +691,9 @@
       kv("Start", fmtDate(f.start_time_utc || f.filename_time)) +
       kv("Timestamp precision", f.start_time_precision || "unknown") +
       kv("Filename time", f.filename_time || "not in the filename") +
-      kv("Air duration", fmtDuration(f.duration_s)) +
+      kv("Air time (off the ground)", fmtDuration(f.airborne_time_s)) +
+      kv("Log time (record duration)", fmtDuration(f.duration_s)) +
       kv("Recorder duration", fmtDuration(f.recorder_duration_s)) +
-      kv("Airborne time", fmtDuration(f.airborne_time_s)) +
       kv("Path length", fmtDistance(f.path_length_m)) +
       kv("Total distance (details)", fmtDistance(f.total_distance_m)) +
       kv("Max home distance", fmtDistance(f.max_home_distance_m)) +
@@ -694,8 +715,9 @@
       "Path length is the distance flown, measured from the samples. Total distance (details) " +
       "is the rounded figure the log header stores; they are different measurements, not a " +
       "rounding difference. Maximum home distance is how far the aircraft got from its home " +
-      "point. Height above takeoff is not altitude above sea level. Airborne time is not " +
-      "recorder duration.</div>" +
+      "point. Height above takeoff is not altitude above sea level. Air time is the time the " +
+      "aircraft was off the ground; log time is the whole record, including time on the " +
+      "ground at each end. AirData shows the same two figures.</div>" +
       '<h3 style="margin-top:14px">Source files</h3>' +
       '<table class="data"><thead><tr><th>Version</th><th>Status</th><th>Size</th>' +
       "<th>Imported</th><th>Sources</th></tr></thead><tbody>" +
@@ -1316,7 +1338,7 @@
     api("/api/equipment/" + id).then(function (data) {
       var e = data.equipment;
       var fl = data.flights;
-      var airS = fl.reduce(function (acc, f) { return acc + (f.duration_s || 0); }, 0);
+      var airS = fl.reduce(function (acc, f) { return acc + (flightAir(f).value || 0); }, 0);
       var charges = data.charge_history;
       var rules = data.rules.map(function (r) { return ruleCard(r, { readonly: false }); }).join("");
       var readings = data.readings.slice(0, 12);
@@ -1371,7 +1393,7 @@
           fl.map(function (f) {
             return '<tr><td><a href="#/flights/' + f.id + '">' +
               esc(dateOnly(f.start_time_utc || f.filename_time)) + "</a></td>" +
-              '<td class="num">' + esc(fmtDuration(f.duration_s)) + "</td>" +
+              '<td class="num">' + esc(fmtDuration(flightAir(f).value)) + "</td>" +
               '<td class="num">' + esc(fmtDistance(f.total_distance_m)) + "</td>" +
               "<td>" + esc(f.pilot || "—") + "</td></tr>";
           }).join("") + "</tbody></table>"
@@ -1648,7 +1670,7 @@
             host.innerHTML = candidates.map(function (f) {
               return '<div class="row" style="border-bottom:1px solid var(--line);padding:6px 0">' +
                 '<span class="small grow">' + esc(dateOnly(f.start_time_utc)) + " · " +
-                esc(f.aircraft_name || "") + " · " + esc(fmtDuration(f.duration_s)) + "</span>" +
+                esc(f.aircraft_name || "") + " · " + esc(fmtDuration(flightAir(f).value)) + "</span>" +
                 '<button type="button" class="secondary" data-cover="include" data-flight="' +
                 f.id + '">Count it</button>' +
                 '<button type="button" class="secondary" data-cover="covered" data-flight="' +
@@ -2780,13 +2802,15 @@
         var groups = data.groups;
         document.getElementById("recon-out").innerHTML =
           '<table class="data"><thead><tr><th>View</th><th class="num">Files</th>' +
-          '<th class="num">Flights</th><th class="num">Air</th><th class="num">Miles</th>' +
+          '<th class="num">Flights</th><th class="num">Air time</th>' +
+          '<th class="num">Log time</th><th class="num">Miles</th>' +
           '<th class="num">Decoded</th></tr></thead><tbody>' +
           ["archive", "supplied_controller", "later_controller", "combined"].map(function (k) {
             var g = groups[k];
             return "<tr><td>" + esc(k.replace("_", " ")) + '</td><td class="num">' +
               g.raw_files + '</td><td class="num">' + g.logical_flights +
               '</td><td class="num">' + g.air_time + '</td><td class="num">' +
+              g.log_time + '</td><td class="num">' +
               g.miles.toFixed(1) + '</td><td class="num">' +
               (g.decoded_coverage * 100).toFixed(0) + "%</td></tr>";
           }).join("") + "</tbody></table>" +

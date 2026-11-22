@@ -121,32 +121,41 @@ def _summary(raws: list[dict], flights: list[dict]) -> dict[str, Any]:
         version = str(raw["format_version"] if raw["format_version"] is not None else "unknown")
         by_version[version] = by_version.get(version, 0) + 1
         by_status[raw["status"]] = by_status.get(raw["status"], 0) + 1
-    auth = [f for f in flights if f["identity_status"] == "authoritative"]
+    air = [f for f in flights if f["identity_status"] == "authoritative"]
     unresolved = [f for f in flights if f["identity_status"] == "unresolved"]
-    air_s = sum(float(f["duration_s"] or 0) for f in auth)
-    distance_m = sum(float(f["total_distance_m"] or 0) for f in auth)
-    metadata_only = sum(1 for f in auth if f["metrics_source"] == "metadata_only")
+    # Air time is time off the ground, which is the figure AirData displays as
+    # "Air Time". The record's own duration is "Log Time" and is reported
+    # beside it, never instead of it.
+    air_s = sum(float(f["airborne_time_s"] or 0) for f in air)
+    log_s = sum(float(f["duration_s"] or 0) for f in air)
+    distance_m = sum(float(f["total_distance_m"] or 0) for f in air)
+    metadata_only = sum(1 for f in air if f["metrics_source"] == "metadata_only")
     # A pending or undecodable record has no distance. Counting it as zero
     # would make a partial total look complete, so report the coverage with it.
-    distance_known = sum(1 for f in auth if f["total_distance_m"] is not None)
-    air_known = sum(1 for f in auth if f["duration_s"] is not None)
+    distance_known = sum(1 for f in air if f["total_distance_m"] is not None)
+    air_known = sum(1 for f in air if f["airborne_time_s"] is not None)
+    log_known = sum(1 for f in air if f["duration_s"] is not None)
     return {
         "raw_files": len(raws),
         "distinct_hashes": len({r["sha256"] for r in raws}),
         "by_version": dict(sorted(by_version.items())),
         "by_status": dict(sorted(by_status.items())),
         "decoded": sum(1 for r in raws if r["status"] == "imported"),
-        "logical_flights": len(auth),
+        "logical_flights": len(air),
         "unresolved_flights": len(unresolved),
         "metadata_only_flights": metadata_only,
         "air_minutes": round(air_s / 60.0, 3),
         "air_time": _hms(air_s),
+        "log_minutes": round(log_s / 60.0, 3),
+        "log_time": _hms(log_s),
         "distance_m": round(distance_m, 2),
         "miles": round(distance_m / MILES_M, 3),
         "distance_records_known": distance_known,
-        "distance_records_unknown": len(auth) - distance_known,
+        "distance_records_unknown": len(air) - distance_known,
         "air_records_known": air_known,
-        "air_records_unknown": len(auth) - air_known,
+        "air_records_unknown": len(air) - air_known,
+        "log_records_known": log_known,
+        "log_records_unknown": len(air) - log_known,
         "decoded_coverage": round(
             (sum(1 for r in raws if r["status"] == "imported") / len(raws)) if raws else 0.0, 4
         ),
@@ -240,7 +249,9 @@ def reconciliation(conn: sqlite3.Connection, *, persist: bool = True) -> dict[st
             "source_label": snapshot["source_label"] if snapshot else None,
         },
         "semantics": {
-            "air_minutes": "from DJI details total time; track-derived airborne time is separate",
+            "air_minutes": "time off the ground, from the samples: what AirData shows "
+                            "as Air Time",
+            "log_minutes": "the record's own duration: what AirData shows as Log Time",
             "distance": "from DJI details total distance; path length is separate",
         },
     }
@@ -322,7 +333,11 @@ def flights_csv(conn: sqlite3.Connection, redact: bool = False) -> str:
         ("pilot", lambda r: r["pilot"]),
         ("tags", lambda r: r["tags_json"]),
         ("duration_s", lambda r: r["duration_s"]),
-        ("air_minutes", lambda r: round(float(r["duration_s"] or 0) / 60.0, 3)),
+        ("air_time_s", lambda r: r["airborne_time_s"]),
+        ("air_minutes", lambda r: None if r["airborne_time_s"] is None
+            else round(float(r["airborne_time_s"]) / 60.0, 3)),
+        ("log_minutes", lambda r: None if r["duration_s"] is None
+            else round(float(r["duration_s"]) / 60.0, 3)),
         ("distance_m", lambda r: r["total_distance_m"]),
         ("max_height_m", lambda r: r["max_height_m"]),
         ("max_home_m", lambda r: r["max_home_distance_m"]),

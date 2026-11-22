@@ -43,6 +43,10 @@ The first screen offers two choices:
   show air time, distance, max altitude, max speed and battery endpoints. The
   distance shown is the path measured from the samples when there is one; a
   record with no sample path shows the log header's own figure and says so.
+  **Air time and log time are different figures.** Air time is the time the
+  aircraft was off the ground; log time is the whole record, including the time
+  it sat on the ground before and after. AirData shows the same two, and the
+  dashboard tile carries both so neither has to be guessed at.
 - **Selected flight** — Overview has the track (drawn on a local grid by
   default; an OpenStreetMap basemap is available in Settings and stays off
   until you allow it) flanked by metric cards and synchronized charts. Details
@@ -56,8 +60,8 @@ The first screen offers two choices:
   started from.
 - **Import** — drop target, file/folder/ZIP choosers, batch results in
   new / already imported / awaiting DJI / needs attention, and import history.
-- **Settings** — DJI key, USB controllers, backup and export, reconciliation,
-  the equipment-capture migration, and the privacy switch.
+- **Settings** — DJI key, USB controllers, raw log folder, backup and export,
+  reconciliation, the equipment-capture migration, and the privacy switch.
 
 ## Everyday jobs
 
@@ -87,6 +91,13 @@ reports success. The live data root is never used for this.
 
 **Export for a spreadsheet.** Settings → Flights / Equipment / Services CSV.
 The fourth button exports without serials or coordinates.
+
+**Copy the original logs somewhere usable.** Settings → Raw log folder. The
+archive keeps each original under a name made from its contents, which is right
+for integrity and useless in another program. This copies them out under their
+real DJI file names. It only ever adds files: nothing in the folder is deleted or
+overwritten, including a file you put there yourself, and re-running it copies
+only what is new. A manifest in the folder makes the second run fast.
 
 ## Where your data lives
 

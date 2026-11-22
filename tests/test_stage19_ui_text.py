@@ -50,6 +50,45 @@ class TextTest(unittest.TestCase):
         self.assertIn("mode.hidden = !label", APP_JS)
 
 
+class MediaFieldsGoneTest(unittest.TestCase):
+    """Photo and video figures were removed from the product; keep them gone.
+
+    Video seconds were never reliable and the capture published no video count,
+    so the owner asked for them to go entirely rather than to be derived. The
+    schema migration still drops the old columns from a pre-existing database,
+    which is why the words appear in `db.py` and in the legacy-payload scrub in
+    `report.py` — those are deliberate. Nothing may emit them again.
+    """
+
+    def test_no_api_field_names_video_or_photo(self) -> None:
+        src = (ROOT / "flightdesk" / "views.py").read_text(encoding="utf-8")
+        self.assertNotIn("video", src.lower())
+        self.assertNotIn("photo", src.lower())
+
+    def test_the_flight_table_has_no_media_columns(self) -> None:
+        from support import TempRoot
+        t = TempRoot()
+        try:
+            columns = [r[1] for r in t.conn.execute("PRAGMA table_info(flights)")]
+            for banned in ("photo_count", "video_time_s", "videos", "video_seconds"):
+                self.assertNotIn(banned, columns)
+        finally:
+            t.close()
+
+    def test_the_csv_has_no_media_columns(self) -> None:
+        from flightdesk import report
+        header_source = (ROOT / "flightdesk" / "report.py").read_text(encoding="utf-8")
+        self.assertNotIn('("video', header_source)
+        self.assertNotIn('("video_seconds', header_source)
+        self.assertTrue(hasattr(report, "flights_csv"))
+
+    def test_no_owner_facing_text_mentions_video(self) -> None:
+        for name in ("README.md", "OWNER-GUIDE.md"):
+            text = (ROOT / name).read_text(encoding="utf-8").lower()
+            self.assertNotIn("video", text, name)
+            self.assertNotIn("photo", text, name)
+
+
 class LayoutTest(unittest.TestCase):
     def test_the_vertical_section_rail_is_gone(self) -> None:
         self.assertNotIn('id="rail"', APP_JS)

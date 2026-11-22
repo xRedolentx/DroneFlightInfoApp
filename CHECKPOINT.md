@@ -1,10 +1,40 @@
 # CHECKPOINT — resume here
 
-Updated 2026-11-22 05:05 UTC, end of the 2026-11-21 session. Read this first,
+Updated 2026-11-22 07:10 UTC, end of the 2026-11-22 session. Read this first,
 then `BUILD-STATUS.md`. Everything below was measured on this machine at the time
 of writing; nothing is aspirational.
 
-## What the last session did (2026-11-21, three commits)
+## What the last session did (2026-11-22)
+
+Owner decisions, applied rather than planned. Two wrote to the live archive;
+both have a rollback copy.
+
+1. **Fingerprint repair applied.** All 284 rows rewritten. Verified afterwards:
+   284 flights, 282 authoritative, log duration and distance identical to the
+   second, `flight_files` identical row for row, 0 foreign-key violations,
+   0 shared fingerprints. A second run reports 0 differences.
+2. **Air time now means time off the ground, and the archive was re-read.**
+   The old "airborne" counted motors-on (24h19m), almost exactly the log
+   duration — two names for one number. Counting `on_ground == false` gives
+   24h10m, against AirData's 24h10m, with log time 24h21m against their 24h20m.
+   The 8.5-minute gap this file used to call unexplained was the two quantities
+   being compared with each other. `tools/reparse_all.py --apply` re-read all
+   419 originals in 95 s with 0 failures; only air time changed, and no flight
+   now reports more air time than log time. Per-flight check: the Air 3S flight
+   of 2026-08-11 is 302.2 s against AirData's 5m02s.
+3. **Real-file check stood up.** `%LOCALAPPDATA%/FlightDesk/realcheck/` holds
+   one real log, its AirData figures, a README and a template. The tool compared
+   air time with log time at first and failed a correct decode; it now compares
+   like with like and passes at 302.2 s against 302 s.
+4. **Photo and video fields confirmed gone**, with four tests so they cannot
+   come back. Nothing was left to remove.
+5. **Restore was deferred by the owner.** Rehearsed in code and on the real
+   backup; never clicked through in the browser.
+6. **The file offered as flight 216 is not flight 216.** Its bytes are identical
+   to flight 260 (Air 3S, 2026-08-11 23:53 local), which is already its primary
+   file. Flight 216 remains a v11 log dated 2025-05-16 by its file name, unread.
+
+## What the session before did (2026-11-21, three commits)
 
 1. `84f332d` **Fixes from the independent review.** Items 1-8 of the outside
    review: the fingerprint identity bug (two unreadable logs merged into one
@@ -81,26 +111,26 @@ raw files**, all accounted for.
 ## State at a glance
 
 - Local Git: a linear history on one branch; **no remote and nothing pushed**.
-  Code tip: **`7f0e164`** — "a working browser gate, one import batch per
-  scan, and a concurrent backup proof". Every claim below was re-measured at
-  05:20 UTC against that tip; the two commits after it are documentation, plus
-  the Settings wording for a partial scan and one test that pins it.
+  Code tip: see the most recent commit in `git log`. The claims below were
+  re-measured at 07:10 UTC on 2026-11-22 against this session's work.
 - Working tree: **clean**.
-- `python -m flightdesk selftest` → **393 tests, 0 failures, 0 errors**.
+- `python -m flightdesk selftest` → **407 tests, 0 failures, 0 errors**.
 - `node tools\ui_check.mjs <cdp-port> <outdir> <zip> <app-url>` → **87 checks, 0 failures**.
   The app URL is the fifth argument and is required unless the browser is already
   on a loopback page; see the recipe under *How to resume*.
 - `python tools\rehearse.py` → **13/13 steps**.
-- `python tools\recon_check.py` → **9/9**.
+- `python tools\recon_check.py` → **11/11** (two checks added for air vs log time).
 - `python tools\fault_check.py` → interrupted backup returns `disk_full` with no
   partial archive; interrupted **restore** leaves the target and its marker intact.
 - **Restore on the real backup: rehearsed 2026-11-20.** See below.
 
 ## Live data (measured, not remembered)
 
-- **284 records · 282 authoritative + 2 unreadable** · 26.16 h · 116.0 mi ·
-  **0 awaiting the key** — the RC 2's v14 log from 2026-08-21 was decoded on
-  2026-11-21 with the stored key.
+- **284 records · 282 authoritative + 2 unreadable · 0 awaiting the key.**
+  Air time (off the ground) **25h 56m**; log time (whole records) **26h 09m**;
+  distance **116.0 mi**. The archive scope alone (264 export files) reads
+  **24h 10m air / 24h 21m log**, against AirData's 24h 10m / 24h 20m.
+- **Fingerprints repaired 2026-11-22**: 284 stored, none shared.
 - 419 raw originals archived (264 from the AirData export, 155 from the two
   controllers); **40 keychains cached**.
 - **Two unreadable flights, both the same defect**: a v11 log whose header stores
@@ -225,17 +255,19 @@ reading becoming 0/20 `ok` is the feature working. Nothing to undo.
    physically re-attached and the next scan read 17 logs, added nothing, and
    took 1.0 s. Both controllers are now verified on real hardware including the
    physical reconnect.
-2. **Watch a restore yourself once** (optional now). The rehearsal above used the
-   same code the button calls, on the real backup. The browser route — Settings →
-   **Restore into a new root…** → **Keep current data** — has not been clicked
-   through on real data. Switching roots is the cutover, which is yours alone.
+2. **Restore: deferred by the owner on 2026-11-22.** The rehearsal used the
+   same code the button calls, on the real backup. The browser route —
+   Settings → **Restore into a new root…** → **Keep current data** — is
+   still unclicked. Switching roots is the cutover, and it stays yours.
 3. ~~Backdate the real services~~ — **done 2026-11-21** for the six DoneDoctor
    rules (dated 11/19/26 13:00 local). The **AirData** counters need no backdating;
    they come from the capture. If a specific AirData rule was actually serviced on
    a date you know, record that separately — nothing has been invented here.
-4. **Read the comparison.** Settings → *Mark records as my real inputs* →
-   Reconciliation → Generate report. 108.3 mi against 108; 24h21m against 24h10m,
-   explained by the two newest flights the AirData export lacked.
+4. **Read the comparison.** Settings → *These are my real records* →
+   Reconciliation → Generate report. With air time now measured off the
+   ground, the archive scope reads **24h10m air against AirData's 24h10m**
+   and 24h21m log against their 24h20m; distance 108.26 mi against 108. The
+   tick is still the owner's to make.
 
 Commercially: **keep AirData active** until the owner is satisfied. Renewal is
 February 2027.
@@ -254,13 +286,14 @@ of the two flights the AirData export lacked.
 - **49 ft** max distance → 14.97 m = 49.1 ft when measured **from the first GPS
   fix**, which is what AirData does. The app measures from the aircraft's
   recorded home point and reports 51.3 ft. Explained convention, 0.66 m.
-- **5m02s** duration → 302.1 s airborne (`on_ground` false from 2.1 s); 304.2 s
-  for the whole record, which is what the app stores and totals.
+- **5m02s** air time → 302.2 s measured off the ground, after the air-time
+  change on 2026-11-22. Match. The whole record is 304.2 s, which is the
+  separate *log time* figure.
 
-**Open question for the owner (not a defect, a choice):** the app's air time is
-the record duration; AirData shows airborne time. Measured across all 263
-decodable flights the two differ by **8.5 minutes** (24h21m vs 24h11m). Nothing
-changes until someone decides which figure the dashboard should show.
+**Decided 2026-11-22:** the dashboard shows air time off the ground, with log
+time beside it. The earlier note here described an 8.5-minute gap between
+two totals; that gap was the record duration being compared with AirData's
+air time. Measured properly the two agree to 0.1 minutes.
 
 ## Known gaps that remain (reasoned, not measured)
 
@@ -275,14 +308,13 @@ changes until someone decides which figure the dashboard should show.
   from here. It now gets a topmost owner and a bounded wait, and every click
   produces a visible message, but whether it appears on the owner's desktop is
   the owner's observation. Typing the path always works.
-- **"Missions"** is not modelled; the third tile counts flights. If a mission means
-  something else, say so.
-- **Two flights have never been checked against anything.** Flight 216 is now
-  explicitly unreadable rather than falsely complete, but no attempt has been
-  made to recover it from a second source (the DJI Fly app cache, or AirData's
-  own copy of that flight). If the owner can re-download that one log, it may
-  parse cleanly. Flight 283 is the same defect and exists **only** on the
-  controller; there is no second copy to try.
+- **"Missions"**: the owner confirmed on 2026-11-22 that it is only a word
+  from AirData's interface. The third tile counting flights is correct.
+- **Two flights have never been checked against anything.** Flight 216 is kept
+  as unreadable rather than falsely complete. A file offered on 2026-11-22 as
+  its second copy turned out to be flight 260's log, byte for byte; 216 is
+  still unread. Flight 283 is the same defect and exists **only** on the
+  controller.
 - ~~**`import_batches` grows by one row per file re-imported**~~ — **closed
   2026-11-21.** A scan writes one batch, and a scan that found nothing new writes
   none at all (927 of the 1,082 live rows were exactly that kind of noise, which
@@ -292,6 +324,9 @@ changes until someone decides which figure the dashboard should show.
 - **The watcher has not been observed with a controller attached over a long
   period.** One scan costs 6 s with the skip list; the interval default is 45 s.
   That is arithmetic, not an observation.
+- **The real-file check has one log, not a set.** It passes on the Air 3S
+  flight. Five to ten logs with their AirData figures would make it a real
+  regression guard; `%LOCALAPPDATA%/FlightDesk/realcheck/README.txt` says how.
 
 ## Things that bit us (so they do not bite again)
 - **The browser gate attached to the wrong page and blamed the app.** It opened
@@ -372,9 +407,11 @@ changes until someone decides which figure the dashboard should show.
 
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
-python -m flightdesk selftest          # expect: 393 tests, 0 failures
+python -m flightdesk selftest          # expect: 407 tests, 0 failures
 python tools\fault_check.py            # expect: disk_full; restore survives
-python tools\recon_check.py            # expect: 9/9
+python tools\recon_check.py            # expect: 11/11
+python tools\real_file_check.py        # your own logs vs AirData (may skip)
+python tools\reparse_all.py            # re-read originals (dry run)
 flightdesk.cmd                          # or: python -m flightdesk serve
 ```
 

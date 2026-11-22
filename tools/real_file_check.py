@@ -11,14 +11,20 @@ It reads a folder that is deliberately outside version control:
         <your log files>
 
 `expected.json` is a list of what AirData (or any source you trust) once showed
-for those flights:
+for those flights. Use the same names AirData uses, because the two clocks are
+different measurements:
 
     {"files": [
       {"name": "DJIFlightRecord_2026-08-11_[21-53-20].txt",
-       "duration_s": 302.0, "distance_m": 154.0, "max_height_m": 45.1},
+       "air_time_s": 302.0,      # AirData "Flight Air Time" - off the ground
+       "log_time_s": 304.0,      # AirData "Log Time" - the whole record
+       "distance_m": 46.9,       # AirData distance (feet x 0.3048)
+       "max_height_m": 45.1},
       {"name": "DJIFlightRecord_2026-08-12_[09-00-00].txt",
-       "duration_s": 640.0, "distance_m": 211.0, "max_height_m": 88.0}
+       "air_time_s": 640.0, "distance_m": 211.0, "max_height_m": 88.0}
     ]}
+
+Only the figures you supply are checked; leave one out and it is skipped.
 
 Run it with:
 
@@ -53,7 +59,11 @@ except Exception:  # pragma: no cover - defensive
 TOLERANCE = {
     # AirData rounds what it displays, so a small difference is expected and is
     # not a failure. Anything larger means the parser and the source disagree.
-    "duration_s": 2.0,
+    # `air_time_s` is compared with the track-derived time off the ground, and
+    # `log_time_s` with the record's own duration. Comparing either against the
+    # other is the mistake this whole check exists to catch.
+    "air_time_s": 2.0,
+    "log_time_s": 2.0,
     "distance_m": 1.0,
     "max_height_m": 1.0,
 }
@@ -76,24 +86,46 @@ def load_expected(folder: Path) -> list[dict]:
     return [f for f in (files or []) if isinstance(f, dict) and f.get("name")]
 
 
-def measure(path: Path) -> dict:
-    """Decode one log with the app's own parser, without a DJI key.
+def measure(path: Path, keychain_json: list | None = None) -> dict:
+    """Decode one log with the app's own parser.
 
-    A v13/v14 file with no cached keychain can only be measured from its
-    metadata; that is reported as `pending_key` rather than treated as a pass.
+    A v13/v14 file needs a keychain. When the archive already holds this exact
+    file, its cached keychain is reused (pass it in); without one the file can
+    only be measured from metadata, which is reported as `pending_key` rather
+    than treated as a pass.
     """
     with tempfile.TemporaryDirectory(prefix="fd-realcheck-") as tmp:
-        outcome = parser_adapter.parse_file(path, Path(tmp), None)
+        outcome = parser_adapter.parse_file(path, Path(tmp), keychain_json)
     if outcome.status not in ("decoded", "pending_key"):
         return {"state": outcome.status, "detail": outcome.error_category}
     metrics = analysis.compute_metrics(outcome.samples, outcome.details or {})
     return {
         "state": "measured",
         "source": "frames" if outcome.samples else "details",
-        "duration_s": metrics.duration_s,
+        "air_time_s": metrics.airborne_time_s,
+        "log_time_s": metrics.duration_s,
         "distance_m": metrics.total_distance_m,
         "max_height_m": metrics.max_height_m,
     }
+
+
+def _cached_keychain(path: Path) -> list | None:
+    """Reuse the archive's cached keychain for this exact file, if any.
+
+    Read-only, local, and by content hash: nothing about the key is printed.
+    """
+    try:
+        import hashlib
+        from flightdesk import db, keychain, paths
+        root = paths.default_data_root()
+        sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        conn = db.connect(paths.db_path(root), readonly=True)
+        try:
+            return keychain.cached_json(conn, root, sha)
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - a missing archive just means no cache
+        return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -119,12 +151,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"MISSING  {name}")
             failed += 1
             continue
-        got = measure(path)
+        got = measure(path, _cached_keychain(path))
         if got["state"] != "measured":
             print(f"UNMEASURED  {name}: {got['state']} ({got.get('detail') or 'no detail'})")
             unmeasured += 1
             continue
         problems = []
+        # `duration_s` was the first template's key; treat it as log time.
+        if "log_time_s" not in item and "duration_s" in item:
+            item = {**item, "log_time_s": item["duration_s"]}
         for key, tolerance in TOLERANCE.items():
             want = item.get(key)
             have = got.get(key)

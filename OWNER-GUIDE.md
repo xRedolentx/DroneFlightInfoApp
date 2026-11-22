@@ -95,6 +95,11 @@ screen.
 - **Flights** — filter by date, drone, battery, pilot or tag. The tiles and the
   cards always show the same filtered set. Click a record, or use ← / → to walk
   between flights without losing the filter.
+- **Air time vs log time** — the tile shows air time, with log time underneath.
+  Air time is the time the aircraft was off the ground. Log time is the whole
+  record, including the time it sat on the ground before take-off and after
+  landing. AirData shows both under those names; on your archive they read
+  24h 10m and 24h 20m, against AirData's 24h 10m and 24h 20m.
 - **Maintenance → Upcoming** — grouped into Batteries and Aircraft. Each card
   says which counter fired (e.g. *188 / 100 flights*) and which service set the
   baseline. Press **Complete** or **Skip** with a note; **Undo** reverses it and
@@ -150,7 +155,13 @@ Do this rehearsal before you cancel AirData.
 ## 9. Exports
 
 **Settings → Backup and export** gives you flights, equipment and services CSV,
-plus a redacted mode that omits serials and coordinates.
+plus a redacted mode that omits serials and coordinates. The CSV carries both
+air time and log time, so a spreadsheet can use either.
+
+**Settings → Raw log folder** copies the original logs out under their real DJI
+file names, for another log viewer or to share. It only adds files: nothing in
+the folder is deleted or overwritten. Re-running copies only what is new, and an
+optional switch keeps it in step after every import.
 
 ## 10. If you want to check the app itself
 
@@ -159,7 +170,14 @@ python -m flightdesk selftest      # the full test suite
 python tools\make_synthetic_handoff.py out.zip   # an invented ZIP to try
 python tools\rehearse.py           # end-to-end import → backup → restore
 python tools\diag.py "<folder>"    # counts only, no filenames
+python tools\real_file_check.py    # compare a few of your own logs with AirData
+python tools\reparse_all.py        # re-read every original (dry run by default)
 ```
+
+`real_file_check.py` reads `%LOCALAPPDATA%\FlightDesk\realcheck\`: put five to
+ten of your own logs there with the figures AirData showed for them, and it
+compares them. That folder is the only check against real logs rather than
+invented ones, and it is never versioned or uploaded.
 
 ### If a file choice seems to do nothing
 
