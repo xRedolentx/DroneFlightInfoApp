@@ -83,7 +83,8 @@ raw files**, all accounted for.
 - Local Git: a linear history on one branch; **no remote and nothing pushed**.
   Code tip: **`7f0e164`** — "a working browser gate, one import batch per
   scan, and a concurrent backup proof". Every claim below was re-measured at
-  05:05 UTC against that tip.
+  05:20 UTC against that tip; the two commits after it are documentation, plus
+  the Settings wording for a partial scan and one test that pins it.
 - Working tree: **clean**.
 - `python -m flightdesk selftest` → **393 tests, 0 failures, 0 errors**.
 - `node tools\ui_check.mjs <cdp-port> <outdir> <zip> <app-url>` → **87 checks, 0 failures**.
