@@ -111,8 +111,9 @@ raw files**, all accounted for.
 ## State at a glance
 
 - Local Git: a linear history on one branch; **no remote and nothing pushed**.
-  Code tip: see the most recent commit in `git log`. The claims below were
-  re-measured at 07:10 UTC on 2026-11-22 against this session's work.
+  Code tip: **`71d0aec`** — "air time measured off the ground, matching
+  AirData to the minute". Every claim below was re-measured at 07:10 UTC on
+  2026-11-22 against that tip; the commit after it is this file.
 - Working tree: **clean**.
 - `python -m flightdesk selftest` → **407 tests, 0 failures, 0 errors**.
 - `node tools\ui_check.mjs <cdp-port> <outdir> <zip> <app-url>` → **87 checks, 0 failures**.
