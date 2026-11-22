@@ -26,6 +26,20 @@ SCRIPT = Path(__file__).resolve().parent.parent / "tools" / "Collect-DjiLogs.ps1
 MAX_COPY_BYTES = 512 * 1024 * 1024
 
 
+class CollectorError(Exception):
+    """The collector could not produce a result, and why.
+
+    The old code collapsed a timeout, a missing script, a non-zero exit and
+    unreadable JSON into the same `None`, so `scan` returned before writing a
+    `usb_scans` row and the UI showed nothing at all. A failure that leaves no
+    trace is the exact class of defect this project keeps finding.
+    """
+
+    def __init__(self, category: str) -> None:
+        super().__init__(category)
+        self.category = category
+
+
 class CopyError(Exception):
     category = "copy_incomplete"
 
@@ -39,10 +53,22 @@ def validate_flight_bytes(data: bytes) -> tuple[bool, str]:
     if version >= 13:
         if data[100] not in (0, 1):
             return False, "bad_auxiliary_block"
-    else:
-        offset = struct.unpack_from("<Q", data, 0)[0]
-        if offset <= 0 or offset >= len(data):
-            return False, "bad_details_offset"
+        # The auxiliary block declares its own length at byte 101. A copy that
+        # stops inside it is truncated, however stable its file size looked.
+        if len(data) >= 103:
+            aux_size = struct.unpack_from("<H", data, 101)[0]
+            if aux_size and 100 + 1 + 2 + 1 + aux_size > len(data):
+                return False, "copy_truncated"
+        return True, "ok"
+    offset = struct.unpack_from("<Q", data, 0)[0]
+    if offset <= 0 or offset >= len(data):
+        return False, "bad_details_offset"
+    # The details block has a declared length too. `offset < len(data)` alone
+    # accepted a file that ended halfway through its own details block — which
+    # is what a stalled MTP copy leaves behind.
+    details_len = struct.unpack_from("<H", data, 8)[0]
+    if details_len and offset + details_len > len(data):
+        return False, "copy_truncated"
     return True, "ok"
 
 
@@ -81,7 +107,7 @@ class ScanResult:
         }
 
 
-def _ps_json(script: Path, args: list[str], timeout: int = 200) -> dict[str, Any] | None:
+def _ps_json(script: Path, args: list[str], timeout: int = 200) -> dict[str, Any]:
     """Run a collector script and read its JSON, bounded at 200 s.
 
     The bound matches the project rule that nothing runs longer than 200 s
@@ -90,9 +116,12 @@ def _ps_json(script: Path, args: list[str], timeout: int = 200) -> dict[str, Any
     Within the run the collector also bounds each copy (60 s) and aborts after
     three consecutive failures, so a stall is reported in about 180 s rather than
     consuming the whole window.
+
+    Raises CollectorError with a category the caller records: a timeout and a
+    missing script are different problems and must not look alike.
     """
     if os.name != "nt" or not script.exists():
-        return None
+        raise CollectorError("collector_missing")
     command = [
         "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
         "-File", str(script), *args,
@@ -102,15 +131,21 @@ def _ps_json(script: Path, args: list[str], timeout: int = 200) -> dict[str, Any
             command, capture_output=True, timeout=timeout,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if proc.returncode != 0 or not (proc.stdout or b"").strip():
-        return None
+    except subprocess.TimeoutExpired as exc:
+        raise CollectorError("collector_timeout") from exc
+    except OSError as exc:
+        raise CollectorError("collector_unavailable") from exc
+    if proc.returncode != 0:
+        raise CollectorError("collector_failed")
+    if not (proc.stdout or b"").strip():
+        raise CollectorError("collector_no_output")
     try:
         data = json.loads(proc.stdout.decode("utf-8", "replace"))
-    except ValueError:
-        return None
-    return data if isinstance(data, dict) else None
+    except ValueError as exc:
+        raise CollectorError("collector_bad_json") from exc
+    if not isinstance(data, dict):
+        raise CollectorError("collector_bad_json")
+    return data
 
 
 def _note_device(conn, device: str, status: str, detail: str | None = None) -> None:
@@ -130,6 +165,101 @@ def _mark_success(conn, device: str) -> None:
                      (db.now_utc(), device))
 
 
+def _import_staged_file(importer: Importer, conn, result: ScanResult, *,
+                        path: Path, name: str, device: str,
+                        target: str | None) -> bool:
+    """Validate and import one staged file. Returns True if a record was stored.
+
+    Shared by the normal path and by the salvage path after a collector timeout,
+    so a file that arrived intact is imported even when the collector never
+    finished reporting. The staged file is read once and the bytes are what get
+    archived; the hash the collector computed described this same staged file,
+    so comparing it back to itself proved nothing and has been removed.
+    """
+    try:
+        if not path.is_file():
+            result.attention += 1
+            result.notes.append("staged_file_missing")
+            return False
+        if path.stat().st_size > MAX_COPY_BYTES:
+            result.attention += 1
+            result.notes.append("staged_file_too_large")
+            return False
+        blob = path.read_bytes()
+    except OSError:
+        result.attention += 1
+        result.notes.append("staged_file_unreadable")
+        return False
+    ok, reason = validate_flight_bytes(blob)
+    if not ok and reason != "bad_details_offset":
+        result.attention += 1
+        result.notes.append(f"incomplete_or_invalid:{reason}")
+        return False
+    if not ok:
+        # `bad_details_offset` is a defect in the file itself, not in the copy.
+        # Measured on a real controller, two logs carry a details offset of 0 —
+        # one of them byte-identical to a log already in the archive. Dropping
+        # them loses the only evidence; the importer keeps them, marks them
+        # `details_unreadable` and shows them for review.
+        result.notes.append(f"kept_unreadable:{reason}")
+    if not is_flight_filename(name):
+        result.attention += 1
+        result.notes.append("filename_not_allowlisted")
+        return False
+    batch = importer.import_stream(
+        _BytesReader(blob), name,
+        source_kind="usb", source_label=f"USB {device}",
+        member_path=f"{target or 'unknown'}/{name}",
+    )
+    totals = batch.totals
+    # A v14 log carries metadata but waits for the DJI key. It is a record the
+    # archive now holds, so it belongs in "imported"; `max` rather than a sum
+    # because a decoded new log reports both `new` and `new_flight` for the same
+    # file. Measured on a real RC 2: the scan said "imported 0" while a flight
+    # had in fact been created.
+    stored = max(int(totals.get("new", 0)), int(totals.get("new_flight", 0)))
+    result.imported += stored
+    result.duplicates += int(totals.get("already_imported", 0))
+    awaiting = int(totals.get("awaiting_dji", 0))
+    broken = int(totals.get("needs_attention", 0))
+    result.attention += awaiting + broken
+    # Attention without a reason is the silence this project keeps getting
+    # bitten by. Every count that raises attention names why.
+    if awaiting:
+        result.notes.append("awaiting_dji_key")
+    if broken:
+        result.notes.append("not_importable")
+    if stored:
+        _mark_success(conn, device)
+    return bool(stored)
+
+
+def _salvage_staged(conn, root: Path, staging: Path, result: ScanResult) -> None:
+    """Import files the collector already copied before it timed out.
+
+    A timeout used to discard the whole staging folder, so a controller with a
+    large backlog could copy for 200 s, lose all of it, and repeat forever. The
+    files are on disk and complete or not; `_import_staged_file` already refuses
+    a truncated one on its header.
+    """
+    importer = Importer(root, conn)
+    salvaged = 0
+    for path in sorted(Path(staging).rglob("*")):
+        if not path.is_file() or not is_flight_filename(path.name):
+            continue
+        salvaged += 1
+        try:
+            _import_staged_file(importer, conn, result, path=path, name=path.name,
+                                device="controller", target=None)
+        finally:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    result.scanned += salvaged
+    result.notes.append("salvaged_after_timeout" if salvaged else "nothing_staged_to_salvage")
+
+
 def scan(conn, root: Path, *, staging_root: Path | None = None,
          timeout_s: int = 60) -> ScanResult:
     root = Path(root)
@@ -137,6 +267,26 @@ def scan(conn, root: Path, *, staging_root: Path | None = None,
     staging.mkdir(parents=True, exist_ok=True)
     result = ScanResult(status="none", mode="physical")
     skip_file: Path | None = None
+
+    def record() -> ScanResult:
+        """Write the scan row and return, on every exit path.
+
+        The first version returned early for `no_files` and `all_known`, so a
+        second attach — the exact evidence the owner is asked to produce — left
+        no trace in the scan history at all. A collector that never reported
+        left no trace either; now it does, with the failure named.
+        """
+        result.notes = sorted(set(result.notes))
+        with db.tx(conn):
+            conn.execute(
+                "INSERT INTO usb_scans(at,device,scanned,imported,duplicates,attention,detail) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (db.now_utc(), ",".join(result.devices) or None, result.scanned,
+                 result.imported, result.duplicates, result.attention,
+                 ",".join(result.notes)[:1000] or None),
+            )
+        return result
+
     try:
         # Everything the archive already holds, by name and size. Without this a
         # controller left plugged in makes the 45 s watcher re-copy the whole
@@ -154,11 +304,14 @@ def scan(conn, root: Path, *, staging_root: Path | None = None,
         args = ["-StagingRoot", str(staging), "-TimeoutSeconds", str(timeout_s)]
         if skip_file is not None:
             args += ["-SkipListPath", str(skip_file)]
-        data = _ps_json(SCRIPT, args)
-        if data is None:
+        try:
+            data = _ps_json(SCRIPT, args)
+        except CollectorError as exc:
             result.status = "unavailable"
-            result.notes.append("collector_unavailable")
-            return result
+            result.notes.append(exc.category)
+            if exc.category == "collector_timeout":
+                _salvage_staged(conn, root, staging, result)
+            return record()
         status = str(data.get("status") or "none")
         errors = data.get("errors") or []
         files = data.get("files") or []
@@ -175,28 +328,11 @@ def scan(conn, root: Path, *, staging_root: Path | None = None,
         result.devices = devices
         result.scanned = len(files) + skipped
         result.duplicates += skipped
-
-        def record() -> ScanResult:
-            """Write the scan row and return, on every exit path.
-
-            The first version returned early for `no_files` and `all_known`, so a
-            second attach — the exact evidence the owner is asked to produce —
-            left no trace in the scan history at all.
-            """
-            if errors:
-                result.notes.extend(
-                    sorted({str(e.get("code")) for e in errors if e.get("code")}))
-            result.notes = sorted(set(result.notes))
-            with db.tx(conn):
-                conn.execute(
-                    "INSERT INTO usb_scans(at,device,scanned,imported,duplicates,attention,detail) "
-                    "VALUES(?,?,?,?,?,?,?)",
-                    (db.now_utc(), ",".join(result.devices) or None, result.scanned,
-                     result.imported, result.duplicates, result.attention,
-                     ",".join(result.notes)[:1000] or None),
-                )
-            return result
-
+        if errors:
+            result.notes.extend(
+                sorted({str(e.get("code")) for e in errors if e.get("code")}))
+            if status == "error":
+                result.notes.append("collector_exception")
         if status == "none":
             result.status = "no_device"
             return record()
@@ -209,7 +345,6 @@ def scan(conn, root: Path, *, staging_root: Path | None = None,
                 _mark_success(conn, device)
         if not files:
             result.attention = len(errors)
-            result.notes = sorted({str(e.get("code")) for e in errors if e.get("code")})
             # "all_known" means the device was read and everything on it is
             # already archived — a success with nothing to do, not an absence.
             result.status = "all_known" if status == "all_known" else "no_files"
@@ -218,70 +353,10 @@ def scan(conn, root: Path, *, staging_root: Path | None = None,
         for entry in files:
             path = Path(str(entry.get("staged_path") or ""))
             try:
-                if not path.exists() or not path.is_file():
-                    result.attention += 1
-                    result.notes.append("staged_file_missing")
-                    continue
-                if path.stat().st_size > MAX_COPY_BYTES:
-                    result.attention += 1
-                    result.notes.append("staged_file_too_large")
-                    continue
-                with open(path, "rb") as fh:
-                    blob = fh.read()
-                ok, reason = validate_flight_bytes(blob)
-                if not ok and reason != "bad_details_offset":
-                    result.attention += 1
-                    result.notes.append(f"incomplete_or_invalid:{reason}")
-                    continue
-                if not ok:
-                    # `bad_details_offset` is a defect in the file itself, not in
-                    # the copy: the size and hash above already proved the bytes
-                    # are exactly what the device holds. Measured on a real
-                    # controller, two logs carry a details offset of 0 — one of
-                    # them byte-identical to a log already in the archive.
-                    # Dropping them loses the only evidence; the importer keeps
-                    # them, marks them `details_unreadable` and shows them for
-                    # review, which is what the archive does for damaged files
-                    # everywhere else.
-                    result.notes.append(f"kept_unreadable:{reason}")
-                expected = entry.get("sha256")
-                if expected and hashlib.sha256(blob).hexdigest() != str(expected).lower():
-                    result.attention += 1
-                    result.notes.append("hash_changed_after_copy")
-                    continue
                 name = str(entry.get("source_name") or path.name)
-                if not is_flight_filename(name):
-                    result.attention += 1
-                    result.notes.append("filename_not_allowlisted")
-                    continue
                 device = str(entry.get("device") or "controller")
-                label = f"USB {device}"
-                batch = importer.import_stream(
-                    _BytesReader(blob), name,
-                    source_kind="usb", source_label=label,
-                    member_path=f"{entry.get('target') or 'unknown'}/{name}",
-                )
-                totals = batch.totals
-                # A v14 log carries metadata but waits for the DJI key. It is a
-                # record the archive now holds, so it belongs in "imported";
-                # `max` rather than a sum because a decoded new log reports both
-                # `new` and `new_flight` for the same file. Measured on a real
-                # RC 2: the scan said "imported 0" while a flight had in fact
-                # been created.
-                stored = max(int(totals.get("new", 0)), int(totals.get("new_flight", 0)))
-                result.imported += stored
-                result.duplicates += int(totals.get("already_imported", 0))
-                awaiting = int(totals.get("awaiting_dji", 0))
-                broken = int(totals.get("needs_attention", 0))
-                result.attention += awaiting + broken
-                # Attention without a reason is the silence this project keeps
-                # getting bitten by. Every count that raises attention names why.
-                if awaiting:
-                    result.notes.append("awaiting_dji_key")
-                if broken:
-                    result.notes.append("not_importable")
-                if stored:
-                    _mark_success(conn, device)
+                _import_staged_file(importer, conn, result, path=path, name=name,
+                                    device=device, target=entry.get("target"))
             finally:
                 try:
                     path.unlink(missing_ok=True)
@@ -332,6 +407,14 @@ def simulate(conn, root: Path, entries: Iterable[SimEntry], *,
     importer = Importer(root, conn)
     seen_paths: set[tuple[str, str]] = set()
     seen_hashes: set[str] = set()
+    # The skip contract the collector now applies: a file is skipped only when
+    # its exact name AND size are already archived. Modelled here so the
+    # contract has a test that does not need a controller attached.
+    known: dict[str, set[int]] = {}
+    for row in db.all_rows(
+            conn, "SELECT original_name AS name, size_bytes AS size FROM raw_files"):
+        if row["name"]:
+            known.setdefault(str(row["name"]), set()).add(int(row["size"] or 0))
     devices = sorted({e.device for e in entries})
     result.devices = devices
     for device in devices:
@@ -350,6 +433,14 @@ def simulate(conn, root: Path, entries: Iterable[SimEntry], *,
             continue
         seen_paths.add(key)
         result.scanned += 1
+        sizes = known.get(display)
+        if sizes is not None and len(entry.data) in sizes:
+            result.duplicates += 1
+            result.notes.append("skipped_known")
+            continue
+        if sizes is not None:
+            # Same name, different size: the archived copy is not this file.
+            result.notes.append("recopied_changed_size")
         if not entry.complete or not entry.stable:
             result.attention += 1
             result.notes.append("copy_incomplete_retryable")
@@ -402,14 +493,24 @@ def simulate(conn, root: Path, entries: Iterable[SimEntry], *,
     return result
 
 
-def status(conn) -> dict[str, Any]:
+def status(conn, root: Path | None = None) -> dict[str, Any]:
     devices = [dict(r) for r in db.all_rows(
         conn, "SELECT * FROM usb_devices ORDER BY device")]
     scans = [dict(r) for r in db.all_rows(
         conn, "SELECT * FROM usb_scans ORDER BY id DESC LIMIT 12")]
     watcher = db.get_setting(conn, "usb_watcher", {"enabled": False})
     logon = db.get_setting(conn, "usb_logon_task", {"installed": False})
-    return {"devices": devices, "scans": scans, "watcher": watcher, "logon": logon}
+    # The watcher runs in a background thread; when it fails, this is the only
+    # place the owner can see it. A missing value means no failure recorded.
+    last_error = db.get_setting(conn, "usb_watcher_last_error")
+    out: dict[str, Any] = {
+        "devices": devices, "scans": scans, "watcher": watcher,
+        "logon": logon, "watcher_last_error": last_error,
+    }
+    if root is not None:
+        from . import errlog
+        out["log"] = errlog.summary(Path(root))
+    return out
 
 
 def set_watcher(conn, enabled: bool, interval_s: int = 45) -> dict[str, Any]:

@@ -33,7 +33,7 @@ def main(message: str) -> int:
         "flightdesk/**/*.html", "tools/*", "tests/*", "fixtures/**/*.md",
         "shim/Cargo.toml", "shim/Cargo.lock", "shim/src/*.rs",
         "README.md", "BUILD-STATUS.md", "VERIFICATION.md", "OWNER-GUIDE.md",
-        "CHECKPOINT.md",
+        "CHECKPOINT.md", "REVIEW-BRIEF.md",
         "requirements.txt",
         ".gitignore", "FlightDesk.cmd", "FlightDesk-DeepSeek-Build.md",
     ):

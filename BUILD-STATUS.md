@@ -729,6 +729,71 @@ same garbage for that file, so nothing downstream could tell.
   facts, a reparse that replaces a garbage record, and a reparse that never
   degrades a good one.
 
+### Stage 16 · Fixes from the independent review — **items 1–4 fixed with tests, 5–6 done, 7 built, 8 added**
+
+An outside review read the code and used the app on a throwaway demo root. Its
+findings were turned into changes here; each bug fix has a test that fails on the
+code the review read. **No live data was changed.** The fingerprint repair runs as
+a dry run and waits for the owner (see below).
+
+- **1 · Two unreadable logs merged into one flight.** `_fingerprint` hashed
+  `"||0.0"` when a log had no details, so every unreadable log shared one
+  identity and the second was linked as a "variant" of the first. A fingerprint
+  is now produced only when there is a start time (decoded, or from the file
+  name), the two sources are tagged apart, and the metrics update rewrites the
+  fingerprint instead of leaving it stale. `tools\repair_fingerprints.py`
+  reports; `--apply` writes.
+- **2 · The collector skipped by name alone.** An incomplete copy on the
+  controller could never be replaced. Skipping is now name **and** size (one size
+  read, only for names already archived). When the device reports no size, a copy
+  must be stable for three seconds **and** long enough to hold the block its own
+  header points at, or it is reported as `copy_unverified`. The check that hashed
+  the staged file and compared it to the hash computed from that same file is
+  gone — it could not fail. `validate_flight_bytes` also now rejects a copy that
+  stops inside its declared details block, which the old check accepted.
+- **3 · Silent failures.** `except Exception: pass` in the watcher now logs and
+  records the category in a setting, which Settings → USB controllers shows as
+  "Last watcher problem". Route failures log the route and traceback to
+  `<root>\logs\flightdesk.log` (1 MB × 3, paths outside the data root and
+  key-like tokens scrubbed). `usb.scan` writes a `usb_scans` row on every exit,
+  with `collector_timeout` told apart from `collector_unavailable`; files already
+  copied before a timeout are imported instead of deleted.
+- **4 · "Path" that was not the path.** Cards, the Overview tile and the
+  flights-page tile now show `path_length_m` labelled *path* when it exists, and
+  `total_distance_m` labelled *log distance* otherwise. The tile says which one
+  it sums, and only claims the path when every counted flight has one.
+- **5–6 · Text and layout.** Key-in-backup wording, the key's real path in
+  the README, the opt-in basemap, the tile cache, no mention of an assistant, the
+  synthetic badge only when demo data is loaded, demo `warnings_json`, a compact
+  navigation rail, one tab bar instead of two, "1 archived flight", provenance
+  behind a Details toggle, and plain owner wording in Settings.
+- **7 · Raw log export.** Settings → Raw log folder copies the archived
+  originals out under their real names, additively and incrementally, with a
+  manifest, optional variants and year grouping, a background run with progress,
+  and an Open folder button. Ten tests.
+- **8 · `tools\real_file_check.py`.** An opt-in, git-ignored check against a
+  handful of the owner's real logs and figures recorded once by hand. Skips
+  cleanly when the folder is absent.
+
+**Measured:** 378 tests, 0 failures (was 331). `tools\recon_check.py` 9/9;
+`tools\fault_check.py` exit 0 with the expected interrupted-restore outcome.
+Headless Chrome renders of Settings, Flights, Maintenance and a flight detail
+confirm the new text and layout; the removed wording is gone.
+
+**The browser gate could not be run here.** `tools\ui_check.mjs` fails against
+untouched `HEAD` in this environment — same failures, including a crash inside
+the gate itself (`firstSummary.slice is not a function`) — so its 87-check
+result is not reproducible on this machine today. That is a gate/environment
+problem, not a claim about this change.
+
+**Fingerprint repair, dry run on the live archive:** 284 flights checked, 284
+fingerprints differ (the scheme gained a source tag, so every value changes),
+0 flights share a fingerprint, and 94 multi-file flights have file names that
+disagree about the date — **77 by a second and 17 by exactly two hours**. None
+contradicts: the link was made on the decoded start times, which agree within
+three seconds. Nothing was written.
+
+
 ## Release gate
 
 | Item | Verdict | Evidence | Next human action |
@@ -781,12 +846,12 @@ difference against the 264/24h10m/108mi reference, and the header badge reads
 3. **The real capture accounts for 13 of the 21 service records it claims.**
    The 8 missing rows are reported, not invented. 16 battery rules are
    `unknown` because those batteries published no counter.
-4. **Physical USB remains unexercised.** `usb_scans` is still 0; the DJI key is
-   not (see Stage 5 — the owner's real key decoded all 39 encrypted records, and
-   one re-decode was done from cache with the network off).
-   `tools\Collect-DjiLogs.ps1` was executed on this machine with no controller
-   attached and returned a clean `no_device` in 0.3 s, so the script parses and
-   runs; it has never enumerated a real controller.
+4. **Physical USB — verified 2026-11-21.** This item said `usb_scans` was 0
+   and that the collector had never enumerated a real controller. That stopped
+   being true the same day: both controllers were read, `usb_scans` is 11, and a
+   physical replug added nothing. See the release-gate row "Both real USB
+   devices" and Stage 4. What remains unobserved is a controller left attached
+   for a long period under the watcher — arithmetic, not an observation.
 5. **Screenshots 01/03/19/20/21–23 comparison** needs Kevin's reference images.
    The in-app comparison page pairs them without uploading.
 6. **Backup during an active USB scan** is covered by a settings-level test, not

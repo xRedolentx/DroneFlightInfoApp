@@ -9,6 +9,7 @@ import re
 import secrets
 import socket
 import sqlite3
+import subprocess
 import threading
 import time
 import urllib.parse
@@ -18,8 +19,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
-from . import (archive, backup, capture, climate, db, demo, keychain, maintenance,
-               paths, report, schedule, security, tiles, usb, views)
+from . import (archive, backup, capture, climate, db, demo, errlog, keychain,
+               maintenance, paths, rawexport, report, schedule, security, tiles, usb, views)
 from .importer import Importer
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -96,6 +97,10 @@ class App:
         self.port = 0
         self.watcher_thread: threading.Thread | None = None
         self.stop_event = threading.Event()
+        self.log = errlog.get_logger(self.root)
+        # One raw-log export at a time, in its own thread. A first export of a
+        # few hundred files must not freeze the page.
+        self.raw_export = rawexport.Job()
 
     def connect(self) -> sqlite3.Connection:
         return db.connect(self.db_file)
@@ -112,8 +117,14 @@ class App:
                     config = db.get_setting(conn, "usb_watcher", {"enabled": False})
                     if config.get("enabled"):
                         usb.scan(conn, self.root)
-                except Exception:
-                    pass
+                        self.maybe_auto_export()
+                except Exception as exc:  # noqa: BLE001
+                    # This used to be `pass`. A watcher that dies quietly is
+                    # indistinguishable from a watcher with nothing to do, and
+                    # that silence is the defect this project keeps repeating.
+                    category = errlog.record(self.root, "usb_watcher_scan", exc,
+                                             logger=self.log)
+                    self._note_watcher_error(category)
                 finally:
                     if conn is not None:
                         conn.close()
@@ -122,12 +133,62 @@ class App:
                     conn2 = self.connect()
                     interval = int(db.get_setting(conn2, "usb_watcher", {}).get("interval_s", 45))
                     conn2.close()
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    # A bad interval is not worth stopping the watcher over, but
+                    # it is worth saying out loud.
+                    category = errlog.record(self.root, "usb_watcher_settings", exc,
+                                             logger=self.log)
+                    self._note_watcher_error(category)
                 self.stop_event.wait(max(20, interval))
 
         self.watcher_thread = threading.Thread(target=loop, name="fd-usb-watcher", daemon=True)
         self.watcher_thread.start()
+
+    def _note_watcher_error(self, category: str) -> None:
+        """Remember the last watcher problem so Settings can show it.
+
+        Only the category and the time: the message can hold a path, and the
+        category is all the owner needs to know something is wrong.
+        """
+        conn = None
+        try:
+            conn = self.connect()
+            with db.tx(conn):
+                db.set_setting(conn, "usb_watcher_last_error",
+                               {"at": db.now_utc(), "category": category})
+        except Exception as exc:  # noqa: BLE001
+            errlog.record(self.root, "usb_watcher_error_setting", exc, logger=self.log)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def maybe_auto_export(self) -> None:
+        """Run the incremental raw-log copy if the owner asked for it.
+
+        Called after an import and after each watcher scan. Incremental means
+        this is cheap: only hashes not already in the destination manifest are
+        copied. A failure here must never break the import that just finished.
+        """
+        conn = None
+        try:
+            conn = self.connect()
+            config = rawexport.settings(conn)
+        except Exception as exc:  # noqa: BLE001
+            errlog.record(self.root, "raw_export_settings", exc, logger=self.log)
+            return
+        finally:
+            if conn is not None:
+                conn.close()
+        if not (config.get("auto_sync") and config.get("folder")):
+            return
+        try:
+            self.raw_export.start(
+                self.db_file, self.root, Path(str(config["folder"])),
+                variants=bool(config.get("variants")),
+                group_by_year=bool(config.get("group_by_year")), auto=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            errlog.record(self.root, "raw_export_start", exc, logger=self.log)
 
 
 # ------------------------------------------------------------------ helpers
@@ -451,6 +512,9 @@ def api_import_history(ctx: Ctx) -> None:
 
 
 def _batch_response(ctx: Ctx, batch) -> None:
+    # The batch is finished by now; run the incremental raw-log copy if the
+    # owner asked for it, before the response so the page can show both.
+    ctx.app.maybe_auto_export()
     payload = batch.as_dict()
     payload["state"] = views.state(ctx.conn)
     codes: dict[str, int] = {}
@@ -691,12 +755,13 @@ def api_key_unlock(ctx: Ctx) -> None:
 
 @route("GET", r"/api/usb")
 def api_usb(ctx: Ctx) -> None:
-    _send_json(ctx.handler, usb.status(ctx.conn))
+    _send_json(ctx.handler, usb.status(ctx.conn, ctx.app.root))
 
 
 @route("POST", r"/api/usb/scan")
 def api_usb_scan(ctx: Ctx) -> None:
     result = usb.scan(ctx.conn, ctx.app.root)
+    ctx.app.maybe_auto_export()
     payload = result.as_dict()
     payload["state"] = views.state(ctx.conn)
     payload["status_detail"] = usb.status(ctx.conn)
@@ -1022,6 +1087,67 @@ def api_export(ctx: Ctx) -> None:
                extra={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
+# ---------------------------------------------------------- raw log export
+
+
+def _raw_export_payload(ctx: Ctx) -> dict[str, Any]:
+    config = rawexport.settings(ctx.conn)
+    counts = {
+        "flights": int(ctx.conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0]),
+        "raw_files": int(ctx.conn.execute("SELECT COUNT(*) FROM raw_files").fetchone()[0]),
+    }
+    return {"ok": True, "settings": config, "counts": counts,
+            "job": ctx.app.raw_export.snapshot()}
+
+
+@route("GET", r"/api/raw-export")
+def api_raw_export(ctx: Ctx) -> None:
+    _send_json(ctx.handler, _raw_export_payload(ctx))
+
+
+@route("POST", r"/api/raw-export/settings")
+def api_raw_export_settings(ctx: Ctx) -> None:
+    rawexport.save_settings(ctx.conn, ctx.json_body())
+    _send_json(ctx.handler, _raw_export_payload(ctx))
+
+
+@route("POST", r"/api/raw-export/start")
+def api_raw_export_start(ctx: Ctx) -> None:
+    body = ctx.json_body()
+    if body:
+        rawexport.save_settings(ctx.conn, body)
+    config = rawexport.settings(ctx.conn)
+    folder = str(config.get("folder") or "")
+    if not folder:
+        _send_json(ctx.handler, {"ok": False, "code": "no_folder"}, 400)
+        return
+    started = ctx.app.raw_export.start(
+        ctx.app.db_file, ctx.app.root, Path(folder),
+        variants=bool(config.get("variants")),
+        group_by_year=bool(config.get("group_by_year")),
+    )
+    _send_json(ctx.handler, {"ok": True, "started": started,
+                             "settings": config,
+                             "job": ctx.app.raw_export.snapshot()})
+
+
+@route("POST", r"/api/raw-export/open")
+def api_raw_export_open(ctx: Ctx) -> None:
+    folder = str(rawexport.settings(ctx.conn).get("folder") or "")
+    target = Path(folder)
+    if not folder or not target.is_dir():
+        _send_json(ctx.handler, {"ok": False, "code": "no_folder"}, 400)
+        return
+    try:
+        # No shell: the path is an argument to explorer, never a command line.
+        subprocess.Popen(["explorer.exe", str(target)])
+    except OSError as exc:
+        errlog.record(ctx.app.root, "raw_export_open", exc, logger=ctx.app.log)
+        _send_json(ctx.handler, {"ok": False, "code": "open_failed"}, 500)
+        return
+    _send_json(ctx.handler, {"ok": True})
+
+
 # ------------------------------------------------------------------ server
 
 class Handler(BaseHTTPRequestHandler):
@@ -1031,7 +1157,12 @@ class Handler(BaseHTTPRequestHandler):
     app: App
 
     def log_message(self, fmt: str, *args) -> None:  # never log paths or queries
-        return
+        # The console stays quiet, but the file log keeps a record: silencing
+        # this completely meant a broken server left no trace anywhere.
+        try:
+            self.app.log.debug("%s", fmt % args)
+        except Exception:  # noqa: BLE001
+            return
 
     def _host_ok(self) -> bool:
         return security.host_allowed(self.headers.get("Host"), self.app.port)
@@ -1122,6 +1253,7 @@ class Handler(BaseHTTPRequestHandler):
         self._dispatch("DELETE")
 
     def _dispatch(self, method: str) -> None:
+        self._current_route = "<dispatch>"
         if not self._host_ok():
             self._reject(403, "host_not_allowed")
             return
@@ -1134,6 +1266,7 @@ class Handler(BaseHTTPRequestHandler):
             if method != "GET":
                 self._reject(405, "method_not_allowed")
                 return
+            self._current_route = "<static>"
             self._serve_static(path)
             return
         if not path.startswith(TILES_PREFIX) and not self._session_ok():
@@ -1165,14 +1298,19 @@ class Handler(BaseHTTPRequestHandler):
                           query=query, body=body, conn=conn)
                 if match.groups():
                     ctx.params = {str(i + 1): g for i, g in enumerate(match.groups())}
+                self._current_route = pattern.pattern.strip("^$")
                 handler(ctx)
                 return
             self._reject(404, "no_route")
         except (BrokenPipeError, ConnectionResetError):
             return
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
             # The browser owner sees a category; the transcript never sees a
-            # traceback or private value.
+            # traceback or private value. The file log does get the traceback,
+            # along with the route, so a failure is diagnosable afterwards.
+            route = getattr(self, "_current_route", "unknown")
+            errlog.record(self.app.root, f"route {method} {route}", exc,
+                          logger=self.app.log)
             self._reject(500, "internal_error")
         finally:
             conn.close()

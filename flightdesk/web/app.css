@@ -296,33 +296,11 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 
 .detail {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
+  /* One column: the vertical section strip was removed. Two identical tab
+     bars (a rotated rail and a horizontal row) navigated the same sections. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 0;
 }
-.rail {
-  border-right: 1px solid var(--line);
-  padding: 12px 0;
-  display: grid;
-  gap: 4px;
-  justify-items: center;
-  align-content: start;
-  position: sticky;
-  top: 60px;
-  max-height: calc(100vh - 90px);
-  overflow: auto;
-}
-.rail a {
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
-  font-size: 11px;
-  letter-spacing: .06em;
-  color: var(--ink-faint);
-  padding: 6px 2px;
-  border-radius: 3px;
-  text-decoration: none;
-}
-.rail a[aria-current="true"] { color: var(--teal-ink); background: var(--teal-soft); font-weight: 600; }
-.rail a:hover { color: var(--ink); }
 
 .detail-main { padding: 14px 16px 18px; }
 .detail-head { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }
@@ -557,7 +535,6 @@ body[data-privacy="on"] .privacy-banner { display: flex; }
   .metric-stack { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cards-2 { grid-template-columns: 1fr; }
   .detail { grid-template-columns: 1fr; }
-  .rail { display: none; }
   .kv { grid-template-columns: 1fr; }
   .mainnav { overflow-x: auto; }
 }
@@ -590,6 +567,6 @@ body[data-privacy="on"] .privacy-banner { display: flex; }
 }
 
 @media print {
-  .topbar, .filters, .rail, .topbar-tools { display: none; }
+  .topbar, .filters, .topbar-tools { display: none; }
   .panel { box-shadow: none; }
 }

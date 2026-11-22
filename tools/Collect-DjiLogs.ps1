@@ -11,9 +11,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $result = [ordered]@{ status = 'ok'; devices = @(); errors = @(); skipped_known = 0 }
 $files = New-Object System.Collections.ArrayList
-# Two keys: a name already archived is skipped without reading its size (a size
-# read is an MTP round trip per file, measured at ~50 s for 259 files), and a
-# name+size pair covers the case where the name is new but the bytes are known.
+# Two keys, and the pair is what decides. A name in the list triggers ONE size
+# read; the file is skipped only when that exact name+size is already held. A
+# name alone is not proof of an identical copy, and skipping on it meant an
+# incomplete transfer on the controller could never be replaced.
 $skipNames = @{}
 $skipPairs = @{}
 if ($SkipListPath -and (Test-Path -LiteralPath $SkipListPath)) {
@@ -38,6 +39,31 @@ if ($SkipListPath -and (Test-Path -LiteralPath $SkipListPath)) {
 $seen = @{}
 $foundDevice = $false
 $seenDevices = New-Object System.Collections.ArrayList
+
+function Get-MinimumPlausibleLength([string]$path) {
+    # A copy that stops growing is only finished if it is long enough to hold
+    # the data its own header points at. A v6-v12 log stores a details offset
+    # and length in the first 10 bytes; a v13+ log keeps an auxiliary block at
+    # byte 100. Without this, a transfer that stalled for 0.7 s was accepted as
+    # complete and saved truncated — the file looked stable because it was dead.
+    try {
+        $fs = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+        try {
+            $buf = New-Object byte[] 128
+            $n = $fs.Read($buf, 0, 128)
+            if ($n -lt 12) { return 0 }
+            $version = [int]$buf[10]
+            if ($version -ge 13) {
+                if ($n -lt 103) { return 0 }
+                $infoSize = [int]([BitConverter]::ToUInt16($buf, 101))
+                return [int64](100 + 1 + 2 + 1 + $infoSize)
+            }
+            $offset = [int64]([BitConverter]::ToUInt64($buf, 0))
+            $dlen = [int64]([BitConverter]::ToUInt16($buf, 8))
+            return ($offset + $dlen)
+        } finally { $fs.Dispose() }
+    } catch { return 0 }
+}
 
 function Get-ItemSize($item) {
     # An MTP item reports .Size = 0, not $null. Taking that as a real size made
@@ -135,17 +161,25 @@ try {
                     if ($seen.ContainsKey($identity)) { continue }
                     $seen[$identity] = $true
                     if ($skipNames.ContainsKey($name)) {
-                        # Already archived under this name. A DJI log's name is its
-                        # start time, so a re-save keeps it; the archive keeps the
-                        # original bytes. Re-reading the size here would cost an MTP
-                        # round trip per file on every watcher pass.
-                        $result.skipped_known = [int]$result.skipped_known + 1
-                        continue
-                    }
-                    $size = Get-ItemSize $item
-                    if ($null -ne $size -and $skipPairs.ContainsKey("$name|$size")) {
-                        $result.skipped_known = [int]$result.skipped_known + 1
-                        continue
+                        # Already archived under this name — but a name is not a
+                        # copy. Read the size and skip only if this exact
+                        # name+size is held: an incomplete copy on the
+                        # controller was previously skipped forever, because
+                        # the name matched and the size was never asked for.
+                        $size = Get-ItemSize $item
+                        if ($null -ne $size -and $skipPairs.ContainsKey("$name|$size")) {
+                            $result.skipped_known = [int]$result.skipped_known + 1
+                            continue
+                        }
+                        if ($null -eq $size) {
+                            # The device will not report a size, so this cannot be
+                            # proven equal to the archived copy. Copy it: the
+                            # importer dedupes by content hash, which is cheaper
+                            # than silently keeping a truncated file.
+                            $result.errors += @{ device = $deviceName; name = $name; code = 'size_unreadable_recopy' }
+                        }
+                    } else {
+                        $size = Get-ItemSize $item
                     }
                     $key = "$deviceName|$name|$size"
                     if ($seen.ContainsKey($key)) { continue }                    $seen[$key] = $true
@@ -169,6 +203,9 @@ try {
                     }
                     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
                     $copied = $null
+                    $unverified = $false
+                    $stableLen = -1
+                    $stableSince = Get-Date
                     while ((Get-Date) -lt $deadline) {
                         # CopyHere is asynchronous and needs its thread to pump
                         # messages; without this the transfer never advances.
@@ -186,16 +223,36 @@ try {
                             if ($candidate.Length -eq $size) { $copied = $candidate; break }
                             continue
                         }
-                        $first = $candidate.Length
-                        Start-Sleep -Milliseconds 700
+                        # Size unknown: require the length to stop changing for
+                        # three seconds AND to be long enough to hold the block
+                        # its own header points at.
                         try { $candidate.Refresh() } catch { }
-                        if ($candidate.Length -eq $first -and $candidate.Length -gt 0) {
-                            $copied = $candidate
+                        $lenNow = [int64]$candidate.Length
+                        if ($lenNow -ne $stableLen) {
+                            $stableLen = $lenNow
+                            $stableSince = Get-Date
+                        }
+                        if ($stableLen -gt 0 -and ((Get-Date) - $stableSince).TotalSeconds -ge 3) {
+                            $minLen = Get-MinimumPlausibleLength $candidate.FullName
+                            if ($minLen -gt 0 -and $stableLen -ge $minLen) {
+                                $copied = $candidate
+                                break
+                            }
+                            # Stable but too short to contain its own details
+                            # block: a stalled copy, not a finished one.
+                            $unverified = $true
                             break
                         }
                     }
                     if ($null -eq $copied) {
-                        $result.errors += @{ device = $deviceName; name = $name; code = 'copy_timeout_or_empty' }
+                        if ($unverified -or ($null -eq $size -and $stableLen -gt 0)) {
+                            # The device would not report a size and the staged
+                            # bytes cannot be shown to be complete. Say so rather
+                            # than hand the archive a truncated file.
+                            $result.errors += @{ device = $deviceName; name = $name; code = 'copy_unverified' }
+                        } else {
+                            $result.errors += @{ device = $deviceName; name = $name; code = 'copy_timeout_or_empty' }
+                        }
                         $consecutiveFailures++
                         # One stuck copy must not cost 60 s x 250 files. Three in
                         # a row means the transfer path itself is broken, and the

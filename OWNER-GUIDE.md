@@ -114,10 +114,11 @@ is one click away and entirely opt-in.
 What leaves this machine: the **tile numbers** for the area on screen. Tile
 numbers describe squares of ground, so together they show roughly where the
 flight was. Your serials, notes, names and log files are never sent. Nothing is
-fetched for areas you are not looking at, and nothing is saved for offline use.
+fetched for areas you are not looking at, and there is no bulk download or
+offline map pack.
 
 Tiles come from OpenStreetMap, arrive through Flight Desk on this machine, and
-are kept in a local cache for at least seven days so panning does not re-request
+are kept in a local cache for seven days as the tile service requires, so panning does not re-request
 them. The map always shows *© OpenStreetMap contributors* in the corner, and
 Settings → Online map has **Clear tile cache** and a *Report a map issue* link.
 

@@ -8,8 +8,9 @@ answers three questions quickly:
 3. Can I trust the history enough to leave AirData?
 
 Everything stays on this machine. There is no login, no telemetry, no hosted
-database, and no request to any external service except the single DJI
-keychain exchange you explicitly trigger with your own developer key.
+database. Flight Desk makes no network request unless you ask it to: the single
+DJI keychain exchange you explicitly trigger with your own developer key, and
+the optional OpenStreetMap basemap, which stays off until you allow it.
 
 Start with **`OWNER-GUIDE.md`**. Stage-by-stage status is in `BUILD-STATUS.md`;
 the raw evidence is in `VERIFICATION.md`. If you are resuming work on a later
@@ -39,12 +40,15 @@ The first screen offers two choices:
 
 - **Flights** — search and filter by date, drone, battery, pilot and tag. The
   four tiles and the record cards use the same filters as the list. Records
-  show air time, path distance, max altitude, max speed and battery endpoints.
-- **Selected flight** — Overview has the track (drawn on a local grid, no map
-  tiles) flanked by metric cards and synchronized charts. Details shows
-  provenance: air vs recorder vs airborne time, height above takeoff vs
-  altitude, path distance vs max home distance, sample and gap counts, and the
-  source files. Equipment links the flight to its aircraft and battery.
+  show air time, distance, max altitude, max speed and battery endpoints. The
+  distance shown is the path measured from the samples when there is one; a
+  record with no sample path shows the log header's own figure and says so.
+- **Selected flight** — Overview has the track (drawn on a local grid by
+  default; an OpenStreetMap basemap is available in Settings and stays off
+  until you allow it) flanked by metric cards and synchronized charts. Details
+  shows provenance: air vs recorder vs airborne time, height above takeoff vs
+  altitude, path length vs the log's total distance, sample and gap counts, and
+  the source files. Equipment links the flight to its aircraft and battery.
 - **Batteries & drones** — usage, flight history, health readings and service
   record for one item.
 - **Maintenance** — Upcoming (grouped by batteries and aircraft), Completed,
@@ -92,12 +96,12 @@ The fourth button exports without serials or coordinates.
 - `flightdesk.sqlite3` — the index (flights, equipment, rules, services)
 - `backups\`, `exports\`, `logs\`, `tmp\`
 
-The DJI key is stored separately at `%LOCALAPPDATA%\FlightDesk\keychains\dji_key.bin`
-and is encrypted with Windows DPAPI for your Windows user. It is never written
-into the database text, a URL or a process argument. It **is** carried in a backup
-as that protected file, so a restore on this machine keeps working; the blob only
-decrypts for this Windows account, and anyone who can read the backup as you can
-use the key.
+The DJI key is stored inside the data root at
+`%LOCALAPPDATA%\FlightDesk\data\keychains\dji_key.bin` and is encrypted with
+Windows DPAPI for your Windows user. It is never written into the database text,
+a URL or a process argument. It **is** carried in a backup as that protected
+file, so a restore on this machine keeps working; the blob only decrypts for this
+Windows account, and anyone who can read the backup as you can use the key.
 
 ## If something looks wrong
 

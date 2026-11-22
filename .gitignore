@@ -20,6 +20,10 @@ ui-shots/
 server.json
 *.log
 
+# Private real-file comparison fixtures (owner's own logs and their figures).
+# tools/real_file_check.py reads these; nothing here is ever versioned.
+realcheck/
+
 # Agent session config (working-hours policy), local to this checkout
 .codewhale/
 

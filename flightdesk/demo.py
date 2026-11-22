@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 
 from . import capture, db, maintenance
-from .analysis import compute_metrics, downsample
+from .analysis import compute_metrics, downsample, summarise_warnings
 from .importer import Importer
 from .paths import db_path, ensure_layout
 from .synth import filename_time, make_log_bytes, write_log
@@ -71,15 +71,20 @@ def _inject_samples(conn, flight_id: int, samples: list[dict]) -> None:
     }
     m = compute_metrics(samples, details)
     kept = downsample(samples, 1400)
+    # The samples are what the Warnings tab reads. Storing telemetry without
+    # the fault summary left the demo saying "no frame data was stored" next to
+    # a working track, which is the sort of contradiction a demo must not have.
+    warnings = summarise_warnings(samples)
     conn.execute(
         "UPDATE flights SET path_length_m=?, max_home_distance_m=?, max_altitude_m=?, "
         "airborne_time_s=?, recorder_duration_s=?, battery_start_pct=?, battery_end_pct=?, "
-        "battery_temp_max_c=?, signal_min=?, sample_count=?, gap_count=?, updated_at=? "
+        "battery_temp_max_c=?, signal_min=?, sample_count=?, gap_count=?, warnings_json=?, "
+        "updated_at=? "
         "WHERE id=?",
         (m.path_length_m, m.max_home_distance_m, m.max_altitude_m, m.airborne_time_s,
          m.recorder_duration_s, m.battery_start_pct, m.battery_end_pct,
          m.battery_temp_max_c, m.signal_min, m.sample_count, m.gap_count,
-         db.now_utc(), flight_id),
+         json.dumps(warnings, separators=(",", ":")), db.now_utc(), flight_id),
     )
     conn.execute(
         "INSERT INTO flight_telemetry(flight_id,source,sample_count,samples_blob,gaps_json,created_at) "

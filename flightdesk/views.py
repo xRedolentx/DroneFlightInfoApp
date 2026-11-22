@@ -162,6 +162,11 @@ def flights(conn: sqlite3.Connection, filters: dict[str, Any]) -> dict[str, Any]
     unresolved = [r for r in rows if r["identity_status"] != "authoritative"]
     air_s = sum(float(r["duration_s"] or 0) for r in auth)
     distance_m = sum(float(r["total_distance_m"] or 0) for r in auth)
+    # Two different numbers, two different names. `total_distance_m` is the
+    # figure in the log header; `path_length_m` is measured from the samples.
+    # The tile used to label the header figure "path", which is not what it is.
+    path_m = sum(float(r["path_length_m"] or 0) for r in auth if r["path_length_m"] is not None)
+    path_rows = sum(1 for r in auth if r["path_length_m"] is not None)
     aircraft = db.all_rows(
         conn,
         "SELECT id,name,archived,placeholder FROM equipment WHERE kind='aircraft' "
@@ -185,6 +190,8 @@ def flights(conn: sqlite3.Connection, filters: dict[str, Any]) -> dict[str, Any]
             "unresolved": len(unresolved),
             "air_minutes": round(air_s / 60.0, 2),
             "distance_m": round(distance_m, 1),
+            "path_m": round(path_m, 1),
+            "path_complete": bool(auth) and path_rows == len(auth),
             "aircraft": len({r["aircraft_sn"] or r["aircraft_name"] for r in auth if r["aircraft_sn"] or r["aircraft_name"]}),
             "batteries": len({r["battery_sn"] for r in auth if r["battery_sn"]}),
         },

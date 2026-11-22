@@ -86,8 +86,38 @@ def _parse_iso(value: str | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def _fingerprint(aircraft_sn: str | None, start: str | None, duration: float | None) -> str:
-    raw = f"{aircraft_sn or ''}|{start or ''}|{round(duration or 0, 1)}"
+def _identity_start(start_utc: str | None, filename_time: str | None) -> str | None:
+    """The temporal half of a flight's identity, or None if it has none.
+
+    A filesystem name is a weaker claim than a decoded start time, so the two
+    are tagged apart: a file whose details block cannot be read never matches a
+    record whose real start time was decoded.
+    """
+    if start_utc:
+        return f"log:{start_utc}"
+    if filename_time:
+        return f"name:{filename_time}"
+    return None
+
+
+def _fingerprint(
+    aircraft_sn: str | None,
+    start_utc: str | None,
+    duration: float | None,
+    filename_time: str | None = None,
+) -> str | None:
+    """A fingerprint, or None when the file has no start time at all.
+
+    This used to hash `"||0.0"` for an unreadable log and hand every such log
+    the same identity. Two unrelated unreadable files a month apart then merged
+    into one flight, the second linked as a "variant" of the first. A
+    fingerprint with no temporal component is not an identity, so it is not
+    produced at all.
+    """
+    start = _identity_start(start_utc, filename_time)
+    if start is None:
+        return None
+    raw = f"{aircraft_sn or ''}|{start}|{round(duration or 0, 1)}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
@@ -261,7 +291,24 @@ def _update_flight_metrics(
     outcome: ParseOutcome,
     start_utc: str | None,
     filename_time: str | None,
+    existing: sqlite3.Row | dict | None = None,
 ) -> None:
+    # The effective identity after the COALESCE update below: a field the new
+    # parse could not read keeps its stored value. The fingerprint must describe
+    # what the row will hold, not what this one parse happened to produce, or a
+    # reparse that corrects a duration leaves a fingerprint for the old figure
+    # and the next scan of the same file looks like a new flight.
+    def effective(key: str, new: object) -> object:
+        if new is not None:
+            return new
+        return existing[key] if existing is not None else None
+
+    new_fp = _fingerprint(
+        effective("aircraft_sn", details.get("aircraft_sn")),
+        effective("start_time_utc", start_utc),
+        metrics.duration_s if metrics.duration_s is not None else effective("duration_s", None),
+        effective("filename_time", filename_time),
+    )
     conn.execute(
         """UPDATE flights SET aircraft_sn=COALESCE(?,aircraft_sn),
             aircraft_name=COALESCE(?,aircraft_name), battery_sn=COALESCE(?,battery_sn),
@@ -274,6 +321,7 @@ def _update_flight_metrics(
             battery_start_pct=?, battery_end_pct=?, battery_temp_max_c=?,
             battery_temp_min_c=?, signal_min=?,
             sample_count=?, gap_count=?, warnings_json=?, metrics_source=?, parser_version=?,
+            fingerprint=?,
             aircraft_equipment_id=COALESCE(aircraft_equipment_id,?),
             battery_equipment_id=COALESCE(battery_equipment_id,?), updated_at=?
         WHERE id=?""",
@@ -306,6 +354,7 @@ def _update_flight_metrics(
             _warnings_json(outcome.samples),
             _metrics_source(outcome),
             outcome.parser_version,
+            new_fp,
             resolve_equipment(conn, "aircraft", details.get("aircraft_sn"), details.get("aircraft_name")),
             resolve_equipment(conn, "battery", details.get("battery_sn"), None),
             db.now_utc(),
@@ -329,13 +378,18 @@ def _insert_or_link_flight(
     metrics = compute_metrics(outcome.samples, details)
     start_utc = details.get("start_time_utc")
     filename_time = parse_filename_time(filename)
-    fp = _fingerprint(details.get("aircraft_sn"), start_utc, metrics.duration_s)
+    fp = _fingerprint(details.get("aircraft_sn"), start_utc, metrics.duration_s, filename_time)
     aircraft_sn = details.get("aircraft_sn")
     aircraft_name = details.get("aircraft_name")
     battery_sn = details.get("battery_sn")
     now = db.now_utc()
 
-    candidate = db.one(conn, "SELECT * FROM flights WHERE fingerprint=? LIMIT 1", (fp,))
+    # Only match on a fingerprint that carries a start time. A record with no
+    # identity of its own must never be linked to another one, or every
+    # unreadable log in the archive collapses into whichever was imported first.
+    candidate = None
+    if fp is not None:
+        candidate = db.one(conn, "SELECT * FROM flights WHERE fingerprint=? LIMIT 1", (fp,))
     match = "fingerprint" if candidate is not None else "new"
     # A raw file that is already linked keeps its flight. Otherwise a metrics
     # correction that changes the fingerprint would make a reparse look like a
@@ -426,13 +480,18 @@ def _insert_or_link_flight(
                 "UPDATE flights SET identity_status='unresolved', "
                 "excluded_reason='details_unreadable', aircraft_sn=NULL, "
                 "aircraft_name=NULL, battery_sn=NULL, camera_sn=NULL, rc_sn=NULL, "
+                "fingerprint=NULL, "
                 "aircraft_equipment_id=NULL, battery_equipment_id=NULL WHERE id=?",
                 (flight_id,),
             )
+            # The row's identity is gone, so the fingerprint must not be built
+            # from the values that were just cleared.
+            candidate = None
         # Equal weight is enough to refresh: this is the path a reparse takes
         # when a parser improves, and it must backfill the same logical flight
         # instead of keeping figures computed by the old parser.
-        _update_flight_metrics(conn, flight_id, details, metrics, outcome, start_utc, filename_time)
+        _update_flight_metrics(conn, flight_id, details, metrics, outcome, start_utc,
+                               filename_time, existing=candidate)
         return flight_id, False, match
 
     identity = "authoritative"

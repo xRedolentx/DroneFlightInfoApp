@@ -203,7 +203,12 @@
     var mode = document.querySelector('[data-testid="data-mode"]');
     if (mode && state.app) {
       var real = state.app.real_inputs_selected;
-      mode.textContent = real ? "your records" : "synthetic";
+      // "synthetic" belongs on screen only when demo data is actually loaded.
+      // On an empty root this badge said "synthetic" about an archive that had
+      // nothing synthetic in it. No label is better than a false one.
+      var label = real ? "your records" : (state.app.demo_seeded ? "synthetic" : "");
+      mode.textContent = label;
+      mode.hidden = !label;
       mode.classList.toggle("real", real);
     }
     document.body.dataset.mobileView = state.mobileView;
@@ -287,6 +292,14 @@
       esc(status.label) + "</h3>" + statusBadge(status.status) + "</div>" +
       '<div class="small muted" style="margin:3px 0 6px">' + esc(explain) + "</div>" +
       counters +
+      // Status, counters and the buttons come first. Provenance — where the
+      // schedule came from, what the baseline is, what the capture said — is
+      // what a reviewer wants, not what an owner deciding on a service wants.
+      (status.uncertain_count ? '<div class="notice warn tiny" style="margin-top:6px">' +
+        status.uncertain_count + " flight(s) are excluded from this counter until coverage is " +
+        'resolved. <button type="button" class="link" data-act="coverage" data-rule="' +
+        status.id + '">Review</button></div>' : "") +
+      actions +
       (last ? '<div class="tiny faint" style="margin-top:6px">Last service: ' +
         esc(last.kind) + (last.at ? " · " + esc(dateOnly(last.at)) : "") +
         (last.notes ? " · " + esc(last.notes) : "") + "</div>" : "") +
@@ -297,18 +310,17 @@
           status.service_items.map(function (i) { return "<li>" + esc(i) + "</li>"; }).join("") +
           "</ol></details>"
         : "") +
+      '<details style="margin-top:6px"><summary class="tiny faint">Details</summary>' +
       '<div class="tiny faint" style="margin-top:4px">Schedule source: ' +
       esc(status.source || "AirData") + "</div>" +
       '<div class="tiny faint">Baseline: ' + esc(baseline.basis || "none") +
       (baseline.at ? " · " + esc(dateOnly(baseline.at)) : "") +
-      (status.covered_flights ? " · covers " + status.covered_flights + " archived flights" : "") +
+      (status.covered_flights ? " · covers " + status.covered_flights +
+        (status.covered_flights === 1 ? " archived flight" : " archived flights") : "") +
       "</div>" +
       captured + mismatch +
-      (status.uncertain_count ? '<div class="notice warn tiny" style="margin-top:6px">' +
-        status.uncertain_count + " flight(s) are excluded from this counter until coverage is " +
-        'resolved. <button type="button" class="link" data-act="coverage" data-rule="' +
-        status.id + '">Review</button></div>' : "") +
-      actions + "</div>";
+      "</details>" +
+      "</div>";
   }
 
   // ----------------------------------------------------------------- router
@@ -473,6 +485,22 @@
     }).catch(function (err) { toast("Could not load flights: " + err.message); });
   }
 
+  function distanceTile(totals) {
+    // The log header stores a total distance; the samples give a path length.
+    // They are different numbers, so the tile names which one it is showing
+    // instead of calling both "path".
+    if (totals.path_complete) {
+      return tile("Distance", fmtDistance(totals.path_m, 1), "", "path flown, from samples");
+    }
+    return tile("Distance", fmtDistance(totals.distance_m, 1), "", "from the log header");
+  }
+
+  function flightDistance(f) {
+    return (f.path_length_m === null || f.path_length_m === undefined)
+      ? { value: f.total_distance_m, label: "log distance" }
+      : { value: f.path_length_m, label: "path" };
+  }
+
   function renderResults(data) {
     var totals = data.totals;
     document.getElementById("tiles").innerHTML =
@@ -480,7 +508,7 @@
         totals.unresolved + " need review" : "authoritative only") +
       tile("Air time", (totals.air_minutes / 60).toFixed(1), "h",
         Math.round(totals.air_minutes) + " air minutes") +
-      tile("Distance", fmtDistance(totals.distance_m, 1), "", "from log details");
+      distanceTile(totals);
     var list = document.getElementById("flight-list");
     var records = document.getElementById("records");
     document.getElementById("list-count").textContent = data.rows.length + " shown";
@@ -494,14 +522,13 @@
     }
     list.innerHTML = data.rows.map(function (f) {
       var active = String(state.app && state.app.last_flight_id) === String(f.id);
+      // Navigation only. The record cards beside this rail carry the metrics;
+      // repeating duration, pilot and warnings here made the page look like the
+      // same flight list drawn twice.
       return '<li><a class="flight-item" href="#/flights/' + f.id + '"' +
         (active ? ' aria-current="true"' : "") + ">" +
-        '<span class="when">' + esc(f.aircraft_name || "Unknown aircraft") + "</span>" +
-        '<span class="meta">' + esc(dateOnly(f.start_time_utc || f.filename_time)) + " · " +
-        esc(fmtDuration(f.duration_s)) + "</span>" +
-        '<span class="meta">' + esc(f.pilot || "No pilot") +
-        (f.warnings_count > 0 ? " · " + f.warnings_count + " warning" +
-          (f.warnings_count === 1 ? "" : "s") : "") +
+        '<span class="when">' + esc(dateOnly(f.start_time_utc || f.filename_time)) + "</span>" +
+        '<span class="meta">' + esc(f.aircraft_name || "Unknown aircraft") +
         (f.identity_status !== "authoritative" ? " · needs review" : "") + "</span>" +
         "</a></li>";
     }).join("");
@@ -512,7 +539,8 @@
         '<div class="top"><span class="title">' + esc(f.aircraft_name || "Unknown") + "</span>" +
         '<span class="when">' + esc(dateOnly(f.start_time_utc || f.filename_time)) + "</span></div>" +
         '<div class="metrics"><span><b>' + esc(fmtDuration(f.duration_s)) + "</b> air</span>" +
-        "<span><b>" + esc(fmtDistance(f.total_distance_m)) + "</b> path</span>" +
+        "<span><b>" + esc(fmtDistance(flightDistance(f).value)) + "</b> " +
+        esc(flightDistance(f).label) + "</span>" +
         "<span><b>" + esc(height.v) + "</b> " + esc(height.u) + " max alt</span></div>" +
         '<div class="metrics"><span><b>' + esc(speed.v) + "</b> " + esc(speed.u) + " max</span>" +
         (f.battery_end_pct !== null ? "<span>battery <b>" +
@@ -579,7 +607,9 @@
       '<div class="track-layout">' +
       '<div class="metric-stack" data-left="1">' +
       metricCard("Air time", fmtDuration(f.duration_s), "", "log details") +
-      metricCard("Path distance", fmtDistance(f.total_distance_m), "", "total distance") +
+      metricCard(flightDistance(f).label === "path" ? "Path distance" : "Distance (log)",
+        fmtDistance(flightDistance(f).value), "",
+        flightDistance(f).label === "path" ? "flown, from samples" : "from log details") +
       metricCard("Max home distance", homeDist.v, homeDist.u, "from home point") +
       metricCard("Max altitude", height.v, height.u, "above takeoff") +
       "</div>" +
@@ -661,9 +691,11 @@
         "unresolved — excluded from totals") +
       "</dl>" +
       '<div class="notice info small" style="margin-top:12px">' +
-      "Path distance is the distance flown. Maximum home distance is how far the aircraft got " +
-      "from its home point — they are different measurements. Height above takeoff is not " +
-      "altitude above sea level. Airborne time is not recorder duration.</div>" +
+      "Path length is the distance flown, measured from the samples. Total distance (details) " +
+      "is the rounded figure the log header stores; they are different measurements, not a " +
+      "rounding difference. Maximum home distance is how far the aircraft got from its home " +
+      "point. Height above takeoff is not altitude above sea level. Airborne time is not " +
+      "recorder duration.</div>" +
       '<h3 style="margin-top:14px">Source files</h3>' +
       '<table class="data"><thead><tr><th>Version</th><th>Status</th><th>Size</th>' +
       "<th>Imported</th><th>Sources</th></tr></thead><tbody>" +
@@ -700,7 +732,6 @@
       "<h2>Flights</h2><a class=\"tiny\" href=\"#/flights\">All flights</a></div>" +
       '<ul class="flight-list" id="flight-list"></ul></section>' +
       '<section class="panel pane-detail" aria-label="Selected flight"><div class="detail">' +
-      '<nav class="rail" id="rail" aria-label="Flight sections"></nav>' +
       '<div class="detail-main">' +
       '<div class="detail-head"><div><h1>' + esc(f.aircraft_name || "Unknown aircraft") + "</h1>" +
       '<div class="small muted">' + esc(fmtDate(f.start_time_utc || f.filename_time)) + " · " +
@@ -720,10 +751,6 @@
         (pair[0] === section ? ' aria-selected="true"' : ' aria-selected="false"') + ">" +
         pair[1] + "</button>";
     }).join("");
-    document.getElementById("rail").innerHTML = SECTIONS.map(function (pair) {
-      return '<a href="#/flights/' + f.id + "/" + pair[0] + '"' +
-        (pair[0] === section ? ' aria-current="true"' : "") + ">" + pair[1] + "</a>";
-    }).join("");
 
     // list
     var listData = { rows: [] };
@@ -731,9 +758,9 @@
       document.getElementById("flight-list").innerHTML = list.rows.map(function (row) {
         return '<li><a class="flight-item" href="#/flights/' + row.id + '"' +
           (row.id === f.id ? ' aria-current="true"' : "") + ">" +
-          '<span class="when">' + esc(row.aircraft_name || "Unknown") + "</span>" +
-          '<span class="meta">' + esc(dateOnly(row.start_time_utc || row.filename_time)) +
-          " · " + esc(fmtDuration(row.duration_s)) + "</span></a></li>";
+          '<span class="when">' + esc(dateOnly(row.start_time_utc || row.filename_time)) +
+          "</span><span class=\"meta\">" + esc(row.aircraft_name || "Unknown") +
+          "</span></a></li>";
       }).join("");
     });
 
@@ -997,8 +1024,9 @@
         "the log files themselves are never sent.</p>" +
         '<p class="small muted">Requests go through Flight Desk on this machine, which ' +
         "identifies itself to the tile service as required and keeps a local tile " +
-        "cache for at least 7 days. Tiles are never pre-fetched or saved for offline " +
-        "use. The local grid stays available and is what you see when Map is off.</p>" +
+        "cache for 7 days, which the service requires. There is no bulk download and " +
+        "no offline map pack. The local grid stays available and is what you see when " +
+        "Map is off.</p>" +
         '<p class="tiny faint">Attribution appears on the map. Map data © ' +
         esc(map.label || "OpenStreetMap") + " contributors.</p>",
         [{ label: "Cancel", cls: "secondary" },
@@ -2161,15 +2189,17 @@
   // --------------------------------------------------------------- settings
 
   function renderSettings() {
-    api("/api/key").then(function (keyData) {
-      api("/api/usb").then(function (usbData) {
-        api("/api/backups").then(function (backups) {
+    Promise.all([api("/api/key"), api("/api/usb"), api("/api/backups"),
+                api("/api/raw-export")]).then(function (all) {
+          var keyData = all[0], usbData = all[1], backups = all[2], rawData = all[3];
           view.innerHTML = '<div class="stack" style="max-width:1000px">' +
             section("DJI key", '<p class="small muted">Encrypted logs (v13 and later) need a ' +
               "keychain from DJI's official OpenAPI. Flight Desk sends one request to " +
               "<code>" + esc(keyData.endpoint) + "</code> with your developer key, never to any " +
               "other service. The key is stored with Windows DPAPI for your user account, never " +
-              "in the database, a URL, a process argument or a backup.</p>" +
+              "in the database, a URL or a process argument. It <strong>is</strong> included in a " +
+              "backup as a Windows-protected file, so a restore on this machine needs no " +
+              "re-entry \u2014 see Backup and export for what that means.</p>" +
               '<div class="row" style="margin-top:10px"><span class="badge ' +
               (keyData.configured ? "ok" : "unknown") + '">' +
               (keyData.configured ? "key stored" : "no key") + "</span>" +
@@ -2182,8 +2212,8 @@
               '<button type="button" class="secondary" id="key-unlock-all">Decode pending</button></div>' +
               '<div class="row" style="margin-top:8px"><button type="button" class="secondary" ' +
               'id="key-reparse-cache">Re-decode one record from cache</button>' +
-              '<span class="tiny faint">Use with the network off to prove the cached ' +
-              "keychain is enough.</span></div>" +
+              '<span class="tiny faint">Turn your network off first: if this works, the ' +
+              "saved keychain is enough on its own.</span></div>" +
               '<div id="key-reparse-out" class="small" style="margin-top:6px"></div>' +
               '<div class="notice small" style="margin-top:10px">Cached keychains are protected ' +
               "by DPAPI, so they survive app restarts on this machine but not a Windows " +
@@ -2200,6 +2230,7 @@
               'id="usb-logon"' + (usbData.logon.installed ? " checked" : "") + "> Start at " +
               "logon (reversible per-user task)</label></div>" +
               '<div id="usb-result" class="small" style="margin-top:10px"></div>' +
+              watcherProblemHtml(usbData) +
               usbTable(usbData)) +
             section("Backup and export", '<p class="small muted">A backup is a consistent ' +
               "SQLite snapshot plus every archived original, a hash manifest, and your " +
@@ -2240,6 +2271,7 @@
               "previous copy.</div>" +
               '<div class="row" style="margin-top:10px"><button type="button" class="secondary" ' +
               'id="restore-run">Restore into a new root…</button></div>') +
+            section("Raw log folder", rawExportSectionHtml(rawData)) +
             section("Reconciliation", '<p class="small muted">Archive, controller extras and ' +
               "later discoveries are counted separately, with signed differences and excluded " +
               "files reported next to totals.</p>" +
@@ -2276,16 +2308,15 @@
               "track for screen sharing. It changes presentation only; records stay local.</p>" +
               '<div class="row" style="margin-top:8px"><button type="button" class="secondary" ' +
               'id="real-toggle">' + (state.app.real_inputs_selected
-                ? "Mark records as synthetic" : "Mark records as my real inputs") + "</button>" +
+                ? "Treat these as demo data" : "These are my real records") + "</button>" +
               '<a class="secondary" style="padding:6px 12px;border:1px solid var(--line-strong);' +
-              'border-radius:4px" href="#/compare">Local reference comparison</a></div>') +
+              'border-radius:4px" href="#/compare">Compare with my AirData figures</a></div>') +
             "</div>";
           wireSettings();
           wireExports(view);
+          wireRawExport(view, rawData);
           bindAct(view);
-        });
-      });
-    });
+        }).catch(function (err) { toast("Settings unavailable: " + err.message); });
   }
 
   var tempLimits = null;
@@ -2319,9 +2350,9 @@
     return '<p class="small muted">The track draws on a local grid by default and needs ' +
       "nothing external. Turning Map on fetches basemap imagery for the area you are " +
       "looking at from <strong>" + esc(map.label) + "</strong>. Only tile numbers for " +
-      "the visible viewport are requested; nothing is pre-fetched and nothing is " +
-      "saved for offline use. Tiles are cached here for at least 7 days, as the tile " +
-      "service requires.</p>" +
+      "the visible viewport are requested; there is no bulk download and no offline " +
+      "map pack. Requested tiles are cached for 7 days, which is what the tile service " +
+      "requires of a client; you can clear that cache below.</p>" +
       '<div class="row" style="margin-top:10px">' + stateBadge +
       '<span class="tiny faint">cached tiles: ' + map.cached_tiles + " · " +
       Math.round((map.cache_bytes || 0) / 1024) + " KB</span></div>" +
@@ -2411,6 +2442,135 @@
           "</td><td>" + (d.last_success ? esc(dateOnly(d.last_success)) : "never") +
           "</td><td>" + esc(d.status || "—") + "</td></tr>";
       }).join("") + "</tbody></table>";
+  }
+
+  function watcherProblemHtml(data) {
+    var problem = data.watcher_last_error;
+    if (!problem) return "";
+    var log = data.log || {};
+    var name = String(log.path || "").split("\\").slice(-1)[0] || "flightdesk.log";
+    return '<div class="notice warn small" style="margin-top:10px">Last watcher problem: ' +
+      esc(dateOnly(problem.at)) + " " + esc(problem.category) +
+      ". The watcher keeps trying; details are in <code>" + esc(name) + "</code>.</div>";
+  }
+
+  function rawExportSectionHtml(data) {
+    var cfg = (data && data.settings) || {};
+    var counts = (data && data.counts) || {};
+    return '<p class="small muted">The archive keeps each original under a name made from ' +
+      "its contents, which is right for integrity and useless in another program. This copies " +
+      "them out under their real DJI file names. It only ever adds files: nothing in the " +
+      "folder is deleted or overwritten, including a file you put there yourself. Re-running " +
+      "it copies only what is new.</p>" +
+      '<div class="field" style="margin-top:10px"><label for="raw-export-folder">Folder</label>' +
+      '<div class="row"><input id="raw-export-folder" type="text" value="' +
+      esc(cfg.folder || "") + '" placeholder="C:\\Users\\you\\FlightLogs" ' +
+      'style="flex:1;min-width:220px">' +
+      '<button type="button" class="secondary" id="raw-export-pick">Choose folder\u2026</button>' +
+      "</div><p class=\"tiny faint\">Type or paste the folder, or use Choose folder. " +
+      "This one may live in OneDrive or Dropbox if you want the logs elsewhere \u2014 unlike a " +
+      "backup, it is an ordinary copy you can move or share.</p></div>" +
+      '<div class="row" style="margin-top:8px;gap:15px">' +
+      '<label class="small"><input type="checkbox" id="raw-export-variants"' +
+      (cfg.variants ? " checked" : "") + "> Include every copy (variants)</label>" +
+      '<label class="small"><input type="checkbox" id="raw-export-years"' +
+      (cfg.group_by_year ? " checked" : "") + "> Group by year</label>" +
+      '<label class="small"><input type="checkbox" id="raw-export-auto"' +
+      (cfg.auto_sync ? " checked" : "") + "> Keep it up to date after each import</label></div>" +
+      '<div class="row" style="margin-top:10px">' +
+      '<button type="button" class="primary" id="raw-export-start">Copy logs to folder</button>' +
+      '<button type="button" class="secondary" id="raw-export-open">Open folder</button>' +
+      '<span class="tiny faint">' + (counts.flights || 0) + " flights \u00b7 " +
+      (counts.raw_files || 0) + " stored files</span></div>" +
+      '<div id="raw-export-out" class="small" style="margin-top:10px"></div>';
+  }
+
+  function exportJobLine(job) {
+    if (!job || !job.state || job.state === "idle") return "";
+    if (job.state === "running") {
+      return "Copying " + job.done + " of " + (job.total || "?") + "\u2026";
+    }
+    if (job.state === "error") {
+      return '<div class="notice warn small">The copy stopped: ' +
+        esc(job.category || "error") + ". Details are in the error log.</div>";
+    }
+    var problems = job.problems || [];
+    var line = "Copied " + job.copied + " new log" + (job.copied === 1 ? "" : "s") +
+      " \u00b7 " + job.skipped + " already there \u00b7 " + problems.length +
+      " problem" + (problems.length === 1 ? "" : "s") + ".";
+    if (!problems.length) return line;
+    return line + '<div class="notice warn small" style="margin-top:6px">' +
+      problems.slice(0, 5).map(function (p) {
+        return esc(p.code + " (" + p.sha256 + ")");
+      }).join("<br>") + "</div>";
+  }
+
+  function wireRawExport(root, data) {
+    var out = root.querySelector("#raw-export-out");
+    var input = root.querySelector("#raw-export-folder");
+    if (!out || !input) return;
+    out.innerHTML = exportJobLine(data && data.job);
+
+    function current() {
+      var variants = root.querySelector("#raw-export-variants");
+      var years = root.querySelector("#raw-export-years");
+      var auto = root.querySelector("#raw-export-auto");
+      return {
+        folder: input.value.trim(),
+        variants: !!(variants && variants.checked),
+        group_by_year: !!(years && years.checked),
+        auto_sync: !!(auto && auto.checked)
+      };
+    }
+
+    function save() {
+      return api("/api/raw-export/settings", { method: "POST", body: current() });
+    }
+
+    function poll() {
+      api("/api/raw-export").then(function (res) {
+        out.innerHTML = exportJobLine(res.job);
+        if (res.job && res.job.state === "running") setTimeout(poll, 900);
+      }).catch(function () {});
+    }
+
+    root.querySelector("#raw-export-pick").addEventListener("click", function () {
+      api("/api/pick", { method: "POST", body: { kind: "folder" } }).then(function (res) {
+        if (res && res.path) {
+          input.value = res.path;
+          save();
+          toast("Folder set");
+        } else {
+          toast("No folder chosen. Type the path instead.");
+        }
+      }).catch(function (err) { toast("Could not open the folder picker: " + err.message); });
+    });
+    ["raw-export-variants", "raw-export-years", "raw-export-auto"].forEach(function (id) {
+      var box = root.querySelector("#" + id);
+      if (box) box.addEventListener("change", function () { save(); });
+    });
+    input.addEventListener("change", function () { save(); });
+    root.querySelector("#raw-export-start").addEventListener("click", function () {
+      if (!current().folder) {
+        toast("Choose a folder first, or type its path.");
+        return;
+      }
+      save().then(function () {
+        return api("/api/raw-export/start", { method: "POST", body: current() });
+      }).then(function (res) {
+        if (!res || !res.ok) {
+          toast("Could not start the copy: " + ((res && res.code) || "unknown"));
+          return;
+        }
+        out.innerHTML = exportJobLine(res.job);
+        poll();
+      }).catch(function (err) { toast("Could not start the copy: " + err.message); });
+    });
+    root.querySelector("#raw-export-open").addEventListener("click", function () {
+      api("/api/raw-export/open", { method: "POST", body: {} }).then(function (res) {
+        if (!res || !res.ok) toast("Set the folder first, then open it.");
+      }).catch(function (err) { toast("Could not open the folder: " + err.message); });
+    });
   }
 
   function wireSettings() {
@@ -2855,7 +3015,9 @@
         '<p class="small muted">Sent: the tile numbers covering the visible viewport. ' +
         "Those numbers describe a square of ground, so together they reveal roughly " +
         "where the flight was. Your serials, notes, identifiers and log files are " +
-        "never sent. Nothing is pre-fetched or saved for offline use.</p>",
+        "never sent. Only the viewport you are looking at is requested; there is no " +
+        "bulk download and no offline map pack. Requested tiles are kept in a local " +
+        "cache for 7 days, which the tile service requires.</p>",
         [{ label: "Cancel", cls: "secondary" },
          { label: "Allow map tiles", cls: "primary", action: function () {
             var merged = Object.assign({}, state.app.external_services || {});
@@ -2880,7 +3042,7 @@
   // ------------------------------------------------------------- compare view
 
   function renderCompare() {
-    view.innerHTML = '<div class="panel"><div class="panel-head"><h2>Local reference comparison</h2>' +
+    view.innerHTML = '<div class="panel"><div class="panel-head"><h2>Compare with your AirData figures</h2>' +
       '<span class="tiny faint">1275 × 850 recommended</span></div>' +
       '<div class="panel-body">' +
       '<p class="small muted">Pair a local reference image with the live app at the same aspect ' +
@@ -3069,7 +3231,7 @@
         '<button type="button" class="secondary" id="welcome-demo">Explore invented demo data' +
         "</button></div>" +
         '<p class="tiny faint" style="margin-top:14px">Demo data is synthetic and labelled as ' +
-        "such. Your own files are read only by local code; the assistant never sees them.</p>" +
+        "such. Your own files are read only by local code on this machine.</p>" +
         "</div></div>";
       bindGo(view);
       var demoBtn = document.getElementById("welcome-demo");
