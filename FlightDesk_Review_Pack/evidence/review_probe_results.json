@@ -1,0 +1,110 @@
+[
+  {
+    "probe": "raw_export_overwrites_modified_owned_file",
+    "resulting_bytes": "one"
+  },
+  {
+    "probe": "raw_export_overwrites_suffix_collision",
+    "resulting_bytes": "one"
+  },
+  {
+    "probe": "missing_archive_member_validation",
+    "ok": true,
+    "errors": []
+  },
+  {
+    "probe": "manifest_omits_db_referenced_object",
+    "validate_ok": true,
+    "restore_ok": true,
+    "missing_originals": 1
+  },
+  {
+    "probe": "restore_deletes_preexisting_staging_directory",
+    "owner_file_survives": false
+  },
+  {
+    "probe": "nondefault_active_root_not_protected",
+    "restore_ok": true
+  },
+  {
+    "probe": "missing_serial_fingerprint_merges_different_aircraft",
+    "flights": 1,
+    "raw_files": 2
+  },
+  {
+    "probe": "reparse_links_one_original_to_two_flights",
+    "links": [
+      [
+        1,
+        1
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        2
+      ]
+    ]
+  },
+  {
+    "probe": "equal_length_reparse_keeps_old_track",
+    "flight_home_lat": 2.0,
+    "track_first_lat": 1
+  },
+  {
+    "probe": "demo_seed_mutates_existing_history",
+    "pilot": "Demo Pilot",
+    "tags": "[\"mapping\"]"
+  },
+  {
+    "probe": "absent_ground_flag_becomes_airborne",
+    "on_ground": false,
+    "air_time": 10.0,
+    "flags": [
+      "duration_from_recorder",
+      "missing_signal",
+      "missing_speed"
+    ]
+  },
+  {
+    "probe": "maintenance_counts_log_time_as_air_time",
+    "status": "due",
+    "minutes": 10.0
+  },
+  {
+    "probe": "aircraft_reassigned_to_battery",
+    "ok": true,
+    "aircraft_equipment_id": 2,
+    "battery_id": 2
+  },
+  {
+    "probe": "reparse_dry_run_writes_readonly_db",
+    "exit": 1,
+    "readonly_error": true
+  },
+  {
+    "probe": "future_schema_silently_downgraded",
+    "user_version": 1
+  },
+  {
+    "probe": "archive_same_size_corruption_accepted_as_duplicate",
+    "duplicate_count": 1,
+    "archive_bytes": "bad"
+  },
+  {
+    "probe": "watcher_enabled_without_worker",
+    "enabled": true,
+    "worker_exists": false
+  },
+  {
+    "probe": "first_capture_ignores_captured_rule_limit",
+    "captured_limit": 7,
+    "stored_limit": 20
+  },
+  {
+    "probe": "usb_accepts_v14_header_without_records",
+    "accepted": true
+  }
+]
