@@ -190,22 +190,24 @@ to the live root without the usual preview and approval (H01).
 
 ### Final handoff — 2026-11-24, commit `efcc5a0`
 
-**Finished.** P00–P10 and P11a, plus the P12 and P13 work described below, all
-verified by `python -m flightdesk selftest` (536 tests, 0 failures), `tools\rehearse.py`
-(13/13), `tools\fault_check.py`, `tools\recon_check.py` (11/11) and
-`tools\check_env.py`. Findings F01–F13 are fixed; see `FLIGHTFIX-RESULTS.md`.
+**Finished.** P00–P10, P11a, P12 and P13, all verified by
+`python -m flightdesk selftest` (537 tests, 0 failures), `tools\ui_gate.ps1`
+(109 browser checks, 0 failures across four passes), `tools\rehearse.py` (13/13),
+`tools\fault_check.py`, `tools\recon_check.py` (11/11) and `tools\check_env.py`.
+Findings F01–F13 are fixed; see `FLIGHTFIX-RESULTS.md`.
 
 **Not finished (software).** P11b (merge two confirmed variants) is not built —
-it needs the conflict policy in H07. P12's live browser gate was not run. P13's
-test-suite tier split is not done. F14's PowerShell collector does not yet emit
-transfer-completion evidence, so the strict USB path is dormant on hardware.
+it needs the conflict policy in H07. P13's test-suite tier split is not done.
+F14's PowerShell collector does not yet emit transfer-completion evidence, so the
+strict USB path is dormant on hardware. Q05's unknown-time label has a static pin
+but no browser case, because neither synthetic root produces such a record.
 
 **Needed before trusting the archive.** H02 (run the suite on the target
 machine), H04 (a real backup restored into a fresh root with this build), H05
 (5–10 representative log comparisons), H06 (review any mixed/ambiguous records),
 H09 (confirm the two unreadable originals are preserved).
 
-**Can wait.** H08 visual review; the browser gate; the tier split.
+**Can wait.** H08 visual review; the P13 tier split; the Q05 browser case.
 
 **Next owner action (ordered).**
 1. Run `python tools\check_env.py` on the Windows machine, then

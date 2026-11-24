@@ -12,10 +12,21 @@ import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
 
-const debugPort = process.argv[2] || "9222";
-const outDir = process.argv[3] || "ui-shots";
-const zipPath = process.argv[4] || "";
-const appUrlArg = process.argv[5] || "";
+const argv = process.argv.slice(2);
+const flags = new Set(argv.filter((a) => a.startsWith("--")));
+const positional = argv.filter((a) => !a.startsWith("--"));
+const debugPort = positional[0] || "9222";
+const outDir = positional[1] || "ui-shots";
+const zipPath = positional[2] && positional[2] !== "-" ? positional[2] : "";
+const appUrlArg = positional[3] || "";
+// `--import-only` runs just the import section (an ordinary root that holds real
+// logs is the only place a ZIP may land now that demo roots refuse them).
+// `--expect-refusal` asserts the opposite: a demo root must refuse the ZIP.
+// `--ordinary` marks a non-demo root, where demo-only checks are skipped.
+const importOnly = flags.has("--import-only");
+const expectRefusal = flags.has("--expect-refusal");
+const ordinaryRoot = flags.has("--ordinary");
+const identityOnly = flags.has("--identity-only");
 mkdirSync(outDir, { recursive: true });
 
 const isLoopbackApp = (url) => /^http:\/\/127\.0\.0\.1(:\d+)?\//.test(url || "");
@@ -85,6 +96,18 @@ function check(name, condition, detail = "") {
   console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? " :: " + detail : ""}`);
   if (!ok) failures.push(name);
 }
+function skip(name, why) {
+  console.log(`SKIP ${name} :: ${why}`);
+}
+// A check whose subject only exists in a demo root: report it as skipped, with
+// the reason, rather than as a pass it did not earn or a failure it did not cause.
+function demoCheck(name, condition, detail = "") {
+  if (ordinaryRoot) {
+    skip(name, "needs a demo root (--ordinary run)");
+    return;
+  }
+  check(name, condition, detail);
+}
 async function evaluate(expression) {
   const res = await call("Runtime.evaluate", {
     expression, returnByValue: true, awaitPromise: true,
@@ -139,6 +162,7 @@ if (!/^http:\/\/127\.0\.0\.1(:\d+)?$/.test(appOrigin)) {
 }
 
 // --- desktop dashboard -----------------------------------------------------
+if (!importOnly && !identityOnly) {
 await call("Emulation.setDeviceMetricsOverride", {
   width: 1536, height: 1000, deviceScaleFactor: 1, mobile: false,
 });
@@ -156,8 +180,15 @@ check("media counts are gone from the dashboard",
 check("three-column records at 1536",
   await evaluate("getComputedStyle(document.querySelector('.records')).gridTemplateColumns.split(' ').length === 3"),
   await evaluate("getComputedStyle(document.querySelector('.records')).gridTemplateColumns"));
-check("synthetic data is labelled",
-  await evaluate("(document.querySelector('[data-testid=data-mode]')||{}).textContent === 'synthetic'"));
+// On a demo root the header must say so; on an ordinary root it must not.
+// Asserting "synthetic" unconditionally would be wrong on a real archive.
+const headerMode = await evaluate(
+  "(document.querySelector('[data-testid=data-mode]')||{}).textContent || ''");
+if (ordinaryRoot) {
+  check("an ordinary root is not labelled synthetic", headerMode !== "synthetic", headerMode);
+} else {
+  check("synthetic data is labelled", headerMode === "synthetic", headerMode);
+}
 const listWidth = await evaluate("document.querySelector('.pane-list').getBoundingClientRect().width");
 const workWidth = await evaluate("document.querySelector('.pane-detail').getBoundingClientRect().width");
 check("list is about a fifth of the workspace",
@@ -333,6 +364,82 @@ await new Promise((r) => setTimeout(r, 1200));
 check("undo removes the owner record from completed",
   await evaluate("!/ui check/.test(document.body.textContent)"));
 
+// --- Q04: a double-clicked save must record one service --------------------
+{
+  await goto("#/maintenance/upcoming");
+  await waitFor("!!document.querySelector('[data-act=complete]')", 20000);
+  await evaluate("(() => { document.querySelector('[data-act=complete]').click(); return true; })()");
+  await waitFor("!!document.getElementById('note-text')");
+  const tripleClicked = await evaluate(`(() => {
+    document.getElementById('note-text').value = 'ui-double-click';
+    const save = [...document.querySelectorAll('#modal-actions button')]
+      .find(x => x.textContent === 'Save');
+    if (!save) return false;
+    save.click(); save.click(); save.click();
+    return true;
+  })()`);
+  check("Q04 the save control is clickable", tripleClicked);
+  await new Promise((r) => setTimeout(r, 2000));
+  await goto("#/maintenance/completed");
+  await waitFor("/Completed|Services|No services/i.test(document.body.textContent)", 20000);
+  const dupRows = await evaluate(
+    "[...document.querySelectorAll('tr, .card-sq')].filter(el => " +
+    "/ui-double-click/.test(el.innerText)).length");
+  check("Q04 three rapid clicks record exactly one service", dupRows === 1, String(dupRows));
+  // Leave the record as we found it.
+  await evaluate(`(() => { const rows = [...document.querySelectorAll('tr, .card-sq')]
+    .filter(el => /ui-double-click/.test(el.innerText));
+    const undo = rows[0] && rows[0].querySelector('[data-act=undo]');
+    if (undo) undo.click(); return true; })()`);
+  await new Promise((r) => setTimeout(r, 1200));
+}
+
+// --- Q02: a slow old response must not repaint over a newer route ----------
+{
+  await goto("#/flights");
+  await waitFor("!!document.querySelector('.record')", 20000);
+  const pair = await evaluate(`(async () => {
+    const t = document.querySelector('meta[name=fd-token]').content;
+    const d = await (await fetch('/api/flights', {headers: {'X-FD-Token': t}})).json();
+    const rows = d.rows || [];
+    const a = rows[0];
+    const b = rows.find(r => (r.aircraft_name || '') !== (a.aircraft_name || '')) || rows[1];
+    return {a: a && a.id, b: b && b.id, bName: (b && b.aircraft_name) || ''};
+  })()`);
+  if (pair && pair.a && pair.b) {
+    // Two navigations in one task: the first request is in flight when the
+    // second route is set. Only the newer one may render.
+    await evaluate(`(() => { location.hash = '#/flights/${pair.a}';
+      location.hash = '#/flights/${pair.b}'; return true; })()`);
+    await waitFor(`Number(location.hash.split('/')[2]) === ${pair.b}`, 8000);
+    await new Promise((r) => setTimeout(r, 1800));
+    const shown = await evaluate("document.getElementById('view').innerText");
+    check("Q02 the newest navigation wins over a slower older response",
+      String(shown || "").includes(pair.bName) && !!pair.bName,
+      `expected ${pair.bName || "(no name)"}`);
+  } else {
+    skip("Q02 stale-response guard", "needs two flights with different aircraft");
+  }
+}
+
+// --- Q03: Settings must show the worker's real state -------------------------
+{
+  await goto("#/settings");
+  await waitFor("!!document.getElementById('usb-check')", 20000);
+  check("Q03 Settings says whether the watcher worker is running",
+    await evaluate("/Worker: (running|stopped)/.test(document.body.textContent)"),
+    String(await evaluate("(() => { const m = document.body.textContent.match(/Worker: [a-z]+/); " +
+      "return m ? m[0] : 'not shown'; })()")));
+  check("Q03 a verify / re-read control exists",
+    await evaluate("!!document.getElementById('usb-verify')"));
+  check("Q03 the watcher toggle is present",
+    await evaluate("!!document.getElementById('usb-watch')"));
+}
+
+skip("Q05 an unknown air time reads 'unknown'",
+  "needs a record with no measurable time; neither synthetic root produces one " +
+  "(pinned by tests/test_ui_small_fixes.py)");
+
 // --- units -----------------------------------------------------------------
 await goto("#/flights");
 await waitFor("!!document.querySelector('.record')");
@@ -437,7 +544,10 @@ check("export is served as CSV", /text\/csv/.test(exportResult.type), exportResu
 }
 
 // --- import: real ZIP through the real picker -------------------------------
-if (!zipPath) {
+}
+if (identityOnly) {
+  console.log("SKIP import checks (identity-only run)");
+} else if (!zipPath) {
   console.log("SKIP import checks (no synthetic ZIP path supplied)");
 } else {
   await goto("#/import");
@@ -457,6 +567,26 @@ if (!zipPath) {
   }
 
   await uploadZip(zipPath);
+  if (expectRefusal) {
+    // P01 contract, clicked: a demo root must refuse a real log import and say
+    // why, rather than quietly mixing real flights into invented history.
+    const refusedNotice = await waitFor(
+      "/Nothing was imported/.test(document.getElementById('batch-result').innerText)",
+      30000);
+    check("a demo root refuses a real ZIP import", refusedNotice,
+      text(await evaluate("document.getElementById('batch-result').innerText"))
+        .slice(0, 140).replace(/\s+/g, " "));
+    const refusedNew = await evaluate(`(() => {
+      const cells = [...document.querySelectorAll('#batch-result .result-cell')];
+      const cell = cells.find(c => /New files/.test(c.innerText));
+      return cell ? Number(cell.querySelector('.n').textContent) : -1;
+    })()`);
+    check("the refused ZIP imported nothing", refusedNew === 0, String(refusedNew));
+    check("the refusal explains the separate-root rule",
+      await evaluate("/separate data root|demo data/i.test(" +
+        "document.getElementById('batch-result').innerText)"));
+    skip("the rest of the import checks", "import is refused on a demo root by design");
+  } else {
   const appeared = await waitFor(
     "document.querySelectorAll('#batch-result .result-cell').length >= 6", 60000);
   check("ZIP upload shows a batch summary", appeared);
@@ -550,9 +680,11 @@ if (!zipPath) {
   check("a bad ZIP says why nothing was imported", refused,
     text(await evaluate("document.getElementById('batch-result').innerText"))
       .slice(0, 120).replace(/\s+/g, " "));
+  }
 }
 
 // --- equipment capture through the real file input --------------------------
+if (!importOnly && !identityOnly) {
 {
   await goto("#/settings");
   await waitFor("!!document.getElementById('capture-choose')", 20000);
@@ -628,8 +760,8 @@ if (!zipPath) {
   await evaluate("(() => { const b = [...document.querySelectorAll('[data-export]')]" +
     ".find(x => /no locations/i.test(x.textContent)); if (b) b.click(); return true; })()");
   await new Promise((r) => setTimeout(r, 1500));
-  check("the redacted export reports that it saved",
-    await evaluate("/Saved FlightDesk-flights-redacted\\.csv/.test(" +
+  check("the redacted export reports that it was requested",
+    await evaluate("/Download requested: FlightDesk-flights-redacted\\.csv/.test(" +
       "(document.getElementById('toast')||{}).textContent || '')"),
     String(await evaluate("(document.getElementById('toast')||{}).textContent")));
   check("a backup folder is suggested so the dialog is optional",
@@ -662,6 +794,92 @@ await new Promise((r) => setTimeout(r, 1400));
 check("empty state explains the filter result",
   await evaluate("/No flights match/.test(document.body.textContent)"));
 await evaluate(`(() => { const b = document.getElementById('f-clear'); if (b) b.click(); return true; })()`);
+}
+
+// --- identity review, clicked (P11a) ----------------------------------------
+if (identityOnly) {
+  const identityFile = process.env.FD_IDENTITY_FILE || "";
+  if (!identityFile) {
+    check("identity: a crafted unreadable log was supplied", false,
+      "set FD_IDENTITY_FILE");
+  } else {
+    await call("Emulation.setDeviceMetricsOverride", {
+      width: 1366, height: 900, deviceScaleFactor: 1, mobile: false,
+    });
+    await goto("#/flights");
+    await waitFor("!!document.querySelector('#view')", 20000);
+    // Upload through the app's own route: this is the same path a dropped file
+    // takes, not a direct database write.
+    const b64 = readFileSync(identityFile).toString("base64");
+    const upload = await evaluate(`(async () => {
+      const token = document.querySelector('meta[name=fd-token]').content;
+      const bin = atob(${JSON.stringify(b64)});
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      const name = encodeURIComponent('DJIFlightRecord_2025-05-16_[12-00-00].txt');
+      const r = await fetch('/api/import/upload', {method: 'POST', headers: {
+        'X-FD-Token': token, 'X-FD-Filename': name, 'X-FD-Member': name,
+        'Content-Type': 'application/octet-stream'}, body: arr});
+      return await r.json();
+    })()`);
+    check("identity: an unreadable log is kept as a record, not dropped",
+      upload && upload.totals && (upload.totals.new || 0) >= 1,
+      JSON.stringify(upload && upload.totals));
+
+    await goto("#/import");
+    const offered = await waitFor(
+      "!!document.querySelector('[data-act=review-identity]')", 20000);
+    check("identity: an unresolved record offers Review identity", offered);
+    check("identity: the old dead-end label is gone",
+      await evaluate("!/Keep \\/ merge/.test(document.body.innerText)"));
+    await shot("identity-01-import-1366", 1366, 900);
+
+    await evaluate("(() => { document.querySelector('[data-act=review-identity]').click(); return true; })()");
+    const opened = await waitFor("!!document.getElementById('identity-note')", 15000);
+    check("identity: the review opens a real dialog", opened);
+    const modalText = await evaluate("document.getElementById('modal').innerText");
+    check("identity: the dialog shows provenance and options",
+      /Originals:/.test(modalText || "") && /separate flights/i.test(modalText || ""),
+      String(modalText || "").slice(0, 90).replace(/\s+/g, " "));
+    await shot("identity-02-review-1366", 1366, 900);
+
+    const decided = await evaluate(`(() => {
+      const b = [...document.querySelectorAll('#modal-actions button')]
+        .find(x => /separate flights/i.test(x.textContent));
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`);
+    check("identity: 'These are separate flights' is offered", decided);
+    await new Promise((r) => setTimeout(r, 1800));
+    check("identity: the decision is acknowledged",
+      await evaluate("/separate flight|no readable measurements|Kept out/i.test(" +
+        "(document.getElementById('toast')||{}).textContent || '')"),
+      String(await evaluate("(document.getElementById('toast')||{}).textContent")));
+
+    // The decision persists: reopening now offers Undo.
+    const reopened = await waitFor(
+      "!!document.querySelector('[data-act=review-identity]')", 15000);
+    if (reopened) {
+      await evaluate("(() => { document.querySelector('[data-act=review-identity]').click(); return true; })()");
+      const hasUndo = await waitFor(
+        "(() => [...document.querySelectorAll('#modal-actions button')]" +
+        ".some(x => /Undo decision/i.test(x.textContent)))()", 15000);
+      check("identity: the stored decision can be undone", hasUndo);
+      if (hasUndo) {
+        await evaluate(`(() => {
+          const b = [...document.querySelectorAll('#modal-actions button')]
+            .find(x => /Undo decision/i.test(x.textContent));
+          b.click(); return true;
+        })()`);
+        await new Promise((r) => setTimeout(r, 1500));
+        check("identity: undo is acknowledged",
+          await evaluate("/undone/i.test(" +
+            "(document.getElementById('toast')||{}).textContent || '')"));
+      }
+    }
+  }
+}
 
 console.log(`SUMMARY ${failures.length === 0 ? "PASS" : "FAIL"} checks=${total} failures=${failures.length}`);
 check("no request left loopback", externalRequests.length === 0,

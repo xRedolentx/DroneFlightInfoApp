@@ -44,6 +44,16 @@ class SmallUiFixTest(unittest.TestCase):
         # Q05: unknown is not zero.
         self.assertIn('label: "unknown"', self.text)
 
+    def test_a_demo_refusal_is_explained_in_plain_language(self) -> None:
+        # The demo-root import refusal must reach the owner as a sentence, not
+        # as `Import note: demo_root_requires_separate_root`. A raw code was
+        # exactly what the browser gate caught the first time it clicked this.
+        self.assertIn("demo_root_requires_separate_root:", self.text)
+        start = self.text.index("demo_root_requires_separate_root:")
+        entry = self.text[start:start + 400]
+        self.assertIn("synthetic demo data", entry)
+        self.assertIn("separate folder", entry)
+
     def test_no_dead_end_keep_merge(self) -> None:
         self.assertNotIn("Keep / merge", self.text)
 

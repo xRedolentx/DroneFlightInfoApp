@@ -1,9 +1,9 @@
 # FLIGHTFIX — results
 
-Base commit `7806e1f` (the reviewed snapshot). Final commit at the time of
-writing: `efcc5a0`. Branch: `main`, pushed to
-`git@github.com:xRedolentx/DroneFlightInfoApp.git`. 14 commits, one per batch
-plus the baseline.
+Base commit `7806e1f` (the reviewed snapshot). Branch: `main`, pushed to
+`git@github.com:xRedolentx/DroneFlightInfoApp.git`. Fourteen repair commits plus
+the baseline; the browser-gate work is the commit that adds `tools/ui_gate.ps1`.
+This file describes the tree at `HEAD`.
 
 ## Environment used
 
@@ -18,7 +18,7 @@ components present.
 implemented.** This is deliberately not one of the three final labels: the
 queue says not to call a batch complete while runnable software work remains,
 and merging two confirmed variants is still unbuilt. Everything that was built
-is verified by the checks below.
+is verified by the checks below, including a live browser session.
 
 Findings:
 
@@ -44,12 +44,25 @@ Findings:
   review/keep-separate/exclude workflow with a stored, reversible decision
   replaces it. **P11b (merge confirmed variants) is not implemented.**
 
-Usability notes Q01–Q05 are implemented in `app.js` and pinned by static tests;
-the live browser gate was not run this session.
+Usability notes Q01–Q05 are implemented and were then **clicked in a live Edge
+session**, not just pinned statically. The gate has four modes because the
+rules make one root insufficient: a demo root supplies tracks but refuses real
+imports, so the import path runs on an ordinary root and the refusal is asserted
+deliberately.
+
+- `tools\ui_gate.ps1` → **109 checks, 0 failures** across four passes:
+  `demo-full` 82, `ordinary-import` 12, `demo-refusal` 5, `identity` 10.
+- Clicking found a defect the static pins had missed: a demo root's refusal of a
+  real ZIP rendered as `Import note: demo_root_requires_separate_root`. It now
+  reads as a sentence explaining the separate-root rule.
+- Q05 (unknown air time) is still pinned statically only: neither synthetic root
+  produces a record with unmeasurable time.
 
 ## Commands and outcomes
 
-- `python -m flightdesk selftest` → **536 tests, 0 failures, 0 errors, 0 skipped**.
+- `python -m flightdesk selftest` → **537 tests, 0 failures, 0 errors, 0 skipped**.
+- `powershell -ExecutionPolicy Bypass -File tools\ui_gate.ps1` → **109 checks,
+  0 failures** (82 demo UI / 12 ordinary import / 5 demo refusal / 10 identity).
 - `python tools\rehearse.py` → **13/13 steps**, including restore into a fresh
   root, matching totals and maintenance statuses, and two independent backups.
 - `python tools\fault_check.py` → disk-full backup rejected and cleaned up;
@@ -92,13 +105,16 @@ the live browser gate was not run this session.
 8. Enabling the watcher starts a real worker; the UI shows whether it is running.
 9. The controller scan offers **Verify / re-read logs**, which bypasses the
    name+size skip.
+10. A download reports that it was **requested**; the app no longer claims the
+    browser saved the file.
+11. A demo root refuses real logs with a plain-language explanation.
 
 ## Unresolved software work
 
 - **P11b** merge of confirmed variants (needs an owner conflict policy, H07).
-- **P12** live browser gate (Edge + server) for the UI corrections.
 - **P13** test-suite tier split; `check_env.py` covers the setup half only.
 - **F14** the collector does not yet emit transfer-completion evidence.
+- **Q05** browser evidence for the unknown-time label (static pin only).
 
 ## Release gates still owned by Kevin
 

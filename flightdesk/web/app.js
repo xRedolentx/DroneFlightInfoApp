@@ -2140,8 +2140,14 @@
       var note = (noteEl && noteEl.value) || fallbackNote;
       api("/api/identity/" + id, { method: "POST",
         body: { decision: decision, note: note } }).then(function (res) {
-        var settled = res.flight && res.flight.identity_status === "authoritative";
-        toast(settled ? "Marked as a separate flight" : "Record kept as excluded");
+        var status = res.flight && res.flight.identity_status;
+        if (decision === "separate" && status === "authoritative") {
+          toast("Marked as a separate flight");
+        } else if (decision === "exclude") {
+          toast("Left out of totals, with your note");
+        } else {
+          toast("Kept out: this record has no readable measurements yet");
+        }
         closeModal();
         refreshState().then(renderImport);
       }).catch(function (e) {
@@ -2193,6 +2199,11 @@
   }
 
   var IMPORT_REASONS = {
+    // P01: a root holding demo data refuses real logs. That refusal is a
+    // deliberate rule, and the owner must be told the rule, not the code name.
+    demo_root_requires_separate_root: "This data root holds synthetic demo data, so " +
+      "real logs are refused here. Start Flight Desk against a separate folder " +
+      "(or delete this demo root) for your own flights.",
     zip_unsafe: "The ZIP was rejected before anything was imported: a member path would " +
       "escape the archive, or a member is not allowed (symlink, encrypted entry or bad path).",
     archive_size_bound: "The ZIP is larger than the safety limit, so it was rejected. " +

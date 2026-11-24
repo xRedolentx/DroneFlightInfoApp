@@ -438,24 +438,32 @@ python tools\reparse_all.py            # re-read originals (dry run)
 flightdesk.cmd                          # or: python -m flightdesk serve
 ```
 
-Browser gate recipe that works (fresh root each run — a reused root makes the
-ZIP checks fail because the ZIP is already imported):
+Browser gate: run the runner, not a hand-built recipe.
 
 ```powershell
-python tools\make_synthetic_handoff.py out.zip
-python -m flightdesk seed-demo --root <freshdir>
-python -m flightdesk serve --root <freshdir> --port <p> --no-browser
-# The browser must already be ON the app page. Opening it at about:blank makes
-# the gate derive the origin "null" and every check fail against an error page.
-start msedge --headless=new --remote-debugging-port=<d> `
-  --disable-extensions --disable-sync --no-first-run `
-  --user-data-dir=$env:TEMP\edge-fd "http://127.0.0.1:<p>/"
-node tools\ui_check.mjs <d> <outdir> out.zip "http://127.0.0.1:<p>/"
+powershell -ExecutionPolicy Bypass -File tools\ui_gate.ps1
 ```
 
-Pass the app URL as the fifth argument and the gate tolerates a browser that is
-not on the page yet; it exits 2 with a clear message when it cannot resolve a
-loopback origin, which is the bug that hid ~70 checks behind one crash.
+It runs four passes over throwaway roots and starts/stops its own server and
+headless Edge on each: `demo-full` (82 checks, demo data for tracks), `ordinary-import`
+(12, a real ZIP into an ordinary root), `demo-refusal` (5, the same ZIP into a demo
+root, which must be refused) and `identity` (10, the Review-identity flow on a
+forged unreadable log). Last run: **109 checks, 0 failures**.
+
+Four passes exist because of a rule this build now enforces: **a demo root refuses
+real log imports.** The old single-pass recipe (seed-demo, then upload the ZIP to
+the same root) no longer describes the product.
+
+The single-pass form still exists for debugging one mode:
+
+```powershell
+node tools\ui_check.mjs <cdp-port> <outdir> <zip-or-> <app-url> [flags]
+#   - means "no ZIP"; flags: --import-only, --expect-refusal, --ordinary, --identity-only
+```
+
+Pass the app URL as an argument; the gate tolerates a browser that is not on the
+page yet and exits 2 with a clear message when it cannot resolve a loopback origin,
+which is the bug that once hid ~70 checks behind one crash.
 
 Note: a probe that hangs on one *specific* flight is a probe problem, not an app
 problem — the same payload serves in ~0.02 s. Verify through the gate and the API.
