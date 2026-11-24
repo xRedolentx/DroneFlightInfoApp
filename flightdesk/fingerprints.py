@@ -30,6 +30,7 @@ def _row_fingerprint(row: sqlite3.Row) -> str | None:
         row["start_time_utc"],
         row["duration_s"],
         row["filename_time"],
+        row["aircraft_name"],
     )
 
 

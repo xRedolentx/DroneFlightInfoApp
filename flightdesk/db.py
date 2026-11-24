@@ -113,6 +113,24 @@ CREATE TABLE IF NOT EXISTS flight_files (
     linked_at TEXT NOT NULL,
     PRIMARY KEY (flight_id, raw_file_id)
 );
+CREATE INDEX IF NOT EXISTS idx_flights_fingerprint ON flights(fingerprint);
+
+-- One original may have one logical-flight owner. Legacy databases that
+-- already link a raw file to two flights cannot gain the uniqueness index
+-- until that is resolved, so the conflict is recorded here instead of guessed
+-- at or deleted. Nothing is removed to make an index succeed.
+CREATE TABLE IF NOT EXISTS identity_conflicts (
+    id INTEGER PRIMARY KEY,
+    raw_file_id INTEGER NOT NULL REFERENCES raw_files(id) ON DELETE CASCADE,
+    flight_id INTEGER NOT NULL REFERENCES flights(id) ON DELETE CASCADE,
+    conflicting_flight_id INTEGER REFERENCES flights(id) ON DELETE SET NULL,
+    code TEXT NOT NULL,
+    evidence_json TEXT,
+    created_at TEXT NOT NULL,
+    resolved_at TEXT,
+    UNIQUE(raw_file_id, flight_id, conflicting_flight_id)
+);
+CREATE INDEX IF NOT EXISTS idx_identity_conflicts_raw ON identity_conflicts(raw_file_id);
 
 CREATE TABLE IF NOT EXISTS flight_telemetry (
     flight_id INTEGER PRIMARY KEY REFERENCES flights(id) ON DELETE CASCADE,
@@ -412,6 +430,7 @@ def init_db(path: Path | str) -> sqlite3.Connection:
         _retire_media_columns(conn)
         _add_warning_columns(conn)
         _add_rule_columns(conn)
+        _ensure_raw_ownership(conn)
         current = int(conn.execute("PRAGMA user_version").fetchone()[0])
         # Advance the version only after every migration step succeeded, and
         # never lower a version: a mismatch is a bug in this code, not a fact to
@@ -445,6 +464,44 @@ def _retire_media_columns(conn: sqlite3.Connection) -> None:
                 # Leaving it is safe: nothing reads it any more.
                 pass
     conn.commit()
+
+
+def _ensure_raw_ownership(conn: sqlite3.Connection) -> bool:
+    """Enforce one original -> one flight, without deleting anyone's data.
+
+    A new database gets a unique index on `flight_files(raw_file_id)`. An
+    existing database that already points one original at two flights cannot get
+    that index without a choice about which owner is right, so each conflict is
+    recorded for review and the index is skipped. No row is deleted and no
+    winner is picked by id to make the index succeed.
+    """
+    duplicates = conn.execute(
+        "SELECT raw_file_id, GROUP_CONCAT(flight_id) AS ids, COUNT(*) AS n "
+        "FROM flight_files GROUP BY raw_file_id HAVING n > 1"
+    ).fetchall()
+    if duplicates:
+        for row in duplicates:
+            ids = sorted(int(part) for part in str(row["ids"]).split(",") if part)
+            for other in ids[1:]:
+                conn.execute(
+                    "INSERT OR IGNORE INTO identity_conflicts(raw_file_id,flight_id,"
+                    "conflicting_flight_id,code,evidence_json,created_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (int(row["raw_file_id"]), ids[0], other, "raw_multiply_owned",
+                     json.dumps({"flight_ids": ids}), now_utc()),
+                )
+        conn.commit()
+        return False
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_flight_files_raw "
+            "ON flight_files(raw_file_id)"
+        )
+        conn.commit()
+        return True
+    except sqlite3.Error:
+        conn.commit()
+        return False
 
 
 def _add_rule_columns(conn: sqlite3.Connection) -> None:

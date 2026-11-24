@@ -102,12 +102,25 @@ def _identity_start(start_utc: str | None, filename_time: str | None) -> str | N
 
     A filesystem name is a weaker claim than a decoded start time, so the two
     are tagged apart: a file whose details block cannot be read never matches a
-    record whose real start time was decoded.
+    record whose real start time was decoded. The instant itself is normalised
+    to UTC whole seconds, so `...T21:53:20Z`, `...+00:00` and `...+0000` are one
+    identity while the source precision is still stored on the row unchanged.
     """
     if start_utc:
-        return f"log:{start_utc}"
+        parsed = _parse_iso(start_utc)
+        return f"log:{parsed.isoformat(timespec='seconds')}" if parsed else f"log:{start_utc}"
     if filename_time:
-        return f"name:{filename_time}"
+        parsed = _parse_iso(filename_time)
+        return f"name:{parsed.isoformat(timespec='seconds')}" if parsed else f"name:{filename_time}"
+    return None
+
+
+def _aircraft_key(aircraft_sn: str | None, aircraft_name: str | None) -> str | None:
+    """A comparable aircraft identity: serial when known, else the name."""
+    if aircraft_sn and str(aircraft_sn).strip():
+        return "sn:" + str(aircraft_sn).strip().lower()
+    if aircraft_name and str(aircraft_name).strip():
+        return "name:" + str(aircraft_name).strip().lower()
     return None
 
 
@@ -116,20 +129,71 @@ def _fingerprint(
     start_utc: str | None,
     duration: float | None,
     filename_time: str | None = None,
+    aircraft_name: str | None = None,
 ) -> str | None:
-    """A fingerprint, or None when the file has no start time at all.
+    """A fingerprint, or None when the file has no defensible identity.
 
     This used to hash `"||0.0"` for an unreadable log and hand every such log
     the same identity. Two unrelated unreadable files a month apart then merged
-    into one flight, the second linked as a "variant" of the first. A
-    fingerprint with no temporal component is not an identity, so it is not
-    produced at all.
+    into one flight, the second linked as a "variant" of the first.
+
+    It then hashed `aircraft_sn or ''`, so two records with no serial, the same
+    start and the same duration but *different aircraft names* shared a
+    fingerprint and were merged. The aircraft identity is now part of the hash
+    and must exist: a fingerprint with no temporal or no aircraft component is
+    not an identity, so none is produced.
     """
     start = _identity_start(start_utc, filename_time)
-    if start is None:
+    aircraft = _aircraft_key(aircraft_sn, aircraft_name)
+    if start is None or aircraft is None:
         return None
-    raw = f"{aircraft_sn or ''}|{start}|{round(duration or 0, 1)}"
+    span = "?" if duration is None else f"{round(float(duration), 1)}"
+    raw = f"{aircraft}|{start}|{span}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _same_aircraft(row, aircraft_sn: str | None, aircraft_name: str | None) -> bool:
+    """Do these two records name the same aircraft by corroborating evidence?
+
+    A serial on both sides must match. With no serial on either side the names
+    must both exist and match. A serial on one side and only a name on the
+    other is not proof, and neither is a missing name.
+    """
+    row_sn = row["aircraft_sn"]
+    row_name = row["aircraft_name"]
+    if row_sn and aircraft_sn:
+        return str(row_sn).strip().lower() == str(aircraft_sn).strip().lower()
+    if not row_sn and not aircraft_sn and row_name and aircraft_name:
+        return str(row_name).strip().lower() == str(aircraft_name).strip().lower()
+    return False
+
+
+def _corroborates(metrics, row, aircraft_sn: str | None, aircraft_name: str | None,
+                  start_utc: str | None) -> bool:
+    """Full evidence for calling two records one flight.
+
+    Absence is not corroboration: a missing duration or distance on either side
+    means the evidence is incomplete, which is a weak match, not a strong one.
+    """
+    if not _same_aircraft(row, aircraft_sn, aircraft_name):
+        return False
+    left = _parse_iso(row["start_time_utc"])
+    right = _parse_iso(start_utc)
+    if left is None or right is None:
+        return False
+    if abs((left - right).total_seconds()) > 3.0:
+        return False
+    if row["duration_s"] is None or metrics.duration_s is None:
+        return False
+    if abs(float(row["duration_s"]) - float(metrics.duration_s)) > 1.0:
+        return False
+    if row["total_distance_m"] is None or metrics.total_distance_m is None:
+        return False
+    a = float(row["total_distance_m"])
+    b = float(metrics.total_distance_m)
+    if abs(a - b) > max(5.0, 0.01 * max(a, b)):
+        return False
+    return True
 
 
 def _metrics_source(outcome: ParseOutcome) -> str:
@@ -319,6 +383,7 @@ def _update_flight_metrics(
         effective("start_time_utc", start_utc),
         metrics.duration_s if metrics.duration_s is not None else effective("duration_s", None),
         effective("filename_time", filename_time),
+        effective("aircraft_name", details.get("aircraft_name")),
     )
     conn.execute(
         """UPDATE flights SET aircraft_sn=COALESCE(?,aircraft_sn),
@@ -376,6 +441,25 @@ def _update_flight_metrics(
         _store_telemetry(conn, flight_id, outcome.samples, metrics, source="parser")
 
 
+def _record_conflict(conn: sqlite3.Connection, raw_id: int, flight_id: int,
+                     conflicting_flight_id: int | None, code: str) -> None:
+    """Keep a reviewable record that two flights claim one original.
+
+    Nothing is merged or deleted here: the importer keeps ownership where it
+    already was, and this row is the evidence a later review (and the owner)
+    can use to decide. It is sanitised — ids and a code, no names or paths.
+    """
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO identity_conflicts(raw_file_id,flight_id,"
+            "conflicting_flight_id,code,evidence_json,created_at) VALUES(?,?,?,?,?,?)",
+            (raw_id, flight_id, conflicting_flight_id, code,
+             json.dumps({"code": code}), db.now_utc()),
+        )
+    except sqlite3.Error:
+        pass
+
+
 def _insert_or_link_flight(
     conn: sqlite3.Connection,
     raw_id: int,
@@ -389,31 +473,53 @@ def _insert_or_link_flight(
     metrics = compute_metrics(outcome.samples, details)
     start_utc = details.get("start_time_utc")
     filename_time = parse_filename_time(filename)
-    fp = _fingerprint(details.get("aircraft_sn"), start_utc, metrics.duration_s, filename_time)
     aircraft_sn = details.get("aircraft_sn")
     aircraft_name = details.get("aircraft_name")
     battery_sn = details.get("battery_sn")
+    fp = _fingerprint(aircraft_sn, start_utc, metrics.duration_s, filename_time,
+                      aircraft_name)
     now = db.now_utc()
 
-    # Only match on a fingerprint that carries a start time. A record with no
-    # identity of its own must never be linked to another one, or every
-    # unreadable log in the archive collapses into whichever was imported first.
+    # 1. An existing link wins. Reparsing must not move an original to another
+    #    flight or add a second owner, even when the new fingerprint now points
+    #    somewhere else. The reviewed build looked for a fingerprint first, so a
+    #    reparse could link raw 1 to both flight 1 and flight 2.
     candidate = None
-    if fp is not None:
-        candidate = db.one(conn, "SELECT * FROM flights WHERE fingerprint=? LIMIT 1", (fp,))
-    match = "fingerprint" if candidate is not None else "new"
-    # A raw file that is already linked keeps its flight. Otherwise a metrics
-    # correction that changes the fingerprint would make a reparse look like a
-    # brand new flight and duplicate the record.
-    if candidate is None:
-        linked_flight = db.one(
-            conn, "SELECT flight_id FROM flight_files WHERE raw_file_id=? LIMIT 1", (raw_id,)
-        )
-        if linked_flight is not None:
-            candidate = db.one(conn, "SELECT * FROM flights WHERE id=?",
-                               (int(linked_flight["flight_id"]),))
-            if candidate is not None:
-                match = "existing"
+    match = "new"
+    linked = db.one(
+        conn,
+        "SELECT flight_id FROM flight_files WHERE raw_file_id=? "
+        "ORDER BY (role='primary') DESC, flight_id LIMIT 1",
+        (raw_id,),
+    )
+    if linked is not None:
+        candidate = db.one(conn, "SELECT * FROM flights WHERE id=?", (int(linked["flight_id"]),))
+        if candidate is not None:
+            match = "existing"
+            if fp is not None:
+                # Ownership is kept, but a fingerprint now matching another
+                # flight is evidence the owner must see, not something to
+                # resolve by guessing.
+                other = db.one(
+                    conn, "SELECT * FROM flights WHERE fingerprint=? AND id!=? LIMIT 1",
+                    (fp, int(candidate["id"])),
+                )
+                if other is not None and _corroborates(
+                        metrics, other, aircraft_sn, aircraft_name, start_utc):
+                    _record_conflict(conn, raw_id, int(candidate["id"]), int(other["id"]),
+                                     "reparse_conflict")
+
+    # 2. A fingerprint is a candidate lookup key, never proof on its own.
+    if candidate is None and fp is not None:
+        for row in db.all_rows(
+                conn, "SELECT * FROM flights WHERE fingerprint=? LIMIT 5", (fp,)):
+            if _corroborates(metrics, row, aircraft_sn, aircraft_name, start_utc):
+                candidate = row
+                match = "fingerprint"
+                break
+
+    # 3. Same aircraft and same start time. Full evidence is a strong match;
+    #    incomplete evidence is weak, so the record is kept but excluded.
     if candidate is None and (aircraft_sn or aircraft_name):
         rows = db.all_rows(
             conn,
@@ -423,6 +529,7 @@ def _insert_or_link_flight(
             "ORDER BY ABS(julianday(start_time_utc)-julianday(?)) LIMIT 6",
             (aircraft_sn, aircraft_name, aircraft_name, start_utc or "1970-01-01T00:00:00+00:00"),
         )
+        weak = None
         for row in rows:
             a = _parse_iso(row["start_time_utc"])
             b = _parse_iso(start_utc)
@@ -430,30 +537,15 @@ def _insert_or_link_flight(
                 continue
             if abs((a - b).total_seconds()) > 3.0:
                 continue
-            strong = (
-                (
-                    row["duration_s"] is None
-                    or metrics.duration_s is None
-                    or abs(float(row["duration_s"]) - float(metrics.duration_s)) <= 1.0
-                )
-                and (
-                    row["total_distance_m"] is None
-                    or metrics.total_distance_m is None
-                    or abs(float(row["total_distance_m"]) - float(metrics.total_distance_m))
-                    <= max(
-                        5.0,
-                        0.01
-                        * max(float(row["total_distance_m"]), float(metrics.total_distance_m)),
-                    )
-                )
-            )
-            if strong:
+            if _corroborates(metrics, row, aircraft_sn, aircraft_name, start_utc):
                 candidate = row
                 match = "strong"
                 break
-            if candidate is None:
-                candidate = row
-                match = "weak"
+            if weak is None and _same_aircraft(row, aircraft_sn, aircraft_name):
+                weak = row
+        if candidate is None and weak is not None:
+            candidate = weak
+            match = "weak"
 
     if candidate is not None and match in ("fingerprint", "strong", "existing"):
         flight_id = int(candidate["id"])
