@@ -482,6 +482,23 @@ def audit(
     )
 
 
+def data_mode(conn: sqlite3.Connection) -> str:
+    """What kind of archive this root holds: empty, real, synthetic, or unknown.
+
+    One answer for the whole program. The UI decides whether to offer demo
+    data from it, and the importer refuses real logs in a root that is marked
+    synthetic, so the two cannot disagree about what a root is.
+    """
+    explicit = get_setting(conn, "data_mode")
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    if get_setting(conn, "demo_seeded", False):
+        return "synthetic"
+    if conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0]:
+        return "unknown"
+    return "empty"
+
+
 def table_counts(conn: sqlite3.Connection) -> dict[str, int]:
     names = [
         "raw_files", "flights", "equipment", "rules", "services",

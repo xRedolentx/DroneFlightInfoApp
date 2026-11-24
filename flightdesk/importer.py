@@ -578,9 +578,37 @@ def _cached_keychains(conn: sqlite3.Connection, root: Path, sha256: str) -> list
 
 
 class Importer:
-    def __init__(self, root: Path, conn: sqlite3.Connection):
+    def __init__(self, root: Path, conn: sqlite3.Connection, *,
+                 allow_synthetic: bool = False):
         self.root = Path(root)
         self.conn = conn
+        # Only the demo seeder passes this. A root holding synthetic demo data
+        # must not silently accumulate the owner's real flights; the demo seed
+        # itself is the one import that legitimately writes into such a root.
+        self.allow_synthetic = allow_synthetic
+
+    # ------------------------------------------------------------ demo guard
+    DEMO_REFUSAL = "demo_root_requires_separate_root"
+    DEMO_REFUSAL_DETAIL = (
+        "This data root holds synthetic demo data. Import real logs into a "
+        "separate data root."
+    )
+
+    def _synthetic_root(self) -> bool:
+        return not self.allow_synthetic and db.data_mode(self.conn) == "synthetic"
+
+    def _demo_refusal(self, source_label: str, source_kind: str) -> BatchResult | None:
+        """Refuse a real import into a demo root, and say so in the history.
+
+        Returning a finished batch rather than raising keeps every caller's
+        shape unchanged and leaves an honest record: the import history shows
+        the attempt and the reason instead of silence.
+        """
+        if not self._synthetic_root():
+            return None
+        result = self.open_batch(source_label, source_kind)
+        self.finish_batch(result)
+        return result
 
     # ---------------------------------------------------------------- batches
     def begin_batch(self, source_label: str, source_kind: str,
@@ -622,13 +650,18 @@ class Importer:
         """
         if not deferred:
             batch_id = self.begin_batch(source_label, source_kind, batch_id)
-        return BatchResult(
+        result = BatchResult(
             batch_id=batch_id or uuid.uuid4().hex,
             deferred=deferred,
             started_at=db.now_utc(),
             source_label=source_label,
             source_kind=source_kind,
         )
+        if self._synthetic_root():
+            result.note = self.DEMO_REFUSAL
+            self._item(result, None, "needs_attention", self.DEMO_REFUSAL,
+                       self.DEMO_REFUSAL_DETAIL)
+        return result
 
     def add_stream(
         self,
@@ -745,6 +778,13 @@ class Importer:
         member_path: str,
         result: BatchResult,
     ) -> None:
+        # Backstop for any import path that does not check first: the bytes
+        # must not reach the archive of a demo root at all.
+        if self._synthetic_root():
+            result.note = self.DEMO_REFUSAL
+            self._item(result, None, "needs_attention", self.DEMO_REFUSAL,
+                       self.DEMO_REFUSAL_DETAIL)
+            return
         try:
             stored = archive.store_stream(src, self.root)
         except DiskFull:
@@ -859,6 +899,9 @@ class Importer:
         member_path: str | None = None,
         batch_id: str | None = None,
     ) -> BatchResult:
+        refused = self._demo_refusal(source_label, source_kind)
+        if refused is not None:
+            return refused
         batch_id = self.begin_batch(source_label, source_kind, batch_id)
         result = BatchResult(batch_id=batch_id)
         self._ingest(
@@ -882,6 +925,9 @@ class Importer:
         name = display_name or path.name
         if (display_name is None) and path.suffix.lower() == ".zip":
             return self.import_zip(path)
+        refused = self._demo_refusal(source_label, source_kind)
+        if refused is not None:
+            return refused
         batch_id = self.begin_batch(source_label, source_kind)
         result = BatchResult(batch_id=batch_id)
         if not path.is_file():
@@ -904,6 +950,9 @@ class Importer:
         path = Path(path)
         if default_kind is None:
             default_kind = "extras" if "controller" in path.name.lower() else "archive"
+        refused = self._demo_refusal("Folder", default_kind)
+        if refused is not None:
+            return refused
         batch_id = self.begin_batch("Folder", default_kind)
         result = BatchResult(batch_id=batch_id)
         if not path.is_dir():
@@ -950,6 +999,9 @@ class Importer:
 
     def import_zip(self, path: Path, *, batch_id: str | None = None) -> BatchResult:
         path = Path(path)
+        refused = self._demo_refusal("ZIP archive", "zip")
+        if refused is not None:
+            return refused
         batch_id = self.begin_batch("ZIP archive", "zip", batch_id)
         result = BatchResult(batch_id=batch_id)
         try:

@@ -15,6 +15,24 @@ Short, plain English. Everything here runs on this laptop only.
 The first screen has two buttons: **Import my logs** and **Explore invented demo
 data**. Demo data is fake and stays labelled `SYNTHETIC` in the header.
 
+### Keep demo exploration in its own root
+
+Demo data is only ever created in an **empty data root**, and a root that holds
+demo data accepts no real imports. That is deliberate: seeding invented flights
+over your own records would overwrite pilot names, tags and maintenance history.
+The app enforces this in the backend even if the button is present.
+
+To look at the demo screens without touching your real archive, start a second
+copy against a throwaway folder:
+
+```powershell
+python -m flightdesk serve --root "$env:TEMP\FlightDesk-demo"
+```
+
+That folder is empty, so **Explore invented demo data** is offered; your real
+data root at `%LOCALAPPDATA%\FlightDesk\data` is untouched. Delete the throwaway
+folder when you are done. Your real logs go back to the normal launcher.
+
 ## 2. Import your AirData archive (manual)
 
 1. Go to **Import**.

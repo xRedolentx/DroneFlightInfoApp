@@ -322,20 +322,102 @@ class ApiTest(ServerCase):
         after = self.get_json(f"/api/rules/{target['id']}")
         self.assertEqual(after["status"], target["status"])
 
-    def test_upload_imports_and_deduplicates(self) -> None:
-        data = log_bytes(11, days=200, aircraft="mini3")
-        headers = {"X-FD-Filename": "DJIFlightRecord_2027-02-27_%5B21-53-20%5D.txt",
-                   "X-FD-Member": "DJIFlightRecord_2027-02-27_%5B21-53-20%5D.txt",
-                   "Content-Type": "application/octet-stream",
-                   "Content-Length": str(len(data))}
-        status, payload = self.request("POST", "/api/import/upload", data, extra=headers)
-        self.assertEqual(status, 200, payload[:200])
-        first = json.loads(payload)
-        self.assertEqual(first["totals"]["new"], 1)
-        status, payload = self.request("POST", "/api/import/upload", data, extra=headers)
-        second = json.loads(payload)
-        self.assertEqual(second["totals"]["already_imported"], 1)
-        self.assertEqual(second["totals"]["new"], 0)
+    def test_rejects_non_flight_upload(self) -> None:
+        headers = {"X-FD-Filename": "notes.txt", "X-FD-Member": "notes.txt",
+                   "Content-Length": "3"}
+        status, payload = self.request("POST", "/api/import/upload", b"abc", extra=headers)
+        self.assertEqual(status, 400)
+
+    def test_exports_and_reconciliation(self) -> None:
+        status, payload = self.request("GET", "/api/export/flights.csv")
+        self.assertEqual(status, 200)
+        self.assertIn(b"flight_id", payload)
+        status, redacted = self.request("GET", "/api/export/flights.csv?redact=1")
+        self.assertEqual(status, 200)
+        self.assertNotIn(b"SYN-M2P-0001", redacted)
+        recon = self.get_json("/api/recon")
+        for key in ("archive", "supplied_controller", "later_controller", "combined"):
+            self.assertIn(key, recon["groups"])
+        self.assertFalse(recon["real_inputs_selected"])
+
+    def test_key_endpoints_report_state_without_leaking(self) -> None:
+        status, payload = self.request("GET", "/api/key")
+        self.assertEqual(status, 200)
+        data = json.loads(payload)
+        self.assertIn("configured", data)
+        self.assertEqual(data["cache"]["cached"], 0)
+        self.assertNotIn("aesKey", payload.decode("utf-8"))
+        unlock = self.post_json("/api/key/unlock", {"all": True})
+        self.assertIn("results", unlock)
+
+    def test_usb_status_is_readable(self) -> None:
+        data = self.get_json("/api/usb")
+        self.assertIn("devices", data)
+        self.assertIn("watcher", data)
+
+    def test_controller_scan_reports_absence_cleanly(self) -> None:
+        # The collector now really reads whatever is plugged into this machine.
+        # A scan against attached hardware would copy its logs into a test root
+        # and take a minute, so substitute a collector that reports absence.
+        import tempfile
+        from flightdesk import usb
+
+        with tempfile.TemporaryDirectory() as folder:
+            stub = Path(folder) / "absent.ps1"
+            stub.write_text('Write-Output \'{"status":"none","files":[],"errors":[]}\'',
+                            encoding="utf-8")
+            original = usb.SCRIPT
+            usb.SCRIPT = stub
+            try:
+                result = self.post_json("/api/usb/scan", {})
+            finally:
+                usb.SCRIPT = original
+        self.assertIn(result["status"], {"no_device", "no_files", "unavailable", "all_known"})
+        self.assertEqual(result["imported"], 0)
+        self.assertEqual(result["mode"], "physical")
+
+    def test_picker_backend_rejects_a_missing_path(self) -> None:
+        status, payload = self.request(
+            "POST", "/api/import/path",
+            json.dumps({"path": "C:/definitely/not/here"}).encode())
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(payload)["code"], "path_not_found")
+
+    def test_capture_preview_and_apply_with_an_explicit_path(self) -> None:
+        from pathlib import Path
+        fixture = (Path(__file__).resolve().parent.parent / "fixtures" / "synthetic" /
+                   "AirData-Equipment-Capture-SYNTHETIC.md")
+        preview = self.post_json("/api/capture/preview", {"path": str(fixture)})
+        self.assertTrue(preview["ok"])
+        self.assertEqual(preview["service_events"], 21)
+        self.assertEqual(preview["grouped_services"], 4)
+        applied = self.post_json("/api/capture/apply", {"path": str(fixture)})
+        self.assertIn("already_applied", applied)
+
+    def test_real_input_toggle_enables_signed_differences(self) -> None:
+        plain = self.post_json("/api/recon/select-real", {"selected": True})
+        self.assertTrue(plain["real_inputs_selected"])
+        self.assertIsNotNone(plain["signed_differences"])
+        back = self.post_json("/api/recon/select-real", {"selected": False})
+        self.assertFalse(back["real_inputs_selected"])
+        self.assertIsNone(back["signed_differences"])
+
+
+class ImportApiTest(ServerCase):
+    """Real-log imports on an ordinary, non-demo root.
+
+    These tests used to run inside a demo-seeded root, which is now refused by
+    design: a root holding synthetic data accepts no real logs, so real data
+    cannot silently mix with it. The import behaviour under test is unchanged;
+    only the root it runs on moved.
+    """
+
+    demo_seeded = False
+
+    def post_json(self, path: str, body: dict) -> dict:
+        status, payload = self.request("POST", path, json.dumps(body).encode())
+        self.assertEqual(status, 200, payload[:300])
+        return json.loads(payload)
 
     def _upload(self, name: str, data: bytes) -> tuple[int, dict]:
         headers = {
@@ -355,6 +437,21 @@ class ApiTest(ServerCase):
             for name, data in entries.items():
                 zf.writestr(name, data)
         return buf.getvalue()
+
+    def test_upload_imports_and_deduplicates(self) -> None:
+        data = log_bytes(11, days=200, aircraft="mini3")
+        headers = {"X-FD-Filename": "DJIFlightRecord_2027-02-27_%5B21-53-20%5D.txt",
+                   "X-FD-Member": "DJIFlightRecord_2027-02-27_%5B21-53-20%5D.txt",
+                   "Content-Type": "application/octet-stream",
+                   "Content-Length": str(len(data))}
+        status, payload = self.request("POST", "/api/import/upload", data, extra=headers)
+        self.assertEqual(status, 200, payload[:200])
+        first = json.loads(payload)
+        self.assertEqual(first["totals"]["new"], 1)
+        status, payload = self.request("POST", "/api/import/upload", data, extra=headers)
+        second = json.loads(payload)
+        self.assertEqual(second["totals"]["already_imported"], 1)
+        self.assertEqual(second["totals"]["new"], 0)
 
     def test_zip_upload_reports_each_member(self) -> None:
         from support import log_bytes
@@ -410,60 +507,6 @@ class ApiTest(ServerCase):
         self.assertEqual(second["totals"]["already_imported"], 1)
         self.assertEqual(second["totals"]["new_flight"], 0)
 
-    def test_rejects_non_flight_upload(self) -> None:
-        headers = {"X-FD-Filename": "notes.txt", "X-FD-Member": "notes.txt",
-                   "Content-Length": "3"}
-        status, payload = self.request("POST", "/api/import/upload", b"abc", extra=headers)
-        self.assertEqual(status, 400)
-
-    def test_exports_and_reconciliation(self) -> None:
-        status, payload = self.request("GET", "/api/export/flights.csv")
-        self.assertEqual(status, 200)
-        self.assertIn(b"flight_id", payload)
-        status, redacted = self.request("GET", "/api/export/flights.csv?redact=1")
-        self.assertEqual(status, 200)
-        self.assertNotIn(b"SYN-M2P-0001", redacted)
-        recon = self.get_json("/api/recon")
-        for key in ("archive", "supplied_controller", "later_controller", "combined"):
-            self.assertIn(key, recon["groups"])
-        self.assertFalse(recon["real_inputs_selected"])
-
-    def test_key_endpoints_report_state_without_leaking(self) -> None:
-        status, payload = self.request("GET", "/api/key")
-        self.assertEqual(status, 200)
-        data = json.loads(payload)
-        self.assertIn("configured", data)
-        self.assertEqual(data["cache"]["cached"], 0)
-        self.assertNotIn("aesKey", payload.decode("utf-8"))
-        unlock = self.post_json("/api/key/unlock", {"all": True})
-        self.assertIn("results", unlock)
-
-    def test_usb_status_is_readable(self) -> None:
-        data = self.get_json("/api/usb")
-        self.assertIn("devices", data)
-        self.assertIn("watcher", data)
-
-    def test_controller_scan_reports_absence_cleanly(self) -> None:
-        # The collector now really reads whatever is plugged into this machine.
-        # A scan against attached hardware would copy its logs into a test root
-        # and take a minute, so substitute a collector that reports absence.
-        import tempfile
-        from flightdesk import usb
-
-        with tempfile.TemporaryDirectory() as folder:
-            stub = Path(folder) / "absent.ps1"
-            stub.write_text('Write-Output \'{"status":"none","files":[],"errors":[]}\'',
-                            encoding="utf-8")
-            original = usb.SCRIPT
-            usb.SCRIPT = stub
-            try:
-                result = self.post_json("/api/usb/scan", {})
-            finally:
-                usb.SCRIPT = original
-        self.assertIn(result["status"], {"no_device", "no_files", "unavailable", "all_known"})
-        self.assertEqual(result["imported"], 0)
-        self.assertEqual(result["mode"], "physical")
-
     def test_picker_backend_imports_a_folder_path(self) -> None:
         import tempfile
         from pathlib import Path
@@ -476,32 +519,6 @@ class ApiTest(ServerCase):
             result = self.post_json("/api/import/path", {"path": str(folder)})
         self.assertEqual(result["totals"]["new"], 1)
         self.assertEqual(result["totals"]["new_flight"], 1)
-
-    def test_picker_backend_rejects_a_missing_path(self) -> None:
-        status, payload = self.request(
-            "POST", "/api/import/path",
-            json.dumps({"path": "C:/definitely/not/here"}).encode())
-        self.assertEqual(status, 400)
-        self.assertEqual(json.loads(payload)["code"], "path_not_found")
-
-    def test_capture_preview_and_apply_with_an_explicit_path(self) -> None:
-        from pathlib import Path
-        fixture = (Path(__file__).resolve().parent.parent / "fixtures" / "synthetic" /
-                   "AirData-Equipment-Capture-SYNTHETIC.md")
-        preview = self.post_json("/api/capture/preview", {"path": str(fixture)})
-        self.assertTrue(preview["ok"])
-        self.assertEqual(preview["service_events"], 21)
-        self.assertEqual(preview["grouped_services"], 4)
-        applied = self.post_json("/api/capture/apply", {"path": str(fixture)})
-        self.assertIn("already_applied", applied)
-
-    def test_real_input_toggle_enables_signed_differences(self) -> None:
-        plain = self.post_json("/api/recon/select-real", {"selected": True})
-        self.assertTrue(plain["real_inputs_selected"])
-        self.assertIsNotNone(plain["signed_differences"])
-        back = self.post_json("/api/recon/select-real", {"selected": False})
-        self.assertFalse(back["real_inputs_selected"])
-        self.assertIsNone(back["signed_differences"])
 
 
 if __name__ == "__main__":

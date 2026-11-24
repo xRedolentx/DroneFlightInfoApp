@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import datetime as dt
 import gzip
+import hashlib
 import json
 import math
 import shutil
+import sqlite3
 from pathlib import Path
 
 from . import capture, db, maintenance
@@ -96,12 +98,142 @@ def _inject_samples(conn, flight_id: int, samples: list[dict]) -> None:
     )
 
 
+DEMO_CLAIM_SECONDS = 900
+
+
+def _claim_is_fresh(started: object) -> bool:
+    """Is another seed still plausibly running? A stale claim is resumable."""
+    try:
+        when = dt.datetime.fromisoformat(str(started))
+    except (TypeError, ValueError):
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=dt.timezone.utc)
+    age = (dt.datetime.now(dt.timezone.utc) - when).total_seconds()
+    return 0 <= age < DEMO_CLAIM_SECONDS
+
+
+_ORDINARY_TABLES = (
+    "raw_files", "flights", "equipment", "rules", "services",
+    "service_snapshots", "battery_readings", "import_batches",
+    "cover_resolutions", "snapshot_flights",
+)
+
+
+def _ordinary_content(conn: sqlite3.Connection, root: Path) -> list[str]:
+    """Categories of owner data already in this root — names and counts only.
+
+    An empty flight table is not enough: a capture can import equipment, rules
+    and services with no flights at all, and the archive directory can hold
+    originals indexed nowhere. Seeding demo data over any of that would write
+    into a root the owner already trusts.
+    """
+    found: list[str] = []
+    for table in _ORDINARY_TABLES:
+        try:
+            count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        except sqlite3.Error:
+            continue
+        if count:
+            found.append(table)
+    archive = Path(root) / "archive"
+    if archive.is_dir():
+        try:
+            if any(p.is_file() for p in archive.rglob("*")):
+                found.append("archive_files")
+        except OSError:
+            found.append("archive_unreadable")
+    if (Path(root) / "keychains" / "dji_key.bin").is_file():
+        found.append("dji_key")
+    return found
+
+
+def _claim_demo_root(conn: sqlite3.Connection, root: Path) -> dict:
+    """Decide, once and atomically, whether this root may become a demo root.
+
+    The empty-root test and the claim are one BEGIN IMMEDIATE transaction, so
+    two concurrent seed requests cannot both see an empty root and both write.
+    The root is marked synthetic *before* any import begins: a half-finished
+    seed is then a labelled demo root that can be resumed, never a half-seeded
+    ordinary archive.
+    """
+    with db.tx(conn):
+        if db.get_setting(conn, "demo_seeded", False):
+            return {"ok": True, "already_seeded": True, "code": "already_seeded",
+                    "data_mode": "synthetic", "counts": db.table_counts(conn)}
+        state = db.get_setting(conn, "demo_seed_state")
+        if state in ("in_progress", "partial"):
+            started = db.get_setting(conn, "demo_seed_started_at")
+            if state == "in_progress" and _claim_is_fresh(started):
+                return {"ok": False, "code": "seed_in_progress", "resumable": True,
+                        "data_mode": "synthetic"}
+        else:
+            found = _ordinary_content(conn, root)
+            real = bool(db.get_setting(conn, "real_inputs_selected", False))
+            mode = db.data_mode(conn)
+            if found or real or mode not in ("empty", "synthetic"):
+                return {"ok": False, "code": "root_not_empty",
+                        "found": found, "data_mode": mode,
+                        "detail": "Demo data is seeded only into an empty data root. "
+                                  "This root already holds records."}
+        db.set_setting(conn, "data_mode", "synthetic")
+        db.set_setting(conn, "demo_seed_state", "in_progress")
+        db.set_setting(conn, "demo_seed_started_at", db.now_utc())
+        db.set_setting(conn, "demo_identity", {
+            "marker": "SYNTHETIC", "seeded_at": db.now_utc(),
+            "resumed": state in ("in_progress", "partial"),
+        })
+        db.audit(conn, "app", "demo_seed_claimed", "data_root", None,
+                 {"resumed": state in ("in_progress", "partial")})
+    return {"ok": True, "already_seeded": False,
+            "resumed": state in ("in_progress", "partial")}
+
+
+def _mark_seed_partial(conn: sqlite3.Connection, exc: BaseException) -> None:
+    try:
+        with db.tx(conn):
+            db.set_setting(conn, "demo_seed_state", "partial")
+            db.set_setting(conn, "demo_seed_error", type(exc).__name__)
+    except sqlite3.Error:
+        pass
+
+
+def _demo_flights(conn: sqlite3.Connection, shas: set[str]) -> list:
+    """Flights whose originals are exactly the bytes this seed wrote."""
+    if not shas:
+        return []
+    marks = ",".join("?" for _ in shas)
+    return db.all_rows(
+        conn,
+        "SELECT DISTINCT f.id, f.start_time_utc FROM flights f "
+        "JOIN flight_files ff ON ff.flight_id=f.id "
+        "JOIN raw_files r ON r.id=ff.raw_file_id "
+        f"WHERE r.sha256 IN ({marks}) ORDER BY f.start_time_utc, f.id",
+        tuple(shas),
+    )
+
+
 def seed_demo(root: Path) -> dict:
     root = Path(root)
     ensure_layout(root)
     conn = db.init_db(db_path(root))
-    if db.get_setting(conn, "demo_seeded"):
-        return {"ok": True, "already_seeded": True, "counts": db.table_counts(conn)}
+    try:
+        claim = _claim_demo_root(conn, root)
+        if not claim.get("ok") or claim.get("already_seeded"):
+            return claim
+        try:
+            result = _seed_demo_body(conn, root)
+            result["resumed"] = bool(claim.get("resumed"))
+            return result
+        except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            _mark_seed_partial(conn, exc)
+            return {"ok": False, "code": "seed_failed", "state": "partial",
+                    "resumable": True, "error": type(exc).__name__}
+    finally:
+        conn.close()
+
+
+def _seed_demo_body(conn: sqlite3.Connection, root: Path) -> dict:
     incoming = root / "tmp" / "demo_incoming"
     archive_dir = incoming / "flight_logs"
     extras_dir = incoming / "controller-test"
@@ -110,6 +242,9 @@ def seed_demo(root: Path) -> dict:
     archive_dir.mkdir(parents=True, exist_ok=True)
     extras_dir.mkdir(parents=True, exist_ok=True)
     base = dt.datetime(2026, 8, 11, 21, 53, 20, tzinfo=dt.timezone.utc)
+    # The exact bytes this seed writes. Pilot and tag edits are applied only to
+    # flights linked to these originals, never to whatever else the root holds.
+    demo_shas: set[str] = set()
 
     flights = [
         ("mavic2", base, "SYN-BAT-1001", 302.0, 46.9, 45.1, 6.5, 3, 20),
@@ -148,6 +283,7 @@ def seed_demo(root: Path) -> dict:
         )
         name = filename_time(start, "DJIFlightRecord" if version >= 10 else "FlightRecord")
         write_log(archive_dir / name, data)
+        demo_shas.add(hashlib.sha256(data).hexdigest())
 
     extra = make_log_bytes(
         version=11,
@@ -156,8 +292,9 @@ def seed_demo(root: Path) -> dict:
         distance_m=70.0, max_height_m=38.0,
     )
     write_log(extras_dir / "DJIFlightRecord_2026-05-01_[12-00-00].txt", extra)
+    demo_shas.add(hashlib.sha256(extra).hexdigest())
 
-    importer = Importer(root, conn)
+    importer = Importer(root, conn, allow_synthetic=True)
     importer.import_folder(archive_dir, default_kind="archive")
     importer.import_folder(extras_dir, default_kind="extras")
     fixture = Path(__file__).resolve().parent.parent / "fixtures" / "synthetic" / \
@@ -169,23 +306,23 @@ def seed_demo(root: Path) -> dict:
         db.set_setting(conn, "pilot_default", "Demo Pilot")
         db.set_setting(conn, "pilots", ["Demo Pilot", "Alex Example"])
         db.set_setting(conn, "demo_seeded", True)
+        db.set_setting(conn, "demo_seed_state", "complete")
+        db.set_setting(conn, "demo_seed_finished_at", db.now_utc())
+        db.set_setting(conn, "data_mode", "synthetic")
         db.set_setting(conn, "unit_preference", "metric")
-        rows = db.all_rows(conn, "SELECT id,aircraft_sn FROM flights ORDER BY start_time_utc")
-        for i, row in enumerate(rows):
+        demo_rows = _demo_flights(conn, demo_shas)
+        for i, row in enumerate(demo_rows):
             pilot = "Demo Pilot" if i % 2 == 0 else "Alex Example"
             tags = ["mapping"] if i % 3 == 0 else (["practice"] if i % 3 == 1 else [])
             conn.execute("UPDATE flights SET pilot=?,tags_json=? WHERE id=?",
                          (pilot, json.dumps(tags), row["id"]))
         # a visible synthetic track on three flights
-        picks = db.all_rows(
-            conn,
-            "SELECT id FROM flights WHERE start_time_utc IN (?,?,?) ORDER BY start_time_utc",
-            (
-                "2026-08-11T21:53:20+00:00",
-                "2026-10-03T09:15:00+00:00",
-                "2026-05-14T18:20:00+00:00",
-            ),
-        )
+        wanted = {
+            "2026-08-11T21:53:20+00:00",
+            "2026-10-03T09:15:00+00:00",
+            "2026-05-14T18:20:00+00:00",
+        }
+        picks = [row for row in demo_rows if row["start_time_utc"] in wanted]
         for i, row in enumerate(picks):
             _inject_samples(conn, int(row["id"]), _samples(
                 base, duration=302.0 + i * 100, gap=(80, 120) if i == 0 else None
@@ -212,10 +349,11 @@ def seed_demo(root: Path) -> dict:
             )
     statuses = maintenance.all_statuses(conn)
     counts = db.table_counts(conn)
-    conn.close()
     return {
         "ok": True,
         "already_seeded": False,
+        "code": "seeded",
+        "data_mode": "synthetic",
         "flights": counts["flights"],
         "raw_files": counts["raw_files"],
         "equipment": counts["equipment"],

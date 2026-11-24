@@ -523,7 +523,8 @@ def _batch_response(ctx: Ctx, batch) -> None:
         if code:
             codes[code] = codes.get(code, 0) + 1
     payload["codes"] = codes
-    _send_json(ctx.handler, payload)
+    status = 409 if payload.get("note") == Importer.DEMO_REFUSAL else 200
+    _send_json(ctx.handler, payload, status)
 
 
 def _stream_body_to(temp_dir: Path, handler, limit: int) -> tuple[Path | None, str | None]:
@@ -641,7 +642,12 @@ def api_import_path(ctx: Ctx) -> None:
 @route("POST", r"/api/import/demo")
 def api_import_demo(ctx: Ctx) -> None:
     result = demo.seed_demo(ctx.app.root)
-    _send_json(ctx.handler, result)
+    if result.get("ok"):
+        _send_json(ctx.handler, result)
+        return
+    code = result.get("code")
+    status = 409 if code in ("root_not_empty", "seed_in_progress") else 500
+    _send_json(ctx.handler, result, status)
 
 
 @route("POST", r"/api/reparse")

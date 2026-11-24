@@ -69,14 +69,7 @@ def pilots(conn: sqlite3.Connection) -> list[str]:
 
 
 def _data_mode(conn: sqlite3.Connection) -> str:
-    explicit = db.get_setting(conn, "data_mode")
-    if explicit:
-        return explicit
-    if db.get_setting(conn, "demo_seeded", False):
-        return "synthetic"
-    if conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0]:
-        return "unknown"
-    return "empty"
+    return db.data_mode(conn)
 
 
 def state(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -98,6 +91,15 @@ def state(conn: sqlite3.Connection) -> dict[str, Any]:
         "pilots": pilots(conn),
         "unit_preference": db.get_setting(conn, "unit_preference", "metric"),
         "data_mode": _data_mode(conn),
+        "demo": {
+            # Demo exploration is offered only on an empty root, and a demo root
+            # refuses real logs. The page reads this rather than guessing from
+            # a flight count, so a populated archive never shows the control.
+            "mode": _data_mode(conn),
+            "seed_state": db.get_setting(conn, "demo_seed_state"),
+            "can_seed": _data_mode(conn) == "empty",
+            "separate_root_required": _data_mode(conn) == "synthetic",
+        },
         "real_inputs_selected": bool(db.get_setting(conn, "real_inputs_selected", False)),
         "key_configured": keychain.has_key(root) if root else False,
         "keychain_cache": keychain.cache_summary(conn),

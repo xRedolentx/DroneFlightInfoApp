@@ -67,8 +67,9 @@ no private records were read.
 
 ## Current batch / next runnable batch
 
-- Current batch: **P00 — DONE**
-- Next runnable batch: **P01 — Isolate demo data** (independent after P00)
+- Current batch: **P01 — DONE**
+- Next runnable batch: **P02 — Non-overwriting exports and archive integrity**
+  (independent after P00)
 
 ## Batch table
 
@@ -76,8 +77,8 @@ Statuses: `TODO` `IN_PROGRESS` `DONE` `PARTIAL` `BLOCKED` `WAITING_DEPENDENCY` `
 
 | ID | Status | Changed files | Tests / result | Commit | Blockers |
 |---|---|---|---|---|---|
-| P00 | DONE | `FLIGHTFIX-STATE.md`, review pack, `FlightDesk_Review_Pack/FLIGHTFIX-HUMAN.md` (owner-decision merge) | baseline selftest 407/0/0; probes 19/19 reproduced | (this checkpoint) | none |
-| P01 | TODO | — | — | — | none |
+| P00 | DONE | `FLIGHTFIX-STATE.md`, review pack, `FlightDesk_Review_Pack/FLIGHTFIX-HUMAN.md` (owner-decision merge) | baseline selftest 407/0/0; probes 19/19 reproduced | `ebe0706` | none |
+| P01 | DONE | `flightdesk/demo.py`, `importer.py`, `db.py`, `views.py`, `server.py`, `__main__.py`, `web/app.js`, `OWNER-GUIDE.md`, `tests/test_demo_isolation.py`, `tests/test_stage3_web.py` | selftest **418 / 0 failures / 0 errors**; F01 probe now reports `pilot="Owner pilot", tags=["Owner tag"]` unchanged | (this checkpoint) | none |
 | P02 | TODO | — | — | — | none |
 | P03 | TODO | — | — | — | none |
 | P04 | TODO | — | — | — | after P03 |
@@ -101,7 +102,20 @@ compaction and restarts.
 
 | Problem | Attempts since progress | Hypotheses / results | Progress evidence |
 |---|---|---|---|
-| (none yet) | 0 | — | — |
+| F01 demo seeding contaminated owner records | 0 (fixed on first attempt) | Hypothesis: the seed's guard is `demo_seeded` only, so any populated root is eligible; the tag/pilot update selects all flights. Change: atomic empty-root claim inside `BEGIN IMMEDIATE`, synthetic marker set before any write, serials-by-content scoping of pilot/tag edits, and a backend import refusal in a synthetic root. Result: 11 new tests pass; F01 probe shows the owner's pilot and tags unchanged. | Probe output before `["mapping"]`/`Demo Pilot`, after `["Owner tag"]`/`Owner pilot`; 418-test suite green |
+
+## Behaviour changes landed (keep docs in step)
+
+- **P01** — A data root is now `empty`, `unknown`, `real` or `synthetic`
+  (`db.data_mode`). Demo seeding is offered only on an empty root and is claimed
+  atomically inside `BEGIN IMMEDIATE`; the root is marked `data_mode=synthetic`
+  before the first write, so a crashed seed is a resumable demo root, never a
+  half-seeded ordinary one. A real log import into a synthetic root returns
+  `note=demo_root_requires_separate_root` and writes nothing (HTTP 409 from the
+  upload/path/demo routes). Demo pilot/tag edits are scoped to the flights whose
+  originals are the exact bytes the seed wrote. `OWNER-GUIDE.md` explains the
+  separate-root workflow. Tests moved to `ImportApiTest` (non-demo root) because
+  importing into a demo root is now refused by design.
 
 ## Pending human IDs
 
@@ -143,13 +157,14 @@ re-asked):
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
 git switch flightfix/repairs
-python -m flightdesk selftest      # expect 407 tests, 0 failures at 7806e1f + P00
+python -m flightdesk selftest      # expect 418 tests, 0 failures at P01
 ```
 
-Smallest next action: read P01 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
-finding F01, then implement demo-root isolation in `flightdesk/demo.py`,
-`flightdesk/server.py` and `flightdesk/views.py`, with tests in
-`tests/test_stage3_web.py`, and update `OWNER-GUIDE.md`.
+Smallest next action: read P02 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
+findings F02–F03, then fix `flightdesk/rawexport.py` (collision-safe allocator,
+no-clobber publication, atomic `Job.start`) and `flightdesk/archive.py::store_stream`
+(hash verification, quarantine on same-size corruption), with tests in
+`tests/test_stage18_raw_export.py` and the archive tests.
 
 If the host forces a stop: verify `git status` is clean on `flightfix/repairs`,
-push the branch, then resume at P01.
+push the branch, then resume at P02.

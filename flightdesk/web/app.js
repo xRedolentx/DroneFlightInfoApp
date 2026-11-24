@@ -1754,6 +1754,26 @@
     return map[code] || code || "unresolved";
   }
 
+  function demoNotice() {
+    // Demo exploration writes invented flights, so it is offered only on an
+    // empty root, and a root that holds demo data refuses real imports. The
+    // server decides that; the page only reports it.
+    var demo = (state.app && state.app.demo) || {};
+    if (demo.can_seed) {
+      return '<div class="notice small" style="margin-top:12px">You can ' +
+        '<button type="button" class="link" id="seed-demo">load an invented ' +
+        'demo set</button> to explore the screens. It is labelled synthetic ' +
+        'everywhere. Demo data lives in a root of its own; your real logs need ' +
+        'a separate one.</div>';
+    }
+    if (demo.separate_root_required) {
+      return '<div class="notice small" style="margin-top:12px">This data root ' +
+        'holds synthetic demo data, so real log imports are refused here. Start ' +
+        'Flight Desk against a separate folder for your own logs.</div>';
+    }
+    return "";
+  }
+
   function renderImport() {
     api("/api/import/history").then(function (data) {
       view.innerHTML = '<div class="workspace" style="grid-template-columns:minmax(0,1fr) 340px">' +
@@ -1785,9 +1805,7 @@
         (state.app.pilots.length ? state.app.pilots : ["No pilots yet"]).map(function (p) {
           return "<option>" + esc(p) + "</option>";
         }).join("") + "</select></div>" +
-        '<div class="notice small" style="margin-top:12px">If synthetic demo data is not ' +
-        'loaded, you can <button type="button" class="link" id="seed-demo">load an invented ' +
-        "demo set</button> to explore the screens. It is labelled synthetic everywhere.</div>" +
+        demoNotice() +
         "</div></div>" +
         '<div class="panel"><div class="panel-head"><h2>Awaiting DJI key</h2>' +
         '<button type="button" class="link tiny" id="unlock-all">Unlock with saved key' +
@@ -2066,7 +2084,12 @@
     if (seed) seed.addEventListener("click", function () {
       api("/api/import/demo", { method: "POST", body: {} }).then(function (res) {
         if (res.ok) { toast("Synthetic demo data loaded"); refreshState().then(render); }
-        else toast("Demo not loaded");
+        else toast("Demo not loaded (" + (res.code || "error") + ")");
+      }).catch(function (e) {
+        toast(e.message === "root_not_empty"
+          ? "Demo data needs an empty root; this one already holds records"
+          : "Demo not loaded (" + e.message + ")");
+        refreshState().then(renderImport);
       });
     });
     var unlockAll = document.getElementById("unlock-all");
@@ -3266,6 +3289,11 @@
       if (demoBtn) demoBtn.addEventListener("click", function () {
         api("/api/import/demo", { method: "POST", body: {} }).then(function () {
           refreshState().then(function () { location.hash = "#/flights"; render(); });
+        }).catch(function (e) {
+          toast(e.message === "root_not_empty"
+            ? "Demo data needs an empty root; this one already holds records"
+            : "Demo not loaded (" + e.message + ")");
+          refreshState().then(render);
         });
       });
       return;

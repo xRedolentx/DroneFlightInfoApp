@@ -155,11 +155,15 @@ def seed(args: argparse.Namespace) -> int:
     root = _root(args.root)
     result = seed_demo(root)
     print(json.dumps({"ok": result.get("ok"),
+                      "code": result.get("code"),
                       "already_seeded": result.get("already_seeded"),
+                      "data_mode": result.get("data_mode"),
+                      "resumable": result.get("resumable"),
+                      "found": result.get("found"),
                       "flights": result.get("flights"),
                       "raw_files": result.get("raw_files"),
                       "equipment": result.get("equipment")}))
-    return 0
+    return 0 if result.get("ok") else 1
 
 
 def diag(args: argparse.Namespace) -> int:
