@@ -13,7 +13,10 @@ before any long operation, and before any host-forced stop.
   `origin` → `git@github.com:xRedolentx/DroneFlightInfoApp.git`
 - Repair branch `flightfix/repairs` was fast-forwarded into `main` at P02; every
   later batch landed on `main` directly, on the owner's instruction.
-- **Saved 2026-11-24 03:51 UTC at `0f28f87`** — `main` = `origin/main`, working tree clean.
+- **Saved 2026-11-24 UTC.** The software was last verified at `0f28f87`
+  (**548 tests, 0 failures**; tiers and the browser gate green). Any commit after
+  that on `main` is documentation only — this file's own corrections included.
+  Check `git log --oneline -5` before trusting a count here.
 - Starting dirty paths: `FlightDesk_Review_Pack/` (untracked — the supplied review pack)
 - State file created: 2026-11-23, batch P00
 
