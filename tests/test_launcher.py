@@ -148,6 +148,9 @@ class ServeEntry(unittest.TestCase):
             def start_watcher(self) -> None:
                 return None
 
+            def ensure_watcher_running(self) -> str:
+                return "started"
+
         with mock.patch("flightdesk.server.build_server",
                         return_value=(FakeServer(), FakeApp())), \
                 mock.patch.object(launcher.threading, "Timer") as timer:

@@ -68,8 +68,9 @@ no private records were read.
 
 ## Current batch / next runnable batch
 
-- Current batch: **P08 — DONE**
-- Next runnable batch: **P09 — A functioning watcher lifecycle** (independent)
+- Current batch: **P09 — DONE**
+- Next runnable batch: **P10 — USB completeness and explicit rescan**
+  (depends on P02 and P09, both met)
 
 ## Batch table
 
@@ -86,12 +87,7 @@ Statuses: `TODO` `IN_PROGRESS` `DONE` `PARTIAL` `BLOCKED` `WAITING_DEPENDENCY` `
 | P06 | DONE | `flightdesk/importer.py`, `flightdesk/capture.py`, `flightdesk/db.py`, `tests/test_derived_refresh.py` | selftest **482 / 0 failures**; F08 equal-length track refresh and F09 battery reassignment are covered | (this checkpoint) | none |
 | P07 | DONE | `flightdesk/parser_adapter.py`, `flightdesk/analysis.py`, `flightdesk/maintenance.py`, `flightdesk/capture.py`, `flightdesk/db.py`, `tests/test_airtime_semantics.py` | selftest **494 / 0 failures**; recon_check 11/11 | (this checkpoint) | none |
 | P08 | DONE | `tools/reparse_all.py`, `tests/test_reparse_tool.py` | selftest **500 / 0 failures**; dry run leaves DB and archive hashes unchanged; apply matches preview; stale preview refused | (this checkpoint) | none |
-| P09 | TODO | — | — | — | none |
-| P05 | TODO | — | — | — | after P04 |
-| P06 | TODO | — | — | — | after P05 |
-| P07 | TODO | — | — | — | after P06 |
-| P08 | TODO | — | — | — | after P05/P06/P07 |
-| P09 | TODO | — | — | — | none |
+| P09 | DONE | `flightdesk/server.py`, `flightdesk/__main__.py`, `tests/test_watcher_lifecycle.py`, `tests/test_launcher.py` | selftest **509 / 0 failures**; enable starts a real scan, disable stops it, repeated enable is one worker, manual/scheduled scans never overlap | (this checkpoint) | none |
 | P10 | TODO | — | — | — | after P02, P09 |
 | P11 | TODO | — | — | — | after P05/P06/P07 |
 | P12 | TODO | — | — | — | after P01, P09; identity labels after P11 |
@@ -119,6 +115,7 @@ compaction and restarts.
 | F10 air-time semantics inconsistent | 0 (fixed on first attempt) | Hypotheses: (a) `bool(None)` made a missing ground flag False; (b) air time required a GPS fix; (c) maintenance summed `duration_s`. Change: tri-state adapter flags, `airborne_state` fallback ground→motor→height with unknown preserved, air time computed without fixes, `airborne_partial`/`airborne_unknown` flags, maintenance uses `airborne_time_s` and reports unknown rather than zero. 8 new tests. | `test_stationary_without_ground_flag_is_not_airborne`, `test_log_duration_does_not_become_air_minutes`, `test_unknown_air_time_makes_the_counter_partial_not_zero` |
 | F11 first capture ignored captured limits | 0 (fixed on first attempt) | Hypotheses: (a) rules were created with defaults before the snapshot pass; (b) the existing-row branch never updated limits. Change: existing-row path applies captured limits unless `owner_limits`; `set_rule_policy` marks `owner_limits=1` on a threshold change. 2 new tests + calendar-baseline case. | `test_first_capture_applies_the_captured_limit`, `test_a_later_capture_preserves_an_owner_edited_limit` |
 | F12 reparse dry run could not work | 0 (fixed on first attempt) | Hypothesis: the tool opened a read-only connection and called the mutating importer. Change: dry run copies the DB and simulates on the copy; apply requires `--root` and a matching `--expect-revision`; resume cursor; success resets consecutive failures; sanitized JSON. 6 new tests. | `test_dry_run_reports_deltas_and_writes_nothing`, `test_apply_with_the_preview_revision_matches_it` |
+| F13 enabling the watcher started nothing | 0 (fixed on first attempt) | Hypotheses: (a) the setting route stored a Boolean only; (b) the launcher never started a worker; (c) a logon launch against a running server exited claiming success. Change: one idle worker that polls the setting and wakes on toggle, cooperative stop, per-root scan lock with visible busy status, runtime state separate from configured state, launcher enables via the shared setting. 9 new tests. | `test_enabling_starts_a_worker_that_scans`, `test_manual_and_scheduled_scans_do_not_overlap`, `test_the_toggle_controls_a_live_worker` |
 
 ## Behaviour changes landed (keep docs in step)
 
@@ -215,6 +212,16 @@ compaction and restarts.
   consecutive-failure counter, and a stored cursor lets a rerun continue instead
   of restarting at raw id 1.
 
+- **P09** — One watcher worker per serving process, started even while watching
+  is disabled so it can poll the setting; toggling wakes it immediately. Enable
+  starts scans, disable stops them, and repeated enable leaves one worker. A
+  per-root scan lock makes manual and scheduled scans mutually exclusive, with
+  `scan_in_progress` (HTTP 409) and visible busy status. Runtime state
+  (`running`, `scanning`, `last_attempt`, `last_success`, `last_error`) is
+  reported separately from the configured setting. A launch with `--watch-usb`
+  against an already-running instance enables it through the shared setting and
+  says so, instead of claiming a second worker started.
+
 ## Pending human IDs
 
 Canonical file: `FlightDesk_Review_Pack/FLIGHTFIX-HUMAN.md`.
@@ -255,11 +262,11 @@ re-asked):
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
 git switch flightfix/repairs
-python -m flightdesk selftest      # expect 500 tests, 0 failures at P08
+python -m flightdesk selftest      # expect 509 tests, 0 failures at P09
 ```
 
-Smallest next action: read P09 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
-finding F13, then make the watcher setting control a real worker in the serving
-process (`server.py::App.start_watcher`, `api_usb_watcher`, `__main__.py`).
+Smallest next action: read P10 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
+finding F14, then separate transfer completeness from parser validity in
+`flightdesk/usb.py` and `tools/Collect-DjiLogs.ps1`, with a verify/re-read mode.
 
-If the host forces a stop: verify `git status` is clean, push, then resume at P09.
+If the host forces a stop: verify `git status` is clean, push, then resume at P10.

@@ -117,6 +117,23 @@ def _root(value: str | None) -> Path:
     return paths.default_data_root()
 
 
+def _enable_watching(root: Path) -> bool:
+    """Turn watching on in the shared setting. The serving process polls it."""
+    from . import usb
+
+    conn = None
+    try:
+        conn = db.connect(paths.db_path(root))
+        current = db.get_setting(conn, "usb_watcher", {}) or {}
+        usb.set_watcher(conn, True, int(current.get("interval_s") or 45))
+        return True
+    except Exception:  # noqa: BLE001 - reported by the caller
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def serve(args: argparse.Namespace) -> int:
     from .server import build_server, write_state
 
@@ -125,6 +142,16 @@ def serve(args: argparse.Namespace) -> int:
     if already is not None:
         url = home_url(already)
         print(f"Flight Desk is already running at {url}")
+        if args.watch_usb:
+            # The serving process owns the watcher. Ask it, through the shared
+            # setting it polls, rather than claim a second copy started one.
+            enabled = _enable_watching(root)
+            if enabled:
+                print("Watching is enabled for the running instance and will start "
+                      "within one poll interval.")
+            else:
+                print("Could not enable watching on the running instance; "
+                      "enable it in Settings → USB controllers.")
         print("Opening that window; this launcher is not starting a second copy.")
         if not args.no_browser:
             _open_browser(url)
@@ -142,8 +169,12 @@ def serve(args: argparse.Namespace) -> int:
     url = home_url(app.port)
     print(f"Flight Desk is running at {url}")
     print(f"Data root: {root}")
+    # Always start the idle watcher worker: it polls the setting, so enabling
+    # watching — from this process or another launcher — takes effect without a
+    # second server.
+    app.ensure_watcher_running()
     if args.watch_usb:
-        app.start_watcher()
+        _enable_watching(root)
     if not args.no_browser:
         threading.Timer(0.6, _open_browser, args=(url,)).start()
     try:

@@ -97,6 +97,17 @@ class App:
         self.port = 0
         self.watcher_thread: threading.Thread | None = None
         self.stop_event = threading.Event()
+        # One scan at a time per root, whether started by the watcher or by the
+        # Scan button. A lock, not a flag read outside it, so two callers cannot
+        # both see "idle" and both start.
+        self._scan_lock = threading.Lock()
+        self._watcher_lock = threading.Lock()
+        self._watcher_wake = threading.Event()
+        self._state_lock = threading.Lock()
+        self._scan_state: dict[str, Any] = {
+            "scanning": False, "last_attempt": None,
+            "last_success": None, "last_error": None,
+        }
         self.log = errlog.get_logger(self.root)
         # One raw-log export at a time, in its own thread. A first export of a
         # few hundred files must not freeze the page.
@@ -106,43 +117,105 @@ class App:
         return db.connect(self.db_file)
 
     def start_watcher(self) -> None:
-        if self.watcher_thread is not None:
-            return
+        self.ensure_watcher_running()
 
-        def loop() -> None:
-            while not self.stop_event.is_set():
-                conn = None
-                try:
-                    conn = self.connect()
-                    config = db.get_setting(conn, "usb_watcher", {"enabled": False})
-                    if config.get("enabled"):
-                        usb.scan(conn, self.root)
-                        self.maybe_auto_export()
-                except Exception as exc:  # noqa: BLE001
-                    # This used to be `pass`. A watcher that dies quietly is
-                    # indistinguishable from a watcher with nothing to do, and
-                    # that silence is the defect this project keeps repeating.
-                    category = errlog.record(self.root, "usb_watcher_scan", exc,
-                                             logger=self.log)
-                    self._note_watcher_error(category)
-                finally:
-                    if conn is not None:
-                        conn.close()
+    def ensure_watcher_running(self) -> str:
+        """Start the single watcher worker if it is not already alive.
+
+        The worker is started even when watching is disabled: it polls the
+        setting. That is what lets a logon launch (—watch-usb) against an
+        already-running ordinary server take effect, instead of exiting with a
+        claim that watching started.
+        """
+        with self._watcher_lock:
+            if self.watcher_thread is not None and self.watcher_thread.is_alive():
+                return "already_running"
+            self.stop_event.clear()
+            self._watcher_wake.set()
+            self.watcher_thread = threading.Thread(
+                target=self._watcher_loop, name="fd-usb-watcher", daemon=True)
+            self.watcher_thread.start()
+            return "started"
+
+    def stop_watcher(self, timeout: float = 10.0) -> None:
+        """Stop the worker cooperatively and bound the wait."""
+        self.stop_event.set()
+        self._watcher_wake.set()
+        thread = self.watcher_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout)
+        with self._watcher_lock:
+            self.watcher_thread = None
+
+    def _watcher_setting(self) -> dict[str, Any]:
+        conn = None
+        try:
+            conn = self.connect()
+            return db.get_setting(conn, "usb_watcher", {"enabled": False}) or {}
+        except Exception as exc:  # noqa: BLE001
+            category = errlog.record(self.root, "usb_watcher_settings", exc, logger=self.log)
+            self._note_watcher_error(category)
+            return {"enabled": False}
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def _watcher_loop(self) -> None:
+        while not self.stop_event.is_set():
+            config = self._watcher_setting()
+            if config.get("enabled"):
+                payload, busy = self.run_scan(reason="watcher")
+                if not busy:
+                    self.maybe_auto_export()
+            interval = 45
+            try:
+                interval = int(config.get("interval_s", 45) or 45)
+            except (TypeError, ValueError):
                 interval = 45
-                try:
-                    conn2 = self.connect()
-                    interval = int(db.get_setting(conn2, "usb_watcher", {}).get("interval_s", 45))
-                    conn2.close()
-                except Exception as exc:  # noqa: BLE001
-                    # A bad interval is not worth stopping the watcher over, but
-                    # it is worth saying out loud.
-                    category = errlog.record(self.root, "usb_watcher_settings", exc,
-                                             logger=self.log)
-                    self._note_watcher_error(category)
-                self.stop_event.wait(max(20, interval))
+            # Wake early when watching is toggled; otherwise poll on the interval.
+            self._watcher_wake.wait(timeout=max(20, interval))
+            self._watcher_wake.clear()
 
-        self.watcher_thread = threading.Thread(target=loop, name="fd-usb-watcher", daemon=True)
-        self.watcher_thread.start()
+    def run_scan(self, *, reason: str = "manual") -> tuple[dict[str, Any], bool]:
+        """Run one controller scan, or report busy. Never overlaps another."""
+        if not self._scan_lock.acquire(blocking=False):
+            return {"ok": False, "code": "scan_in_progress", "busy": True}, True
+        conn = None
+        try:
+            with self._state_lock:
+                self._scan_state["scanning"] = True
+                self._scan_state["last_attempt"] = db.now_utc()
+            conn = self.connect()
+            result = usb.scan(conn, self.root)
+            with self._state_lock:
+                self._scan_state["last_success"] = db.now_utc()
+                    
+            payload = result.as_dict()
+            payload["reason"] = reason
+            return payload, False
+        except Exception as exc:  # noqa: BLE001
+            category = errlog.record(self.root, "usb_scan", exc, logger=self.log)
+            with self._state_lock:
+                self._scan_state["last_error"] = {"at": db.now_utc(), "category": category}
+            return {"ok": False, "code": category, "busy": False}, False
+        finally:
+            with self._state_lock:
+                self._scan_state["scanning"] = False
+            if conn is not None:
+                conn.close()
+            self._scan_lock.release()
+
+    def watcher_status(self) -> dict[str, Any]:
+        with self._state_lock:
+            state = dict(self._scan_state)
+        thread = self.watcher_thread
+        return {
+            "running": bool(thread is not None and thread.is_alive()),
+            "scanning": bool(state.get("scanning")),
+            "last_attempt": state.get("last_attempt"),
+            "last_success": state.get("last_success"),
+            "last_error": state.get("last_error"),
+        }
 
     def _note_watcher_error(self, category: str) -> None:
         """Remember the last watcher problem so Settings can show it.
@@ -761,25 +834,38 @@ def api_key_unlock(ctx: Ctx) -> None:
 
 @route("GET", r"/api/usb")
 def api_usb(ctx: Ctx) -> None:
-    _send_json(ctx.handler, usb.status(ctx.conn, ctx.app.root))
+    payload = usb.status(ctx.conn, ctx.app.root)
+    payload["runtime"] = ctx.app.watcher_status()
+    _send_json(ctx.handler, payload)
 
 
 @route("POST", r"/api/usb/scan")
 def api_usb_scan(ctx: Ctx) -> None:
-    result = usb.scan(ctx.conn, ctx.app.root)
+    payload, busy = ctx.app.run_scan(reason="manual")
+    if busy:
+        _send_json(ctx.handler, payload, 409)
+        return
     ctx.app.maybe_auto_export()
-    payload = result.as_dict()
     payload["state"] = views.state(ctx.conn)
     payload["status_detail"] = usb.status(ctx.conn)
+    payload["runtime"] = ctx.app.watcher_status()
     _send_json(ctx.handler, payload)
 
 
 @route("POST", r"/api/usb/watcher")
 def api_usb_watcher(ctx: Ctx) -> None:
     body = ctx.json_body()
-    value = usb.set_watcher(ctx.conn, bool(body.get("enabled")),
-                            int(body.get("interval_s") or 45))
-    _send_json(ctx.handler, {"ok": True, "watcher": value})
+    enabled = bool(body.get("enabled"))
+    value = usb.set_watcher(ctx.conn, enabled, int(body.get("interval_s") or 45))
+    # The setting alone does nothing. Reconcile the worker in this process now,
+    # so enabling actually starts scanning and disabling actually stops it.
+    if enabled:
+        ctx.app.ensure_watcher_running()
+        ctx.app._watcher_wake.set()
+    else:
+        ctx.app.stop_watcher()
+    _send_json(ctx.handler, {"ok": True, "watcher": value,
+                             "runtime": ctx.app.watcher_status()})
 
 
 @route("POST", r"/api/usb/logon")
