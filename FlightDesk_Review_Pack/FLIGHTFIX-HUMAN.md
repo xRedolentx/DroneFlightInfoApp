@@ -211,7 +211,8 @@ H09 (confirm the two unreadable originals are preserved).
 
 **Next owner action (ordered).**
 1. Run `python tools\check_env.py` on the Windows machine, then
-   `python -m flightdesk selftest` and confirm 536/0.
+   `python -m flightdesk selftest` and confirm 548/0, or `python tools\run_tests.py`
+   for the tiered view (a missing parser shows as NOT RUN, not as a pass).
 2. Create a backup and restore it into a fresh, non-active folder; open it and
    check a few flights, then keep or discard it (H04).
 3. Plug in each controller separately and run **Verify / re-read logs** once;

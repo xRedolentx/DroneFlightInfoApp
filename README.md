@@ -136,8 +136,11 @@ Windows account, and anyone who can read the backup as you can use the key.
   corroborate. Both are kept; the extra one is excluded from totals until you
   resolve it on the Import page.
 - **Run the checks yourself.** `python -m flightdesk selftest` runs the full
-  suite. `python tools\rehearse.py` runs an end-to-end backup/restore rehearsal
-  on a throwaway data root.
+  suite. `python tools\run_tests.py` runs it in tiers and says what actually
+  ran — a test tier whose prerequisite is missing (for example the pinned
+  parser) reports **NOT RUN**, never a pass, and release readiness fails while
+  a mandatory tier could not run. `python tools\rehearse.py` runs an end-to-end
+  backup/restore rehearsal on a throwaway data root.
 
 ## Removing it
 

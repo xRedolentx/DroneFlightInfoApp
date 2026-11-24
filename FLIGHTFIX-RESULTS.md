@@ -18,7 +18,8 @@ components present.
 implemented.** This is deliberately not one of the three final labels: the
 queue says not to call a batch complete while runnable software work remains,
 and merging two confirmed variants is still unbuilt. Everything that was built
-is verified by the checks below, including a live browser session.
+is verified by the checks below, including a live browser session and a tiered
+run that reports NOT RUN rather than a false pass.
 
 Findings:
 
@@ -35,11 +36,13 @@ Findings:
 - **F11** first capture ignored captured limits — fixed (P07).
 - **F12** reparse dry run could not work — fixed (P08).
 - **F13** enabling the watcher started nothing — fixed (P09).
-- **F14** USB header plausibility mistaken for completeness — **partial** (P10):
-  the Python contract now requires completion evidence, retains unverified bytes
-  and offers a verify/re-read mode, but the PowerShell collector does not yet
-  emit `size_known`/`sha256_match`, and two-read hashing on hardware is
-  unverified.
+- **F14** USB header plausibility mistaken for completeness — **code complete,
+  hardware unverified** (P10): the Python contract requires completion evidence,
+  retains unverified bytes and offers a verify/re-read mode, **and the collector
+  now emits the evidence**: `size_known` per file, and for an unknown-size (MTP)
+  source a second independent read whose hash must match (`sha256_match`). A
+  mismatch is reported, kept and retried, never imported as though complete.
+  What remains is proof on real hardware (H03): two reads against a controller.
 - **F15** “Keep / merge” was a dead end — **partial** (P11a): a real
   review/keep-separate/exclude workflow with a stored, reversible decision
   replaces it. **P11b (merge confirmed variants) is not implemented.**
@@ -50,19 +53,24 @@ rules make one root insufficient: a demo root supplies tracks but refuses real
 imports, so the import path runs on an ordinary root and the refusal is asserted
 deliberately.
 
-- `tools\ui_gate.ps1` → **109 checks, 0 failures** across four passes:
-  `demo-full` 82, `ordinary-import` 12, `demo-refusal` 5, `identity` 10.
-- Clicking found a defect the static pins had missed: a demo root's refusal of a
-  real ZIP rendered as `Import note: demo_root_requires_separate_root`. It now
-  reads as a sentence explaining the separate-root rule.
-- Q05 (unknown air time) is still pinned statically only: neither synthetic root
-  produces a record with unmeasurable time.
+- `tools\ui_gate.ps1` → **111 checks, 0 failures** across four passes:
+  `demo-full` 82, `ordinary-import` 12, `demo-refusal` 5, `identity` 12.
+- Clicking found two defects the static pins had missed: a demo root's refusal of
+  a real ZIP rendered as `Import note: demo_root_requires_separate_root`, and the
+  gate's own `goto` did not re-render when asked for the route it was already on,
+  so a check inspected the page as it was before the action. Both are fixed.
+- Q05 is now clicked, not just pinned: the identity pass imports a record with no
+  readable duration and the flight list shows `— unknown`, never zero.
 
 ## Commands and outcomes
 
-- `python -m flightdesk selftest` → **537 tests, 0 failures, 0 errors, 0 skipped**.
-- `powershell -ExecutionPolicy Bypass -File tools\ui_gate.ps1` → **109 checks,
-  0 failures** (82 demo UI / 12 ordinary import / 5 demo refusal / 10 identity).
+- `python -m flightdesk selftest` → **548 tests, 0 failures, 0 errors, 0 skipped**.
+- `python tools\run_tests.py` → domain **235** + parser **313**, both PASS, browser
+  NOT RUN (separate command), **release readiness PASS**. With the pinned parser
+  hidden: domain 235 PASS, parser NOT RUN, readiness **FAIL** (exit 3) — the
+  failure mode the tier split exists to expose.
+- `powershell -ExecutionPolicy Bypass -File tools\ui_gate.ps1` → **111 checks,
+  0 failures** (82 demo UI / 12 ordinary import / 5 demo refusal / 12 identity).
 - `python tools\rehearse.py` → **13/13 steps**, including restore into a fresh
   root, matching totals and maintenance statuses, and two independent backups.
 - `python tools\fault_check.py` → disk-full backup rejected and cleaned up;
@@ -112,9 +120,9 @@ deliberately.
 ## Unresolved software work
 
 - **P11b** merge of confirmed variants (needs an owner conflict policy, H07).
-- **P13** test-suite tier split; `check_env.py` covers the setup half only.
-- **F14** the collector does not yet emit transfer-completion evidence.
-- **Q05** browser evidence for the unknown-time label (static pin only).
+- **F14** hardware proof of the two-read completion check (H03).
+- Nothing else software-side: the tier split, the environment check and the
+  browser gate are done.
 
 ## Release gates still owned by Kevin
 

@@ -130,5 +130,42 @@ class OffsetClassificationTest(unittest.TestCase):
                                               "sha256_match": True})[0], True)
 
 
+class CollectorEvidenceContractTest(unittest.TestCase):
+    """The PowerShell collector must emit the evidence the strict path reads.
+
+    This cannot prove MTP behaviour — only a controller can (H03). It does pin
+    that the collector reports whether a size was known and whether two reads
+    agreed, so the app's strict path is not permanently dormant for want of a
+    field.
+    """
+
+    def setUp(self) -> None:
+        self.script = (Path(__file__).resolve().parent.parent / "tools" /
+                       "Collect-DjiLogs.ps1").read_text(encoding="utf-8")
+
+    def test_every_file_entry_carries_the_evidence_fields(self) -> None:
+        self.assertIn("size_known = $true", self.script)
+        self.assertIn("size_known = $false", self.script)
+        self.assertIn("sha256_match = $true", self.script)
+        self.assertIn("sha256_match = $match", self.script)
+
+    def test_an_unknown_size_takes_a_second_independent_read(self) -> None:
+        # One copy cannot prove completion. The collector must copy twice and
+        # compare hashes.
+        self.assertIn("Copy-DeviceItem", self.script)
+        self.assertIn("repeated_read_mismatch", self.script)
+        self.assertIn("second_read_failed", self.script)
+
+    def test_a_size_mismatch_is_still_refused(self) -> None:
+        self.assertIn("size_mismatch", self.script)
+
+    def test_a_mismatched_read_is_reported_not_dropped(self) -> None:
+        # The bytes are reported so the app retains them as unverified and
+        # retryable, rather than discarding an observation.
+        index = self.script.index("repeated_read_mismatch")
+        after = self.script[index:index + 700]
+        self.assertIn("files.Add", after)
+
+
 if __name__ == "__main__":
     unittest.main()

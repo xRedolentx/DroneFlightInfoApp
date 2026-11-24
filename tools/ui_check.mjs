@@ -145,7 +145,19 @@ async function shot(name, width, height) {
   return file;
 }
 async function goto(hash) {
-  await evaluate(`location.hash = ${JSON.stringify(hash)}; true`);
+  // Setting the hash to the value it already holds fires no hashchange, so a
+  // second goto to the same route left the old DOM in place: a check then
+  // inspected the page as it was before the action it was testing. Measured by
+  // the Q05 check, which re-navigated to #/flights after an upload.
+  await evaluate(`(() => {
+    const target = ${JSON.stringify(hash)};
+    if (location.hash === target) {
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    } else {
+      location.hash = target;
+    }
+    return true;
+  })()`);
   await new Promise((r) => setTimeout(r, 900));
 }
 
@@ -437,8 +449,8 @@ check("undo removes the owner record from completed",
 }
 
 skip("Q05 an unknown air time reads 'unknown'",
-  "needs a record with no measurable time; neither synthetic root produces one " +
-  "(pinned by tests/test_ui_small_fixes.py)");
+  "checked in the identity pass, which imports a record with no readable " +
+  "duration; the demo root cannot produce one");
 
 // --- units -----------------------------------------------------------------
 await goto("#/flights");
@@ -825,6 +837,24 @@ if (identityOnly) {
     check("identity: an unreadable log is kept as a record, not dropped",
       upload && upload.totals && (upload.totals.new || 0) >= 1,
       JSON.stringify(upload && upload.totals));
+
+    // Q05: this record has no readable duration and no measured air time. The
+    // flight list must say "unknown", never a bare dash the owner could read as
+    // zero.
+    await goto("#/flights");
+    await waitFor("document.querySelectorAll('.record').length > 0", 20000);
+    const unknownAir = await evaluate(`(() => {
+      for (const row of document.querySelectorAll('.record')) {
+        const air = row.querySelector('.metrics span');
+        if (air && /unknown/i.test(air.innerText)) return air.innerText.trim();
+      }
+      return null;
+    })()`);
+    check("Q05 a record with unmeasurable time reads 'unknown'",
+      Boolean(unknownAir), String(unknownAir));
+    check("Q05 it is not presented as zero",
+      !/^\s*0\s*s?\s+unknown/i.test(String(unknownAir || "")), String(unknownAir));
+    await shot("identity-00-unknown-time-1366", 1366, 900);
 
     await goto("#/import");
     const offered = await waitFor(

@@ -69,7 +69,7 @@ no private records were read.
 ## Current batch / next runnable batch
 
 - Current batch: **P14 — DONE**
-- Next runnable batch: **none left in this session.** Remaining software: P11b (merge, needs H07), P13 tier split, F14 collector evidence. Owner gates: H01–H09.
+- Next runnable batch: **none left in this session.** Remaining software: P11b (merge, needs H07). Remaining evidence: F14 on hardware (H03). Owner gates: H01–H09.
 
 ## Batch table
 
@@ -90,7 +90,7 @@ Statuses: `TODO` `IN_PROGRESS` `DONE` `PARTIAL` `BLOCKED` `WAITING_DEPENDENCY` `
 | P10 | DONE | `flightdesk/usb.py`, `flightdesk/server.py`, `tests/test_usb_completeness.py` | selftest **517 / 0 failures**; unknown-size copies need matching reads, incomplete bytes are retained and retried, verify mode bypasses the skip, offset-past-prefix is a truncated copy | (this checkpoint) | PowerShell collector unchanged (no evidence fields yet); hardware completion is H03 |
 | P11 | PARTIAL | `flightdesk/identity.py`, `flightdesk/db.py`, `flightdesk/views.py`, `flightdesk/server.py`, `flightdesk/importer.py`, `flightdesk/web/app.js`, `tests/test_identity_review.py` | selftest **525 / 0 failures**; evidence review, keep-separate/exclude, undo, reparse persistence, API round-trip, static label all pass | (this checkpoint) | **P11b merge is not implemented.** The doc permits shipping an honest review/keep-separate workflow and recording merge as unfinished; do not call the full batch DONE |
 | P12 | DONE | `flightdesk/web/app.js`, `tools/ui_check.mjs`, `tools/ui_gate.ps1`, `tests/test_ui_small_fixes.py` | selftest **537 / 0 failures**; live Edge gate **109 checks, 0 failures** across four passes (82 demo UI / 12 import / 5 demo refusal / 10 identity) | (this checkpoint) | Q05's unknown-time label is pinned statically only: neither synthetic root produces a record with unmeasurable time |
-| P13 | PARTIAL | `tools/check_env.py`, `tests/test_env_check.py`, `README.md` | selftest **536 / 0 failures**; check reports every component and fails closed when the parser is absent | (this checkpoint) | the test suite is **not split into tiers**; `check_env` covers the reproducible-setup half, the tier split is recorded for P14 |
+| P13 | DONE | `tools/check_env.py`, `tools/run_tests.py`, `tests/test_env_check.py`, `tests/test_tier_runner.py`, `README.md` | selftest **548 / 0 failures**; tiers: domain 235 PASS, parser 313 PASS, readiness PASS; with the parser hidden, parser is NOT RUN and readiness FAILs (3) | (this checkpoint) | none |
 | P14 | DONE | `FLIGHTFIX-RESULTS.md`, `FlightDesk_Review_Pack/FLIGHTFIX-HUMAN.md`, `CHECKPOINT.md`, `FLIGHTFIX-STATE.md` | final commit `efcc5a0`; selftest 536/0; rehearse 13/13; fault_check clean; recon 11/11; check_env ok | `efcc5a0` | **PARTIAL overall** — P11b merge, P12 browser gate and P13 tier split remain |
 | H02 | OPEN | — | — | — | owner runs Windows/parser suite on repaired commit |
 
@@ -115,7 +115,7 @@ compaction and restarts.
 | F11 first capture ignored captured limits | 0 (fixed on first attempt) | Hypotheses: (a) rules were created with defaults before the snapshot pass; (b) the existing-row branch never updated limits. Change: existing-row path applies captured limits unless `owner_limits`; `set_rule_policy` marks `owner_limits=1` on a threshold change. 2 new tests + calendar-baseline case. | `test_first_capture_applies_the_captured_limit`, `test_a_later_capture_preserves_an_owner_edited_limit` |
 | F12 reparse dry run could not work | 0 (fixed on first attempt) | Hypothesis: the tool opened a read-only connection and called the mutating importer. Change: dry run copies the DB and simulates on the copy; apply requires `--root` and a matching `--expect-revision`; resume cursor; success resets consecutive failures; sanitized JSON. 6 new tests. | `test_dry_run_reports_deltas_and_writes_nothing`, `test_apply_with_the_preview_revision_matches_it` |
 | F13 enabling the watcher started nothing | 0 (fixed on first attempt) | Hypotheses: (a) the setting route stored a Boolean only; (b) the launcher never started a worker; (c) a logon launch against a running server exited claiming success. Change: one idle worker that polls the setting and wakes on toggle, cooperative stop, per-root scan lock with visible busy status, runtime state separate from configured state, launcher enables via the shared setting. 9 new tests. | `test_enabling_starts_a_worker_that_scans`, `test_manual_and_scheduled_scans_do_not_overlap`, `test_the_toggle_controls_a_live_worker` |
-| F14 USB header plausibility mistaken for completeness | 1 attempt, partial by design | Hypothesis: a stable size plus a complete header is treated as a finished copy, and a name+size skip cannot see changed bytes. Change: `_entry_complete` requires a known size or a matching second read; unverified bytes are retained under `tmp/usb-unverified` and retried, never indexed; `verify=True` bypasses the skip; an offset past the received prefix is `copy_truncated`, a zero offset stays a damaged original. 8 new tests. **Not done:** the PowerShell collector does not yet emit the evidence; hardware two-read proof deferred to **H03**. | `test_an_unknown_size_without_matching_reads_is_unverified`, `test_verify_mode_bypasses_the_name_size_skip` |
+| F14 USB header plausibility mistaken for completeness | 2nd attempt: code complete | Attempt 1 (P10) fixed the Python contract. Attempt 2 adds the evidence the contract waits for: the collector reports `size_known` per file and, for unknown-size MTP sources, takes a second independent read and requires matching hashes; a mismatch is reported and retained. The copy loop was factored into `Copy-DeviceItem` with a structural minimum check kept as a prefilter. 4 new contract tests. **Remaining:** two-read behaviour on real hardware (H03). | `test_every_file_entry_carries_the_evidence_fields`, `test_an_unknown_size_takes_a_second_independent_read`
 | Q01–Q05 small UI corrections | 0 (fixed statically; then clicked) | Hypotheses: Q01 claimed a save it could not observe; Q02 had no request generation guard; Q03 showed configured state only; Q04 allowed a double submit; Q05 showed a dash for unknown. Change: wording, `state.renderSeq`, runtime state + verify button, pending-disable in modals, `unknown` label. Live Edge gate then found a real defect the static pins missed: the P01 demo refusal rendered as `Import note: demo_root_requires_separate_root`. Fixed with a plain-language reason. | Four gate passes green; the raw-code defect exists only because the gate clicked the refusal |
 | F15 Keep/merge was a dead end | 0 (fixed for P11a; P11b deliberately not built) | Hypothesis: the button navigated to Details with no mutation behind it. Change: `identity` module with evidence, candidate shortlist, persisted reversible `identity_decisions`, keep-separate/exclude/include, reparse protection, routes and a real modal. 8 new tests. **Not done:** merge of confirmed variants (P11b) — it discards separate history when wrong and needs owner conflict policy (H07). | `test_keep_separate_makes_the_record_authoritative`, `test_a_decision_is_reversible` |
 
@@ -257,7 +257,9 @@ compaction and restarts.
   `demo_root_requires_separate_root`; it now shows a plain-language reason.
   The gate has four modes because the rules make one root insufficient: a demo
   root provides tracks but refuses real imports, so the import path runs on an
-  ordinary root and the refusal is asserted deliberately.
+  ordinary root and the refusal is asserted deliberately. Q05 is now clicked:
+  the identity pass imports a record with no readable duration and the list
+  shows `— unknown`.
 
 ## Pending human IDs
 
@@ -299,8 +301,9 @@ re-asked):
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
 git switch flightfix/repairs
-python -m flightdesk selftest      # expect 537 tests, 0 failures
-powershell -ExecutionPolicy Bypass -File tools\ui_gate.ps1   # 4 passes, 109 checks
+python -m flightdesk selftest      # expect 548 tests, 0 failures
+python tools\run_tests.py         # tiers: domain+parser PASS, readiness PASS
+powershell -ExecutionPolicy Bypass -File tools\ui_gate.ps1   # 4 passes, 111 checks
 ```
 
-Smallest next action: none without the owner. When resuming, read `FLIGHTFIX-RESULTS.md` and the final handoff in `FlightDesk_Review_Pack/FLIGHTFIX-HUMAN.md`, then continue the first unfinished item (P11b merge, or P13 tiers) rather than restarting the queue.
+Smallest next action: none without the owner. The only unfinishable item is P11b (merge), which needs the conflict policy in H07; F14 needs hardware (H03). When resuming, read `FLIGHTFIX-RESULTS.md` rather than restarting the queue.

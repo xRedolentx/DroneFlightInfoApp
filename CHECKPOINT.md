@@ -430,11 +430,13 @@ air time. Measured properly the two agree to 0.1 minutes.
 
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
-python -m flightdesk selftest          # expect: 407 tests, 0 failures
+python tools\check_env.py             # expect: all mandatory components present
+python -m flightdesk selftest          # expect: 548 tests, 0 failures
+python tools\run_tests.py              # tiers; a missing prerequisite reads NOT RUN
 python tools\fault_check.py            # expect: disk_full; restore survives
 python tools\recon_check.py            # expect: 11/11
 python tools\real_file_check.py        # your own logs vs AirData (may skip)
-python tools\reparse_all.py            # re-read originals (dry run)
+python tools\reparse_all.py --root <folder> --json   # dry run, writes nothing
 flightdesk.cmd                          # or: python -m flightdesk serve
 ```
 
@@ -447,8 +449,9 @@ powershell -ExecutionPolicy Bypass -File tools\ui_gate.ps1
 It runs four passes over throwaway roots and starts/stops its own server and
 headless Edge on each: `demo-full` (82 checks, demo data for tracks), `ordinary-import`
 (12, a real ZIP into an ordinary root), `demo-refusal` (5, the same ZIP into a demo
-root, which must be refused) and `identity` (10, the Review-identity flow on a
-forged unreadable log). Last run: **109 checks, 0 failures**.
+root, which must be refused) and `identity` (12, the Review-identity flow on a
+forged unreadable log, plus the `— unknown` air-time label). Last run:
+**111 checks, 0 failures**.
 
 Four passes exist because of a rule this build now enforces: **a demo root refuses
 real log imports.** The old single-pass recipe (seed-demo, then upload the ZIP to

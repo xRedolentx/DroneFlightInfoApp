@@ -109,6 +109,61 @@ function Find-Subfolder($start, [string[]]$segments) {
     return $cur
 }
 
+# Stage one device item into a fresh folder and wait for a defensible end of
+# transfer. Returns a hashtable { file = FileInfo or $null; reason = string }.
+#
+# Known size: the copy is finished when the length equals the size the device
+# declared. Unknown size (MTP items report .Size = 0): a stable length is NOT
+# proof — a stalled copy is stable too — so the caller must take a second
+# independent read and compare hashes before calling it complete.
+function Copy-DeviceItem($shell, $item, [string]$stagingRoot, $size, [int]$timeoutSeconds) {
+    $dest = Join-Path $stagingRoot ([guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    $destFolder = $shell.NameSpace($dest)
+    if ($null -eq $destFolder) { return @{ file = $null; reason = 'staging_folder_unavailable' } }
+    try {
+        # CopyHere copies INTO the Folder it is called on. Calling it on the
+        # source folder is a silent no-op that returns in ~20 ms and writes
+        # nothing — measured: 0 bytes staged after 800 s.
+        $destFolder.CopyHere($item, 0x14)
+    } catch {
+        return @{ file = $null; reason = 'copy_start_failed' }
+    }
+    $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+    $stableLen = -1
+    $stableSince = Get-Date
+    while ((Get-Date) -lt $deadline) {
+        # CopyHere is asynchronous and needs its thread to pump messages.
+        try { [System.Windows.Forms.Application]::DoEvents() } catch { }
+        Start-Sleep -Milliseconds 150
+        $candidates = @(Get-ChildItem -LiteralPath $dest -File -ErrorAction SilentlyContinue)
+        if ($candidates.Count -eq 0) { continue }
+        $candidate = $candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        try { $candidate.Refresh() } catch { }
+        if ($null -ne $size) {
+            if ($candidate.Length -eq $size) { return @{ file = $candidate; reason = 'ok' } }
+            continue
+        }
+        $lenNow = [int64]$candidate.Length
+        if ($lenNow -ne $stableLen) {
+            $stableLen = $lenNow
+            $stableSince = Get-Date
+        }
+        if ($stableLen -gt 0 -and ((Get-Date) - $stableSince).TotalSeconds -ge 3) {
+            # Stable is not finished. A copy that is too short to hold the block
+            # its own header points at is a stall, not a short file, so reject
+            # it here. A stable copy that is long enough is still only a
+            # candidate: the caller hashes it and takes a second read.
+            $minLen = Get-MinimumPlausibleLength $candidate.FullName
+            if ($minLen -gt 0 -and $stableLen -lt $minLen) {
+                return @{ file = $null; reason = 'copy_unverified' }
+            }
+            return @{ file = $candidate; reason = 'stable_unverified' }
+        }
+    }
+    return @{ file = $null; reason = 'copy_timeout_or_empty' }
+}
+
 Add-Type -AssemblyName System.Windows.Forms | Out-Null
 
 try {
@@ -189,81 +244,17 @@ try {
                         $size = Get-ItemSize $item
                     }
                     $key = "$deviceName|$name|$size"
-                    if ($seen.ContainsKey($key)) { continue }                    $seen[$key] = $true
-                    $dest = Join-Path $StagingRoot ([guid]::NewGuid().ToString('N'))
-                    New-Item -ItemType Directory -Force -Path $dest | Out-Null
-                    # CopyHere copies INTO the Folder it is called on. Calling it
-                    # on the source folder — as this collector did — is a silent
-                    # no-op: it returns in ~20 ms and nothing is written. Measured
-                    # on a Smart Controller: 0 bytes staged after 800 s. The
-                    # destination must be a Folder object for the new directory.
-                    $destFolder = $shell.NameSpace($dest)
-                    if ($null -eq $destFolder) {
-                        $result.errors += @{ device = $deviceName; name = $name; code = 'staging_folder_unavailable' }
-                        continue
-                    }
-                    try {
-                        $destFolder.CopyHere($item, 0x14)
-                    } catch {
-                        $result.errors += @{ device = $deviceName; name = $name; code = 'copy_start_failed' }
-                        continue
-                    }
-                    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-                    $copied = $null
-                    $unverified = $false
-                    $stableLen = -1
-                    $stableSince = Get-Date
-                    while ((Get-Date) -lt $deadline) {
-                        # CopyHere is asynchronous and needs its thread to pump
-                        # messages; without this the transfer never advances.
-                        try { [System.Windows.Forms.Application]::DoEvents() } catch { }
-                        Start-Sleep -Milliseconds 150
-                        $candidates = @(Get-ChildItem -LiteralPath $dest -File -ErrorAction SilentlyContinue)
-                        if ($candidates.Count -eq 0) { continue }
-                        $candidate = $candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-                        if ($null -ne $size) {
-                            # The size is known, so the copy is finished when it
-                            # matches. Without this the collector waited two
-                            # seconds per file to prove stability, which on a
-                            # 250-log controller is ten minutes for nothing.
-                            try { $candidate.Refresh() } catch { }
-                            if ($candidate.Length -eq $size) { $copied = $candidate; break }
-                            continue
-                        }
-                        # Size unknown: require the length to stop changing for
-                        # three seconds AND to be long enough to hold the block
-                        # its own header points at.
-                        try { $candidate.Refresh() } catch { }
-                        $lenNow = [int64]$candidate.Length
-                        if ($lenNow -ne $stableLen) {
-                            $stableLen = $lenNow
-                            $stableSince = Get-Date
-                        }
-                        if ($stableLen -gt 0 -and ((Get-Date) - $stableSince).TotalSeconds -ge 3) {
-                            $minLen = Get-MinimumPlausibleLength $candidate.FullName
-                            if ($minLen -gt 0 -and $stableLen -ge $minLen) {
-                                $copied = $candidate
-                                break
-                            }
-                            # Stable but too short to contain its own details
-                            # block: a stalled copy, not a finished one.
-                            $unverified = $true
-                            break
-                        }
-                    }
+                    if ($seen.ContainsKey($key)) { continue }
+                    $seen[$key] = $true
+                    $sizeKnown = ($null -ne $size)
+                    $first = Copy-DeviceItem $shell $item $StagingRoot $size $TimeoutSeconds
+                    $copied = $first.file
                     if ($null -eq $copied) {
-                        if ($unverified -or ($null -eq $size -and $stableLen -gt 0)) {
-                            # The device would not report a size and the staged
-                            # bytes cannot be shown to be complete. Say so rather
-                            # than hand the archive a truncated file.
-                            $result.errors += @{ device = $deviceName; name = $name; code = 'copy_unverified' }
-                        } else {
-                            $result.errors += @{ device = $deviceName; name = $name; code = 'copy_timeout_or_empty' }
-                        }
+                        $code = if ($first.reason -eq 'stable_unverified') { 'copy_unverified' } else { $first.reason }
+                        $result.errors += @{ device = $deviceName; name = $name; code = $code }
                         $consecutiveFailures++
                         # One stuck copy must not cost 60 s x 250 files. Three in
-                        # a row means the transfer path itself is broken, and the
-                        # honest answer is to stop and say so.
+                        # a row means the transfer path itself is broken.
                         if ($consecutiveFailures -ge 3) {
                             $result.errors += @{ device = $deviceName; code = 'copy_not_progressing' }
                             $abort = $true
@@ -271,21 +262,65 @@ try {
                         }
                         continue
                     }
-                    $consecutiveFailures = 0
-                    if ($null -ne $size -and $copied.Length -ne $size) {
-                        $result.errors += @{ device = $deviceName; name = $name; code = 'size_mismatch' }
-                        continue
-                    }
                     $hash = (Get-FileHash -LiteralPath $copied.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-                    [void]$files.Add([ordered]@{
-                        device = $deviceName
-                        target = $target.label
-                        storage = [string]$storage.Name
-                        source_name = $name
-                        staged_path = $copied.FullName
-                        size = [int64]$copied.Length
-                        sha256 = $hash
-                    })
+                    if (-not $sizeKnown) {
+                        # Unknown size: one copy proves nothing about completion.
+                        # Take a second independent read and require the two
+                        # hashes to agree. Two transfers that stalled at
+                        # different points hash differently; a finished copy
+                        # hashes the same both times.
+                        $second = Copy-DeviceItem $shell $item $StagingRoot $size $TimeoutSeconds
+                        if ($null -eq $second.file) {
+                            $result.errors += @{ device = $deviceName; name = $name; code = 'second_read_failed' }
+                            # Keep the first copy, marked unverified, so the app
+                            # can retain its bytes and retry rather than losing
+                            # what did arrive.
+                            [void]$files.Add([ordered]@{
+                                device = $deviceName; target = $target.label
+                                storage = [string]$storage.Name; source_name = $name
+                                staged_path = $copied.FullName; size = [int64]$copied.Length
+                                sha256 = $hash; size_known = $false; sha256_match = $false
+                            })
+                            $consecutiveFailures++
+                            if ($consecutiveFailures -ge 3) {
+                                $result.errors += @{ device = $deviceName; code = 'copy_not_progressing' }
+                                $abort = $true
+                            }
+                            continue
+                        }
+                        $hash2 = (Get-FileHash -LiteralPath $second.file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                        $match = ($hash -eq $hash2)
+                        # Report the shorter of the two: a truncated read is the
+                        # half that must not be trusted.
+                        if ($second.file.Length -lt $copied.Length) { $copied = $second.file; $hash = $hash2 }
+                        try { Remove-Item -LiteralPath (Split-Path -Parent $second.file.FullName) -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+                        if (-not $match) {
+                            $result.errors += @{ device = $deviceName; name = $name; code = 'repeated_read_mismatch' }
+                        }
+                        [void]$files.Add([ordered]@{
+                            device = $deviceName; target = $target.label
+                            storage = [string]$storage.Name; source_name = $name
+                            staged_path = $copied.FullName; size = [int64]$copied.Length
+                            sha256 = $hash; size_known = $false; sha256_match = $match
+                        })
+                        if ($match) { $consecutiveFailures = 0 } else { $consecutiveFailures++ }
+                        if ($consecutiveFailures -ge 3) {
+                            $result.errors += @{ device = $deviceName; code = 'copy_not_progressing' }
+                            $abort = $true
+                        }
+                    } else {
+                        if ($copied.Length -ne $size) {
+                            $result.errors += @{ device = $deviceName; name = $name; code = 'size_mismatch' }
+                            continue
+                        }
+                        $consecutiveFailures = 0
+                        [void]$files.Add([ordered]@{
+                            device = $deviceName; target = $target.label
+                            storage = [string]$storage.Name; source_name = $name
+                            staged_path = $copied.FullName; size = [int64]$copied.Length
+                            sha256 = $hash; size_known = $true; sha256_match = $true
+                        })
+                    }
                     if ($abort) { break }
                     if ($MaxFilesPerRun -gt 0 -and $files.Count -ge $MaxFilesPerRun) {
                         # Bounded progress: report what was copied and let the
