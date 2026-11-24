@@ -69,7 +69,7 @@ no private records were read.
 ## Current batch / next runnable batch
 
 - Current batch: **P11a — DONE**; P11b (merge) not implemented
-- Next runnable batch: **P13 — Reproducible setup and meaningful test tiers**
+- Next runnable batch: **P14 — Integration, release evidence and human handoff**
 
 ## Batch table
 
@@ -90,7 +90,7 @@ Statuses: `TODO` `IN_PROGRESS` `DONE` `PARTIAL` `BLOCKED` `WAITING_DEPENDENCY` `
 | P10 | DONE | `flightdesk/usb.py`, `flightdesk/server.py`, `tests/test_usb_completeness.py` | selftest **517 / 0 failures**; unknown-size copies need matching reads, incomplete bytes are retained and retried, verify mode bypasses the skip, offset-past-prefix is a truncated copy | (this checkpoint) | PowerShell collector unchanged (no evidence fields yet); hardware completion is H03 |
 | P11 | PARTIAL | `flightdesk/identity.py`, `flightdesk/db.py`, `flightdesk/views.py`, `flightdesk/server.py`, `flightdesk/importer.py`, `flightdesk/web/app.js`, `tests/test_identity_review.py` | selftest **525 / 0 failures**; evidence review, keep-separate/exclude, undo, reparse persistence, API round-trip, static label all pass | (this checkpoint) | **P11b merge is not implemented.** The doc permits shipping an honest review/keep-separate workflow and recording merge as unfinished; do not call the full batch DONE |
 | P12 | PARTIAL | `flightdesk/web/app.js`, `tests/test_ui_small_fixes.py` | selftest **532 / 0 failures**; static pins for Q01-Q05 pass | (this checkpoint) | **browser gate not run this session** (needs a live Edge + server); behaviour is asserted statically, not clicked. Recorded for P14 |
-| P13 | TODO | — | — | — | none |
+| P13 | PARTIAL | `tools/check_env.py`, `tests/test_env_check.py`, `README.md` | selftest **536 / 0 failures**; check reports every component and fails closed when the parser is absent | (this checkpoint) | the test suite is **not split into tiers**; `check_env` covers the reproducible-setup half, the tier split is recorded for P14 |
 | P14 | TODO | — | — | — | all runnable batches addressed |
 | H02 | OPEN | — | — | — | owner runs Windows/parser suite on repaired commit |
 
@@ -294,9 +294,9 @@ re-asked):
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
 git switch flightfix/repairs
-python -m flightdesk selftest      # expect 532 tests, 0 failures at P12
+python -m flightdesk selftest      # expect 536 tests, 0 failures at P13
 ```
 
-Smallest next action: read P13 in `FlightDesk_Review_Pack/FLIGHTFIX.md`, then add a bounded setup/check command and honest test tiers.
+Smallest next action: read P14 in `FlightDesk_Review_Pack/FLIGHTFIX.md`, then write FLIGHTFIX-RESULTS.md and return the human checklist.
 
-If the host forces a stop: verify `git status` is clean, push, then resume at P13.
+If the host forces a stop: verify `git status` is clean, push, then resume at P14.

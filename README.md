@@ -29,6 +29,16 @@ runs; closing it stops the server.
 Requirements: Windows 10/11 and Python 3.11+ on `PATH`. Everything else is
 already installed under `%LOCALAPPDATA%\FlightDesk`.
 
+**Check the machine first** (changes nothing):
+
+```powershell
+python tools\check_env.py          # or --json for machine-readable output
+```
+
+It reports Python, SQLite, the pinned parser, the keychain decoder and
+PowerShell, and exits non-zero when something mandatory is missing. It never
+downloads or installs anything: setup is a separate, explicit action.
+
 The first screen offers two choices:
 
 - **Import my logs** — pick your handoff ZIP, an extracted folder, or a single
