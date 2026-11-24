@@ -68,8 +68,8 @@ no private records were read.
 
 ## Current batch / next runnable batch
 
-- Current batch: **P11a — DONE**; P11b (merge) not implemented
-- Next runnable batch: **P14 — Integration, release evidence and human handoff**
+- Current batch: **P14 — DONE**
+- Next runnable batch: **none left in this session.** Remaining software: P11b (merge, needs H07), P12 browser gate, P13 tier split, F14 collector evidence. Owner gates: H01–H09.
 
 ## Batch table
 
@@ -91,7 +91,7 @@ Statuses: `TODO` `IN_PROGRESS` `DONE` `PARTIAL` `BLOCKED` `WAITING_DEPENDENCY` `
 | P11 | PARTIAL | `flightdesk/identity.py`, `flightdesk/db.py`, `flightdesk/views.py`, `flightdesk/server.py`, `flightdesk/importer.py`, `flightdesk/web/app.js`, `tests/test_identity_review.py` | selftest **525 / 0 failures**; evidence review, keep-separate/exclude, undo, reparse persistence, API round-trip, static label all pass | (this checkpoint) | **P11b merge is not implemented.** The doc permits shipping an honest review/keep-separate workflow and recording merge as unfinished; do not call the full batch DONE |
 | P12 | PARTIAL | `flightdesk/web/app.js`, `tests/test_ui_small_fixes.py` | selftest **532 / 0 failures**; static pins for Q01-Q05 pass | (this checkpoint) | **browser gate not run this session** (needs a live Edge + server); behaviour is asserted statically, not clicked. Recorded for P14 |
 | P13 | PARTIAL | `tools/check_env.py`, `tests/test_env_check.py`, `README.md` | selftest **536 / 0 failures**; check reports every component and fails closed when the parser is absent | (this checkpoint) | the test suite is **not split into tiers**; `check_env` covers the reproducible-setup half, the tier split is recorded for P14 |
-| P14 | TODO | — | — | — | all runnable batches addressed |
+| P14 | DONE | `FLIGHTFIX-RESULTS.md`, `FlightDesk_Review_Pack/FLIGHTFIX-HUMAN.md`, `CHECKPOINT.md`, `FLIGHTFIX-STATE.md` | final commit `efcc5a0`; selftest 536/0; rehearse 13/13; fault_check clean; recon 11/11; check_env ok | `efcc5a0` | **PARTIAL overall** — P11b merge, P12 browser gate and P13 tier split remain |
 | H02 | OPEN | — | — | — | owner runs Windows/parser suite on repaired commit |
 
 ## Attempt ledger
@@ -294,9 +294,7 @@ re-asked):
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
 git switch flightfix/repairs
-python -m flightdesk selftest      # expect 536 tests, 0 failures at P13
+python -m flightdesk selftest      # expect 536 tests, 0 failures at P14 (`efcc5a0`)
 ```
 
-Smallest next action: read P14 in `FlightDesk_Review_Pack/FLIGHTFIX.md`, then write FLIGHTFIX-RESULTS.md and return the human checklist.
-
-If the host forces a stop: verify `git status` is clean, push, then resume at P14.
+Smallest next action: none without the owner. When resuming, read `FLIGHTFIX-RESULTS.md` and the final handoff in `FlightDesk_Review_Pack/FLIGHTFIX-HUMAN.md`, then continue the first unfinished item (P11b merge, P12 browser gate, or P13 tiers) rather than restarting the queue.

@@ -188,6 +188,42 @@ to the live root without the usual preview and approval (H01).
 
 ## Required final handoff
 
+### Final handoff — 2026-11-24, commit `efcc5a0`
+
+**Finished.** P00–P10 and P11a, plus the P12 and P13 work described below, all
+verified by `python -m flightdesk selftest` (536 tests, 0 failures), `tools\rehearse.py`
+(13/13), `tools\fault_check.py`, `tools\recon_check.py` (11/11) and
+`tools\check_env.py`. Findings F01–F13 are fixed; see `FLIGHTFIX-RESULTS.md`.
+
+**Not finished (software).** P11b (merge two confirmed variants) is not built —
+it needs the conflict policy in H07. P12's live browser gate was not run. P13's
+test-suite tier split is not done. F14's PowerShell collector does not yet emit
+transfer-completion evidence, so the strict USB path is dormant on hardware.
+
+**Needed before trusting the archive.** H02 (run the suite on the target
+machine), H04 (a real backup restored into a fresh root with this build), H05
+(5–10 representative log comparisons), H06 (review any mixed/ambiguous records),
+H09 (confirm the two unreadable originals are preserved).
+
+**Can wait.** H08 visual review; the browser gate; the tier split.
+
+**Next owner action (ordered).**
+1. Run `python tools\check_env.py` on the Windows machine, then
+   `python -m flightdesk selftest` and confirm 536/0.
+2. Create a backup and restore it into a fresh, non-active folder; open it and
+   check a few flights, then keep or discard it (H04).
+3. Plug in each controller separately and run **Verify / re-read logs** once;
+   report what the scan says about incomplete or retried files (H03/H09).
+4. If you want a merge of two variants, say which record’s pilot/notes/tags win
+   (H07) before any merge code is written.
+5. No historical repair has been applied. When you want one, ask for a dry-run
+   preview (`python tools\reparse_all.py --root <folder> --json`) and review the
+   counts before approving (H01).
+
+AirData stays active. Nothing here has been applied to the live data root.
+
+---
+
 Before ending the repair run, the agent must update this section with:
 
 - **Finished:** completed software batches and current verified commit.

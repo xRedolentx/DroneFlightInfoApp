@@ -1,5 +1,27 @@
 # CHECKPOINT — resume here
 
+## FLIGHTFIX repair run (2026-11-23 → 24)
+
+The independent FLIGHTFIX review was executed on branch `main` and pushed to
+`origin` (`git@github.com:xRedolentx/DroneFlightInfoApp.git`). Base commit
+`7806e1f`, final `efcc5a0`. Read **`FLIGHTFIX-RESULTS.md`** for the full record
+and **`FlightDesk_Review_Pack/FLIGHTFIX-HUMAN.md`** for what still needs you.
+
+Two statements below are now out of date and are corrected here rather than
+rewritten in place:
+
+- The archive **does** have a remote and `main` is published.
+- The parser vendor folder holds **no `MANIFEST.json`**; the pinned checksum is
+  for the upstream ZIP, not the extracted EXE. `tools\check_env.py --parser-zip
+  <file>` verifies a downloaded archive.
+
+Software summary: F01–F13 fixed and verified by the suite; F14 (USB completion)
+and F15 (identity merge) are partial; P12's browser gate and P13's test tiers are
+outstanding. No historical repair was applied and the live data root was not
+touched.
+
+---
+
 Updated 2026-11-22 07:10 UTC, end of the 2026-11-22 session. Read this first,
 then `BUILD-STATUS.md`. Everything below was measured on this machine at the time
 of writing; nothing is aspirational.
