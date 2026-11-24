@@ -215,7 +215,6 @@ class RestoreInterruptionTest(TempCase):
         return Path(result["path"])
 
     def test_an_interrupted_extraction_leaves_the_target_untouched(self) -> None:
-        import zipfile
         from unittest import mock
 
         archive = self._backup()
@@ -223,10 +222,10 @@ class RestoreInterruptionTest(TempCase):
         marker = target / "existing-marker.txt"
         marker.write_text("do not lose me", encoding="utf-8")
 
-        def explode(self, *args, **kwargs):
+        def explode(*args, **kwargs):
             raise OSError(5, "simulated interruption")
 
-        with mock.patch.object(zipfile.ZipFile, "extractall", explode):
+        with mock.patch.object(backup.shutil, "copyfileobj", explode):
             with self.assertRaises(OSError):
                 backup.restore_backup(archive, target, allow_existing=True)
 
@@ -262,16 +261,15 @@ class RestoreInterruptionTest(TempCase):
         self.assertTrue((target / "existing-marker.txt").exists())
 
     def test_a_restore_after_an_interruption_still_works(self) -> None:
-        import zipfile
         from unittest import mock
 
         archive = self._backup()
         target = Path(tempfile.mkdtemp(prefix="fd-target3-"))
 
-        def explode(self, *args, **kwargs):
+        def explode(*args, **kwargs):
             raise OSError(5, "simulated interruption")
 
-        with mock.patch.object(zipfile.ZipFile, "extractall", explode):
+        with mock.patch.object(backup.shutil, "copyfileobj", explode):
             with self.assertRaises(OSError):
                 backup.restore_backup(archive, target, allow_existing=True)
 
@@ -397,5 +395,8 @@ class DjIKeyInBackupTest(TempCase):
                     continue
                 dst.writestr(item, src.read(item.filename))
         validation = backup.validate_backup(stripped)
-        self.assertTrue(validation["ok"], validation["errors"])
-        self.assertIn("key_missing_from_backup", validation["warnings"])
+        # A manifest that promises a key and an archive that does not carry it
+        # is an incomplete backup: refuse it rather than let a restore discover
+        # the gap afterwards.
+        self.assertFalse(validation["ok"], validation)
+        self.assertIn("key_missing_from_backup", validation["errors"])

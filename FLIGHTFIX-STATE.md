@@ -11,6 +11,7 @@ before any long operation, and before any host-forced stop.
 - Starting branch: `main` (tracking `origin/main`, clean)
 - Repair branch: `flightfix/repairs` (created from `7806e1f`)
 - Remote: `origin` → `git@github.com:xRedolentx/DroneFlightInfoApp.git`; `main` is the GitHub default branch
+- Repair branch: `flightfix/repairs` (merged into `main` by fast-forward at P02; work now continues on `main` directly, per the owner's instruction to push repairs to `main`)
 - Starting dirty paths: `FlightDesk_Review_Pack/` (untracked — the supplied review pack)
 - State file created: 2026-11-23, batch P00
 
@@ -67,8 +68,9 @@ no private records were read.
 
 ## Current batch / next runnable batch
 
-- Current batch: **P02 — DONE**
-- Next runnable batch: **P03 — Complete backup validation** (independent after P00)
+- Current batch: **P03 — DONE**
+- Next runnable batch: **P04 — Safe restore targets and schema opening**
+  (depends on P03, now met)
 
 ## Batch table
 
@@ -79,8 +81,8 @@ Statuses: `TODO` `IN_PROGRESS` `DONE` `PARTIAL` `BLOCKED` `WAITING_DEPENDENCY` `
 | P00 | DONE | `FLIGHTFIX-STATE.md`, review pack, `FlightDesk_Review_Pack/FLIGHTFIX-HUMAN.md` (owner-decision merge) | baseline selftest 407/0/0; probes 19/19 reproduced | `ebe0706` | none |
 | P01 | DONE | `flightdesk/demo.py`, `importer.py`, `db.py`, `views.py`, `server.py`, `__main__.py`, `web/app.js`, `OWNER-GUIDE.md`, `tests/test_demo_isolation.py`, `tests/test_stage3_web.py` | selftest **418 / 0 failures / 0 errors**; F01 probe now reports `pilot="Owner pilot", tags=["Owner tag"]` unchanged | (this checkpoint) | none |
 | P02 | DONE | `flightdesk/rawexport.py`, `flightdesk/archive.py`, `tests/test_stage18_raw_export.py`, `tests/test_archive_integrity.py` | selftest **430 / 0 failures**; F02 probes now return the owner's bytes in both collision cases; F03 probe `duplicate_count=0` with the corrupt object left in place | (this checkpoint) | none |
-| P03 | TODO | — | — | — | none |
-| P04 | TODO | — | — | — | after P03 |
+| P03 | DONE | `flightdesk/backup.py`, `tests/test_backup_completeness.py`, `tests/test_stage7_backup.py` | selftest **444 / 0 failures**; F04 probes: the missing-member probe now aborts at the restore step because restore refuses the artifact (validation_failed), which is the fix | (this checkpoint) | none |
+| P04 | TODO | — | — | — | after P03 (met) |
 | P05 | TODO | — | — | — | after P04 |
 | P06 | TODO | — | — | — | after P05 |
 | P07 | TODO | — | — | — | after P06 |
@@ -104,6 +106,7 @@ compaction and restarts.
 | F01 demo seeding contaminated owner records | 0 (fixed on first attempt) | Hypothesis: the seed's guard is `demo_seeded` only; the tag/pilot update selects all flights. Change: atomic empty-root claim inside `BEGIN IMMEDIATE`, synthetic marker before any write, content-scoped pilot/tag edits, backend import refusal in a synthetic root. Result: 11 new tests pass. | Probe before `["mapping"]`/`Demo Pilot`, after `["Owner tag"]`/`Owner pilot`; 418-test suite green |
 | F02 raw export overwrote destination files | 0 (fixed on first attempt) | Hypotheses: (a) one-shot suffixing collides with an occupied suffixed name; (b) `os.replace` publishes over whatever appeared; (c) skip decided by size only. Change: collision loop, validated manifest claims, hash-verified skips, unique `mkstemp` temp, no-clobber publish, containment checks, atomic `Job.start`. 8 new tests including a target planted mid-publication and concurrent exporters. | Probe bytes before `one`/`one`, after `owner changed this file`/`owner second` |
 | F03 same-size archive corruption accepted | 0 (fixed on first attempt) | Hypothesis: `store_stream` compares only `st_size`. Change: hash the existing object; on mismatch quarantine both copies and raise `ArchiveCorrupt` without touching the archive. 4 new tests. | Probe `duplicate_count` 1 -> 0; corrupt bytes unchanged |
+| F04 backup validation approved missing originals | 0 (fixed on first attempt) | Hypotheses: (a) the validator iterated present members instead of proving required ones exist; (b) a manifest count stood in for inventory equivalence; (c) restore re-read the source independently of validation. Change: one strict `validate_backup` reconciling DB rows, manifest entries and canonicalised ZIP members; allowlisted members; duplicate/alias detection; streamed DB inspection; creation self-validates the artifact; restore validates then extracts only approved members from a private copy of the source. 14 new tests, including the exact ghost-original case. | Probe `manifest_omits_db_referenced_object` now refuses at restore; 444-test suite green |
 
 ## Behaviour changes landed (keep docs in step)
 
@@ -127,6 +130,18 @@ compaction and restarts.
   bytes just received under `<root>/quarantine/`, and leaves the archive
   untouched. `Job.start` serialises its running check and thread start under one
   lock.
+
+- **P03** — `backup.validate_backup` is now one strict validator: it reconciles
+  `raw_files` rows, manifest entries and canonicalised ZIP members, refuses
+  missing/duplicate/aliased/unknown members, streams the DB to a temp file for
+  `integrity_check`/`foreign_key_check`/`user_version`, and reports a newer
+  schema as a refusal. A declared-but-absent DJI key is now an **error**
+  (`key_missing_from_backup`), not a warning; a legacy backup that never
+  declared one is clean, and an intact blob this account cannot decrypt stays a
+  warning. `create_backup` validates its own artifact before reporting success
+  and uses a random-suffixed filename when the timestamp name is taken.
+  `restore_backup` copies the source, validates that copy, then extracts only the
+  approved members, so validation and extraction never read different bytes.
 
 ## Pending human IDs
 
@@ -168,18 +183,12 @@ re-asked):
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
 git switch flightfix/repairs
-python -m flightdesk selftest      # expect 430 tests, 0 failures at P02
+python -m flightdesk selftest      # expect 444 tests, 0 failures at P03
 ```
 
-Smallest next action: read P03 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
-finding F04, then rebuild `backup.py::validate_backup` as one strict validator
-reused by restore: reconcile `raw_files`, manifest entries and normalised ZIP
-members; reject missing/duplicate/aliased paths; stream members within size
-bounds; make creation validate its own artifact. Tests in
-`tests/test_stage7_backup.py` and `tests/test_stage21_concurrent_backup.py`.
+Smallest next action: read P04 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
+findings F05–F06, then protect restore targets (`backup.py::restore_backup`,
+`server.py` restore routes) and make `db.init_db` refuse a newer schema before
+any DDL/migration write.
 
-Checkpoint note: P03 was not started in this turn. Everything through P02 is
-committed and pushed on `flightfix/repairs`.
-
-If the host forces a stop: verify `git status` is clean on `flightfix/repairs`,
-push the branch, then resume at P03.
+If the host forces a stop: verify `git status` is clean, push, then resume at P04.
