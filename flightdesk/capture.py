@@ -1137,17 +1137,64 @@ def assign_serial(conn: sqlite3.Connection, serial: str, equipment_id: int,
     return {"ok": True}
 
 
+def refresh_log_battery_reading(conn: sqlite3.Connection, flight_id: int) -> dict[str, Any]:
+    """Rebuild the log-derived battery reading for one flight from its columns.
+
+    Only `source='log'` rows belong to a parse. A manual or capture reading is
+    left untouched. Called after an accepted reparse and after a battery
+    reassignment, so the equipment history moves with the flight instead of
+    pointing at the battery it used to carry.
+    """
+    flight = db.one(
+        conn,
+        "SELECT id,battery_equipment_id,start_time_utc,battery_start_pct,"
+        "battery_temp_max_c FROM flights WHERE id=?",
+        (flight_id,),
+    )
+    if flight is None:
+        return {"ok": False, "code": "not_found"}
+    conn.execute(
+        "DELETE FROM battery_readings WHERE flight_id=? AND source='log'", (flight_id,)
+    )
+    battery_id = flight["battery_equipment_id"]
+    if not battery_id or flight["battery_start_pct"] is None:
+        return {"ok": True, "written": False}
+    conn.execute(
+        "INSERT OR IGNORE INTO battery_readings"
+        "(battery_id,flight_id,at,charge_pct,temp_c,cycles,voltage,source,temp_missing) "
+        "VALUES(?,?,?,?,?,NULL,NULL,'log',0)",
+        (int(battery_id), flight_id, flight["start_time_utc"],
+         flight["battery_start_pct"], flight["battery_temp_max_c"]),
+    )
+    return {"ok": True, "written": True}
+
+
 def reassign_flight(conn: sqlite3.Connection, flight_id: int, kind: str,
                     equipment_id: int | None) -> dict[str, Any]:
     if kind not in ("aircraft", "battery"):
         return {"ok": False, "code": "bad_kind"}
+    # A Boolean is an int in Python; True must not be read as equipment id 1.
+    if equipment_id is not None and (isinstance(equipment_id, bool)
+                                     or not isinstance(equipment_id, int)):
+        return {"ok": False, "code": "bad_equipment_id"}
     row = db.one(conn, "SELECT id FROM flights WHERE id=?", (flight_id,))
     if row is None:
         return {"ok": False, "code": "not_found"}
+    if equipment_id is not None:
+        equipment = db.one(conn, "SELECT id,kind FROM equipment WHERE id=?", (equipment_id,))
+        if equipment is None:
+            return {"ok": False, "code": "equipment_not_found"}
+        # A generic foreign key would happily accept a battery as the aircraft.
+        if equipment["kind"] != kind:
+            return {"ok": False, "code": "wrong_equipment_kind"}
     column = "aircraft_equipment_id" if kind == "aircraft" else "battery_equipment_id"
     with db.tx(conn):
         conn.execute(f"UPDATE flights SET {column}=?,updated_at=? WHERE id=?",
                      (equipment_id, db.now_utc(), flight_id))
+        if kind == "battery":
+            # Clearing a battery, or moving to another one, must move the
+            # log-derived history with it — and only that history.
+            refresh_log_battery_reading(conn, flight_id)
         db.audit(conn, "owner", "flight_reassign", "flight", str(flight_id),
                  {"kind": kind, "equipment_id": equipment_id})
     return {"ok": True}

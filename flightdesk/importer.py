@@ -234,7 +234,8 @@ def resolve_equipment(
     row = db.one(
         conn,
         "SELECT * FROM equipment WHERE kind=? AND archived=0 AND "
-        "(serial=? OR name=? OR alias=?) ORDER BY (serial=?) DESC, id LIMIT 1",
+        "(serial=? OR ((serial IS NULL OR serial='') AND (name=? OR alias=?))) "
+        "ORDER BY (serial=?) DESC, id LIMIT 1",
         (kind, serial, name, name, serial),
     )
     if row is None:
@@ -247,25 +248,45 @@ def resolve_equipment(
     return int(row["id"])
 
 
-def _store_telemetry(conn, flight_id: int, samples, metrics, source: str) -> None:
+def _store_telemetry(conn, flight_id: int, samples, metrics, source: str,
+                     raw_id: int | None = None) -> None:
+    """Store the accepted track, replacing it only with better evidence.
+
+    One accepted parse revision supplies the summary, the track, the gaps and
+    the warnings together. The reviewed build refused parser telemetry when the
+    stored downsampled count was greater than *or equal to* the new count, so a
+    corrected track of the same length was silently dropped while the summary
+    metrics beside it changed — the map and the numbers disagreed.
+
+    A poorer *variant* still must not overwrite a richer accepted track, so a
+    strict sample-count drop is refused unless the reparse is of the original
+    that produced the accepted track (the same source, re-read).
+    """
     if not samples:
         return
     kept = downsample(samples, 1400)
     payload = json.dumps(kept, separators=(",", ":")).encode("utf-8")
     blob = gzip.compress(payload, 6)
     existing = db.one(
-        conn, "SELECT source,sample_count FROM flight_telemetry WHERE flight_id=?", (flight_id,)
+        conn,
+        "SELECT source,sample_count,source_raw_id FROM flight_telemetry WHERE flight_id=?",
+        (flight_id,),
     )
     if existing is not None:
-        if source == "parser" and int(existing["sample_count"]) >= len(kept):
-            return
-        if source != "parser" and existing["source"] == "parser":
+        same_source = raw_id is not None and existing["source_raw_id"] == raw_id
+        if source == "parser":
+            if existing["source"] == "parser" and not same_source \
+                    and int(existing["sample_count"]) > len(kept):
+                return
+        elif existing["source"] == "parser":
             return
     conn.execute(
-        "INSERT INTO flight_telemetry(flight_id,source,sample_count,samples_blob,gaps_json,created_at) "
-        "VALUES(?,?,?,?,?,?) ON CONFLICT(flight_id) DO UPDATE SET source=excluded.source,"
+        "INSERT INTO flight_telemetry(flight_id,source,sample_count,samples_blob,gaps_json,"
+        "created_at,source_raw_id) VALUES(?,?,?,?,?,?,?) "
+        "ON CONFLICT(flight_id) DO UPDATE SET source=excluded.source,"
         "sample_count=excluded.sample_count,samples_blob=excluded.samples_blob,"
-        "gaps_json=excluded.gaps_json,created_at=excluded.created_at",
+        "gaps_json=excluded.gaps_json,created_at=excluded.created_at,"
+        "source_raw_id=excluded.source_raw_id",
         (
             flight_id,
             source,
@@ -273,6 +294,7 @@ def _store_telemetry(conn, flight_id: int, samples, metrics, source: str) -> Non
             blob,
             json.dumps(metrics.gaps, separators=(",", ":")),
             db.now_utc(),
+            raw_id,
         ),
     )
 
@@ -367,6 +389,7 @@ def _update_flight_metrics(
     start_utc: str | None,
     filename_time: str | None,
     existing: sqlite3.Row | dict | None = None,
+    raw_id: int | None = None,
 ) -> None:
     # The effective identity after the COALESCE update below: a field the new
     # parse could not read keeps its stored value. The fingerprint must describe
@@ -381,7 +404,10 @@ def _update_flight_metrics(
     new_fp = _fingerprint(
         effective("aircraft_sn", details.get("aircraft_sn")),
         effective("start_time_utc", start_utc),
-        metrics.duration_s if metrics.duration_s is not None else effective("duration_s", None),
+        # Duration is written unconditionally below, so an unknown duration is
+        # NULL on the row afterwards. Using the old value here would leave a
+        # fingerprint describing a duration the row no longer holds.
+        metrics.duration_s,
         effective("filename_time", filename_time),
         effective("aircraft_name", details.get("aircraft_name")),
     )
@@ -438,7 +464,13 @@ def _update_flight_metrics(
         ),
     )
     if outcome.samples:
-        _store_telemetry(conn, flight_id, outcome.samples, metrics, source="parser")
+        _store_telemetry(conn, flight_id, outcome.samples, metrics, source="parser",
+                         raw_id=raw_id)
+    # The summary and the derived battery reading come from the same accepted
+    # revision, in the same transaction as the track above. A failure here must
+    # roll the whole refresh back rather than leave a half-updated flight.
+    from .capture import refresh_log_battery_reading
+    refresh_log_battery_reading(conn, flight_id)
 
 
 def _record_conflict(conn: sqlite3.Connection, raw_id: int, flight_id: int,
@@ -592,9 +624,18 @@ def _insert_or_link_flight(
             candidate = None
         # Equal weight is enough to refresh: this is the path a reparse takes
         # when a parser improves, and it must backfill the same logical flight
-        # instead of keeping figures computed by the old parser.
+        # instead of keeping figures computed by the old parser. A record whose
+        # details were unreadable becomes authoritative again once a parse
+        # succeeds, unless the owner excluded it for a reason of their own.
+        if (candidate is not None
+                and candidate["excluded_reason"] == "details_unreadable"
+                and outcome.status == "decoded" and outcome.details
+                and not outcome.meta.get("details_rejected")):
+            conn.execute(
+                "UPDATE flights SET identity_status='authoritative', "
+                "excluded_reason=NULL WHERE id=?", (flight_id,))
         _update_flight_metrics(conn, flight_id, details, metrics, outcome, start_utc,
-                               filename_time, existing=candidate)
+                               filename_time, existing=candidate, raw_id=raw_id)
         return flight_id, False, match
 
     identity = "authoritative"
@@ -641,7 +682,7 @@ def _insert_or_link_flight(
             now,
         ),
     )
-    _store_telemetry(conn, flight_id, outcome.samples, metrics, source="parser")
+    _store_telemetry(conn, flight_id, outcome.samples, metrics, source="parser", raw_id=raw_id)
     if battery_equipment_id and metrics.battery_start_pct is not None:
         conn.execute(
             "INSERT OR IGNORE INTO battery_readings"

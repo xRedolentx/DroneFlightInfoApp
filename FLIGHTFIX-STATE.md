@@ -68,9 +68,9 @@ no private records were read.
 
 ## Current batch / next runnable batch
 
-- Current batch: **P05 — DONE**
-- Next runnable batch: **P06 — Atomic derived-data refresh and equipment consistency**
-  (depends on P05, now met)
+- Current batch: **P06 — DONE**
+- Next runnable batch: **P07 — Air-time semantics and maintenance inputs**
+  (depends on P06, now met)
 
 ## Batch table
 
@@ -84,7 +84,8 @@ Statuses: `TODO` `IN_PROGRESS` `DONE` `PARTIAL` `BLOCKED` `WAITING_DEPENDENCY` `
 | P03 | DONE | `flightdesk/backup.py`, `tests/test_backup_completeness.py`, `tests/test_stage7_backup.py` | selftest **444 / 0 failures**; F04 probes: the missing-member probe now aborts at the restore step because restore refuses the artifact (validation_failed), which is the fix | (this checkpoint) | none |
 | P04 | DONE | `flightdesk/db.py`, `flightdesk/backup.py`, `flightdesk/server.py`, `flightdesk/__main__.py`, `tools/fault_check.py`, `tests/test_restore_protection.py`, `tests/test_stage7_backup.py` | selftest **458 / 0 failures**; fault harness clean (marker kept, no half-written target, no stale staging); F05/F06 probes: the missing-original probe aborts at restore because restore now refuses the artifact | (this checkpoint) | none |
 | P05 | DONE | `flightdesk/importer.py`, `flightdesk/db.py`, `flightdesk/fingerprints.py`, `tests/test_identity_conservative.py` | selftest **473 / 0 failures**; F07 probes: the missing-serial merge and the double-link reparse are both covered by tests that now expect 2 flights / one owner | (this checkpoint) | none |
-| P06 | TODO | — | — | — | after P05 (met) |
+| P06 | DONE | `flightdesk/importer.py`, `flightdesk/capture.py`, `flightdesk/db.py`, `tests/test_derived_refresh.py` | selftest **482 / 0 failures**; F08 equal-length track refresh and F09 battery reassignment are covered | (this checkpoint) | none |
+| P07 | TODO | — | — | — | after P06 (met) |
 | P05 | TODO | — | — | — | after P04 |
 | P06 | TODO | — | — | — | after P05 |
 | P07 | TODO | — | — | — | after P06 |
@@ -111,7 +112,9 @@ compaction and restarts.
 | F04 backup validation approved missing originals | 0 (fixed on first attempt) | Hypotheses: (a) the validator iterated present members instead of proving required ones exist; (b) a manifest count stood in for inventory equivalence; (c) restore re-read the source independently of validation. Change: one strict `validate_backup` reconciling DB rows, manifest entries and canonicalised ZIP members; allowlisted members; duplicate/alias detection; streamed DB inspection; creation self-validates the artifact; restore validates then extracts only approved members from a private copy of the source. 14 new tests. | Probe `manifest_omits_db_referenced_object` now refuses at restore; 444-test suite green |
 | F05 restore owned unprotected paths | 0 (fixed on first attempt) | Hypotheses: (a) staging name was predictable and deleted unconditionally; (b) protection covered only the default root; (c) the web route exposed `allow_existing`. Change: unique `mkdtemp` staging, per-target exclusive lock, protection of default + active-pointer + serving root with canonical resolution and ancestor/descendant checks, `allow_existing` forced false on the web route, activation validates the DB and every referenced original. 14 new tests. | `test_an_unrelated_staging_directory_survives`, `test_a_custom_serving_root_is_protected` |
 | F06 newer schema silently downgraded | 0 (fixed on first attempt) | Hypothesis: `init_db` ran DDL/migrations then set any differing version to 1. Change: probe `user_version` read-only (header fallback) before any write; raise `SchemaTooNew`; advance the version only after migrations succeed; migration failures surface; close the connection on failure. 4 new tests, including byte-for-byte immutability. | `test_a_newer_schema_is_refused_and_left_untouched` compares file hashes |
-| F07 fingerprint overruled evidence and ownership | 0 (fixed on first attempt) | Hypotheses: (a) fingerprint lookup ran before the existing link; (b) the fingerprint omitted the aircraft identity, so serial-less records with different names collided; (c) absence of duration/distance counted as corroboration; (d) nothing enforced one owner per original. Change: existing link first, fingerprint as corroborated candidate only, aircraft identity in the hash, `_corroborates` requires complete evidence, normalised instants, `identity_conflicts` table + unique raw-ownership index on clean DBs (conflicts recorded, never deleted), nonunique fingerprint index. 15 new tests. | `test_missing_serial_different_names_do_not_merge`, `test_reparse_does_not_give_one_original_two_flights` |
+| F07 fingerprint overruled evidence and ownership | 0 (fixed on first attempt) | Hypotheses: (a) fingerprint lookup ran before the existing link; (b) the fingerprint omitted the aircraft identity; (c) absence of duration/distance counted as corroboration; (d) nothing enforced one owner per original. Change: existing link first, corroborated fingerprint, aircraft identity in the hash, `_corroborates` requires complete evidence, normalised instants, `identity_conflicts` + unique raw-ownership index. 15 new tests. | `test_missing_serial_different_names_do_not_merge`, `test_reparse_does_not_give_one_original_two_flights` |
+| F08 equal-length reparse kept stale track | 0 (fixed on first attempt) | Hypothesis: `_store_telemetry` refused parser telemetry at `sample_count >= len(kept)`. Change: replace at equal length; refuse only a strict drop from a different raw; record `source_raw_id` so a reparse of the accepted original is recognised. 4 new tests. | `test_equal_length_correction_changes_summary_and_track` |
+| F09 wrong equipment kind and stale battery history | 0 (fixed on first attempt) | Hypotheses: (a) the FK did not check kind; (b) reassignment did not refresh log-derived readings; (c) the reading was only written on new-flight insert. Change: `reassign_flight` validates kind/existence/Boolean, `refresh_log_battery_reading` rebuilds only `source='log'` rows, called from reassignment and from accepted reparse in the same transaction; `resolve_equipment` name fallback only on candidates without a conflicting serial. 5 new tests. | `test_aircraft_cannot_be_reassigned_to_a_battery`, `test_battery_history_moves_but_manual_readings_stay` |
 
 ## Behaviour changes landed (keep docs in step)
 
@@ -176,6 +179,18 @@ compaction and restarts.
   `fingerprints.recompute` passes the aircraft name too, so repair and import
   agree.
 
+- **P06** — The accepted parse revision refreshes summary, track, gaps, warnings
+  and the log-derived battery reading in one transaction. A corrected track of
+  equal length now replaces the stored one (`flight_telemetry.source_raw_id`
+  records which original produced it, so a reparse of that original is not
+  mistaken for a poorer variant). A strict sample drop from a different variant
+  is still refused. `reassign_flight` rejects a wrong equipment kind, a
+  nonexistent id and a Boolean id, and moves only `source='log'` battery readings;
+  clearing an assignment removes them coherently. `resolve_equipment` uses a name
+  fallback only for candidates with no known serial. The fingerprint is computed
+  from the duration actually written, so an unknown duration no longer leaves a
+  stale hash.
+
 ## Pending human IDs
 
 Canonical file: `FlightDesk_Review_Pack/FLIGHTFIX-HUMAN.md`.
@@ -216,12 +231,11 @@ re-asked):
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
 git switch flightfix/repairs
-python -m flightdesk selftest      # expect 473 tests, 0 failures at P05
+python -m flightdesk selftest      # expect 482 tests, 0 failures at P06
 ```
 
-Smallest next action: read P06 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
-findings F08–F09, then make the accepted-parse refresh atomic in
-`importer.py` (`_store_telemetry`/`_update_flight_metrics`) and enforce equipment
-kind on reassignment in `capture.py`.
+Smallest next action: read P07 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
+findings F10–F11, then fix `parser_adapter.sample_from_frame` ground flags,
+`maintenance` air-minute source, and first-capture rule limits in `capture.py`.
 
-If the host forces a stop: verify `git status` is clean, push, then resume at P06.
+If the host forces a stop: verify `git status` is clean, push, then resume at P07.

@@ -138,7 +138,8 @@ CREATE TABLE IF NOT EXISTS flight_telemetry (
     sample_count INTEGER NOT NULL,
     samples_blob BLOB NOT NULL,
     gaps_json TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    source_raw_id INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS equipment (
@@ -430,6 +431,7 @@ def init_db(path: Path | str) -> sqlite3.Connection:
         _retire_media_columns(conn)
         _add_warning_columns(conn)
         _add_rule_columns(conn)
+        _add_telemetry_columns(conn)
         _ensure_raw_ownership(conn)
         current = int(conn.execute("PRAGMA user_version").fetchone()[0])
         # Advance the version only after every migration step succeeded, and
@@ -463,6 +465,23 @@ def _retire_media_columns(conn: sqlite3.Connection) -> None:
                 # Older SQLite, or the column is referenced by an index/view.
                 # Leaving it is safe: nothing reads it any more.
                 pass
+    conn.commit()
+
+
+def _add_telemetry_columns(conn: sqlite3.Connection) -> None:
+    """Record which original produced the accepted track.
+
+    Without it a reparse of the accepted original is indistinguishable from a
+    poorer variant, and a corrected track of equal length was dropped.
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(flight_telemetry)")}
+    if "source_raw_id" not in existing:
+        try:
+            conn.execute("ALTER TABLE flight_telemetry ADD COLUMN source_raw_id INTEGER")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                conn.commit()
+                raise
     conn.commit()
 
 
