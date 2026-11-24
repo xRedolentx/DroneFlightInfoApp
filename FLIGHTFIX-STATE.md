@@ -68,9 +68,8 @@ no private records were read.
 
 ## Current batch / next runnable batch
 
-- Current batch: **P07 — DONE**
-- Next runnable batch: **P08 — Truthful dry-run repair tooling**
-  (depends on P05/P06/P07, now met)
+- Current batch: **P08 — DONE**
+- Next runnable batch: **P09 — A functioning watcher lifecycle** (independent)
 
 ## Batch table
 
@@ -86,7 +85,8 @@ Statuses: `TODO` `IN_PROGRESS` `DONE` `PARTIAL` `BLOCKED` `WAITING_DEPENDENCY` `
 | P05 | DONE | `flightdesk/importer.py`, `flightdesk/db.py`, `flightdesk/fingerprints.py`, `tests/test_identity_conservative.py` | selftest **473 / 0 failures**; F07 probes: the missing-serial merge and the double-link reparse are both covered by tests that now expect 2 flights / one owner | (this checkpoint) | none |
 | P06 | DONE | `flightdesk/importer.py`, `flightdesk/capture.py`, `flightdesk/db.py`, `tests/test_derived_refresh.py` | selftest **482 / 0 failures**; F08 equal-length track refresh and F09 battery reassignment are covered | (this checkpoint) | none |
 | P07 | DONE | `flightdesk/parser_adapter.py`, `flightdesk/analysis.py`, `flightdesk/maintenance.py`, `flightdesk/capture.py`, `flightdesk/db.py`, `tests/test_airtime_semantics.py` | selftest **494 / 0 failures**; recon_check 11/11 | (this checkpoint) | none |
-| P08 | TODO | — | — | — | after P05/P06/P07 (met) |
+| P08 | DONE | `tools/reparse_all.py`, `tests/test_reparse_tool.py` | selftest **500 / 0 failures**; dry run leaves DB and archive hashes unchanged; apply matches preview; stale preview refused | (this checkpoint) | none |
+| P09 | TODO | — | — | — | none |
 | P05 | TODO | — | — | — | after P04 |
 | P06 | TODO | — | — | — | after P05 |
 | P07 | TODO | — | — | — | after P06 |
@@ -118,6 +118,7 @@ compaction and restarts.
 | F09 wrong equipment kind and stale battery history | 0 (fixed on first attempt) | Hypotheses: (a) the FK did not check kind; (b) reassignment did not refresh log-derived readings; (c) the reading was only written on new-flight insert. Change: `reassign_flight` validates kind/existence/Boolean, `refresh_log_battery_reading` rebuilds only `source='log'` rows, called from reassignment and from accepted reparse; `resolve_equipment` name fallback only on candidates without a conflicting serial. 5 new tests. | `test_aircraft_cannot_be_reassigned_to_a_battery`, `test_battery_history_moves_but_manual_readings_stay` |
 | F10 air-time semantics inconsistent | 0 (fixed on first attempt) | Hypotheses: (a) `bool(None)` made a missing ground flag False; (b) air time required a GPS fix; (c) maintenance summed `duration_s`. Change: tri-state adapter flags, `airborne_state` fallback ground→motor→height with unknown preserved, air time computed without fixes, `airborne_partial`/`airborne_unknown` flags, maintenance uses `airborne_time_s` and reports unknown rather than zero. 8 new tests. | `test_stationary_without_ground_flag_is_not_airborne`, `test_log_duration_does_not_become_air_minutes`, `test_unknown_air_time_makes_the_counter_partial_not_zero` |
 | F11 first capture ignored captured limits | 0 (fixed on first attempt) | Hypotheses: (a) rules were created with defaults before the snapshot pass; (b) the existing-row branch never updated limits. Change: existing-row path applies captured limits unless `owner_limits`; `set_rule_policy` marks `owner_limits=1` on a threshold change. 2 new tests + calendar-baseline case. | `test_first_capture_applies_the_captured_limit`, `test_a_later_capture_preserves_an_owner_edited_limit` |
+| F12 reparse dry run could not work | 0 (fixed on first attempt) | Hypothesis: the tool opened a read-only connection and called the mutating importer. Change: dry run copies the DB and simulates on the copy; apply requires `--root` and a matching `--expect-revision`; resume cursor; success resets consecutive failures; sanitized JSON. 6 new tests. | `test_dry_run_reports_deltas_and_writes_nothing`, `test_apply_with_the_preview_revision_matches_it` |
 
 ## Behaviour changes landed (keep docs in step)
 
@@ -205,6 +206,15 @@ compaction and restarts.
   the captured limits; a later capture will not reset a threshold the owner
   edited (`rules.owner_limits`).
 
+- **P08** — `tools/reparse_all.py` is a real dry run: it copies the database to
+  a throwaway directory, runs the same parse path against the copy, and reports
+  per-flight before/after deltas, aggregate totals and a revision — writing
+  nothing to the source DB or archive. `--json` is machine-readable and
+  sanitized. `--apply` requires an explicit `--root` and an `--expect-revision`;
+  a mismatch is refused as `stale_preview`. A success resets the
+  consecutive-failure counter, and a stored cursor lets a rerun continue instead
+  of restarting at raw id 1.
+
 ## Pending human IDs
 
 Canonical file: `FlightDesk_Review_Pack/FLIGHTFIX-HUMAN.md`.
@@ -245,11 +255,11 @@ re-asked):
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
 git switch flightfix/repairs
-python -m flightdesk selftest      # expect 494 tests, 0 failures at P07
+python -m flightdesk selftest      # expect 500 tests, 0 failures at P08
 ```
 
-Smallest next action: read P08 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
-finding F12, then make `tools/reparse_all.py` a real dry run (analysis without
-writes) with resume state, and fix the never-resetting consecutive counter.
+Smallest next action: read P09 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
+finding F13, then make the watcher setting control a real worker in the serving
+process (`server.py::App.start_watcher`, `api_usb_watcher`, `__main__.py`).
 
-If the host forces a stop: verify `git status` is clean, push, then resume at P08.
+If the host forces a stop: verify `git status` is clean, push, then resume at P09.
