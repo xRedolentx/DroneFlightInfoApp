@@ -630,7 +630,11 @@ def _insert_or_link_flight(
         if (candidate is not None
                 and candidate["excluded_reason"] == "details_unreadable"
                 and outcome.status == "decoded" and outcome.details
-                and not outcome.meta.get("details_rejected")):
+                and not outcome.meta.get("details_rejected")
+                and db.one(conn, "SELECT 1 FROM identity_decisions WHERE flight_id=?",
+                           (flight_id,)) is None):
+            # An owner decision is not overridden by a later successful parse
+            # changing the status underneath them.
             conn.execute(
                 "UPDATE flights SET identity_status='authoritative', "
                 "excluded_reason=NULL WHERE id=?", (flight_id,))

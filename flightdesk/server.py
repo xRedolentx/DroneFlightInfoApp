@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
-from . import (archive, backup, capture, climate, db, demo, errlog, keychain,
+from . import (archive, backup, capture, climate, db, demo, errlog, identity, keychain,
                maintenance, paths, rawexport, report, schedule, security, tiles, usb, views)
 from .importer import Importer
 
@@ -881,6 +881,24 @@ def api_usb_logon(ctx: Ctx) -> None:
     result = (usb.install_logon_task(ctx.conn, Path(__file__).resolve().parent.parent /
                                      "FlightDesk.cmd")
               if install else usb.remove_logon_task(ctx.conn))
+    _send_json(ctx.handler, result)
+
+
+@route("POST", r"/api/identity/(\d+)/undo")
+def api_identity_undo(ctx: Ctx) -> None:
+    _send_json(ctx.handler, identity.undo(ctx.conn, int(ctx.params["1"])))
+
+
+@route("GET", r"/api/identity/(\d+)")
+def api_identity(ctx: Ctx) -> None:
+    _send_json(ctx.handler, identity.review(ctx.conn, int(ctx.params["1"])))
+
+
+@route("POST", r"/api/identity/(\d+)")
+def api_identity_decide(ctx: Ctx) -> None:
+    body = ctx.json_body()
+    result = identity.decide(ctx.conn, int(ctx.params["1"]),
+                            str(body.get("decision") or ""), body.get("note"))
     _send_json(ctx.handler, result)
 
 

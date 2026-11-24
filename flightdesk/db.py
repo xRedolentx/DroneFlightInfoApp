@@ -132,6 +132,18 @@ CREATE TABLE IF NOT EXISTS identity_conflicts (
 );
 CREATE INDEX IF NOT EXISTS idx_identity_conflicts_raw ON identity_conflicts(raw_file_id);
 
+-- An owner decision about a flight's identity, kept across reparse. The previous
+-- status is stored so the decision is reversible.
+CREATE TABLE IF NOT EXISTS identity_decisions (
+    flight_id INTEGER PRIMARY KEY REFERENCES flights(id) ON DELETE CASCADE,
+    decision TEXT NOT NULL,
+    note TEXT,
+    previous_status TEXT,
+    previous_reason TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS flight_telemetry (
     flight_id INTEGER PRIMARY KEY REFERENCES flights(id) ON DELETE CASCADE,
     source TEXT NOT NULL,

@@ -68,9 +68,9 @@ no private records were read.
 
 ## Current batch / next runnable batch
 
-- Current batch: **P10 — DONE**
-- Next runnable batch: **P11 — An auditable way to resolve flight identity**
-  (depends on P05/P06/P07, met)
+- Current batch: **P11a — DONE**; P11b (merge) not implemented
+- Next runnable batch: **P12 — Small UI reliability and usability repairs**
+  (dependencies P01, P09 and the P11 identity labels are met)
 
 ## Batch table
 
@@ -89,7 +89,7 @@ Statuses: `TODO` `IN_PROGRESS` `DONE` `PARTIAL` `BLOCKED` `WAITING_DEPENDENCY` `
 | P08 | DONE | `tools/reparse_all.py`, `tests/test_reparse_tool.py` | selftest **500 / 0 failures**; dry run leaves DB and archive hashes unchanged; apply matches preview; stale preview refused | (this checkpoint) | none |
 | P09 | DONE | `flightdesk/server.py`, `flightdesk/__main__.py`, `tests/test_watcher_lifecycle.py`, `tests/test_launcher.py` | selftest **509 / 0 failures**; enable starts a real scan, disable stops it, repeated enable is one worker, manual/scheduled scans never overlap | (this checkpoint) | none |
 | P10 | DONE | `flightdesk/usb.py`, `flightdesk/server.py`, `tests/test_usb_completeness.py` | selftest **517 / 0 failures**; unknown-size copies need matching reads, incomplete bytes are retained and retried, verify mode bypasses the skip, offset-past-prefix is a truncated copy | (this checkpoint) | PowerShell collector unchanged (no evidence fields yet); hardware completion is H03 |
-| P11 | TODO | — | — | — | after P05/P06/P07 |
+| P11 | PARTIAL | `flightdesk/identity.py`, `flightdesk/db.py`, `flightdesk/views.py`, `flightdesk/server.py`, `flightdesk/importer.py`, `flightdesk/web/app.js`, `tests/test_identity_review.py` | selftest **525 / 0 failures**; evidence review, keep-separate/exclude, undo, reparse persistence, API round-trip, static label all pass | (this checkpoint) | **P11b merge is not implemented.** The doc permits shipping an honest review/keep-separate workflow and recording merge as unfinished; do not call the full batch DONE |
 | P12 | TODO | — | — | — | after P01, P09; identity labels after P11 |
 | P13 | TODO | — | — | — | none |
 | P14 | TODO | — | — | — | all runnable batches addressed |
@@ -117,6 +117,7 @@ compaction and restarts.
 | F12 reparse dry run could not work | 0 (fixed on first attempt) | Hypothesis: the tool opened a read-only connection and called the mutating importer. Change: dry run copies the DB and simulates on the copy; apply requires `--root` and a matching `--expect-revision`; resume cursor; success resets consecutive failures; sanitized JSON. 6 new tests. | `test_dry_run_reports_deltas_and_writes_nothing`, `test_apply_with_the_preview_revision_matches_it` |
 | F13 enabling the watcher started nothing | 0 (fixed on first attempt) | Hypotheses: (a) the setting route stored a Boolean only; (b) the launcher never started a worker; (c) a logon launch against a running server exited claiming success. Change: one idle worker that polls the setting and wakes on toggle, cooperative stop, per-root scan lock with visible busy status, runtime state separate from configured state, launcher enables via the shared setting. 9 new tests. | `test_enabling_starts_a_worker_that_scans`, `test_manual_and_scheduled_scans_do_not_overlap`, `test_the_toggle_controls_a_live_worker` |
 | F14 USB header plausibility mistaken for completeness | 1 attempt, partial by design | Hypothesis: a stable size plus a complete header is treated as a finished copy, and a name+size skip cannot see changed bytes. Change: `_entry_complete` requires a known size or a matching second read; unverified bytes are retained under `tmp/usb-unverified` and retried, never indexed; `verify=True` bypasses the skip; an offset past the received prefix is `copy_truncated`, a zero offset stays a damaged original. 8 new tests. **Not done:** the PowerShell collector does not yet emit the evidence; hardware two-read proof deferred to **H03**. | `test_an_unknown_size_without_matching_reads_is_unverified`, `test_verify_mode_bypasses_the_name_size_skip` |
+| F15 Keep/merge was a dead end | 0 (fixed for P11a; P11b deliberately not built) | Hypothesis: the button navigated to Details with no mutation behind it. Change: `identity` module with evidence, candidate shortlist, persisted reversible `identity_decisions`, keep-separate/exclude/include, reparse protection, routes and a real modal. 8 new tests. **Not done:** merge of confirmed variants (P11b) — it discards separate history when wrong and needs owner conflict policy (H07). | `test_keep_separate_makes_the_record_authoritative`, `test_a_decision_is_reversible` |
 
 ## Behaviour changes landed (keep docs in step)
 
@@ -234,6 +235,16 @@ compaction and restarts.
   is unchanged: it does not emit the evidence fields yet, so on real hardware
   the strict path waits for that change (H03).
 
+- **P11a** — Unresolved flights get a "Review identity" action that opens a modal
+  with the record's provenance and a conservative shortlist of possible matches.
+  The owner can record "These are separate flights", "Leave excluded", or (when
+  the record has usable evidence) "Count this record". The decision is stored in
+  `identity_decisions` with the previous status, survives a reparse, and is
+  reversible. A record whose details could not be read cannot be made
+  authoritative by dismissing its warning. **P11b (merging confirmed variants)
+  is not implemented** — it needs an owner conflict policy for pilot/notes/tags
+  and is recorded as unfinished, not done.
+
 ## Pending human IDs
 
 Canonical file: `FlightDesk_Review_Pack/FLIGHTFIX-HUMAN.md`.
@@ -274,11 +285,12 @@ re-asked):
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
 git switch flightfix/repairs
-python -m flightdesk selftest      # expect 517 tests, 0 failures at P10
+python -m flightdesk selftest      # expect 525 tests, 0 failures at P11a
 ```
 
-Smallest next action: read P11 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
-finding F15, then rename the dead-end control to "Review identity" and add a
-keep-separate resolution backed by a persisted decision, with a browser test.
+Smallest next action: read P12 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
+Q01–Q05, then apply the small UI corrections: truthful download wording, a
+request-generation guard, real worker/import status, double-submit protection and
+consistent missing-data labels.
 
-If the host forces a stop: verify `git status` is clean, push, then resume at P11.
+If the host forces a stop: verify `git status` is clean, push, then resume at P12.

@@ -420,4 +420,13 @@ def unresolved_flights(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
         "ORDER BY COALESCE(start_time_utc,'') DESC LIMIT ?",
         (limit,),
     )
-    return [_flight_row(r) for r in rows]
+    out = []
+    for row in rows:
+        item = _flight_row(row)
+        decision = db.one(
+            conn, "SELECT decision,note FROM identity_decisions WHERE flight_id=?",
+            (int(row["id"]),))
+        item["decision"] = ({"decision": decision["decision"], "note": decision["note"]}
+                            if decision else None)
+        out.append(item)
+    return out

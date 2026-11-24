@@ -1833,8 +1833,8 @@
               esc(dateOnly(f.start_time_utc || f.filename_time)) + "</a></td><td>" +
               esc(f.aircraft_name || "—") + "</td><td class=\"small\">" +
               esc(reasonLabel(f.excluded_reason)) + "</td><td>" +
-              '<button type="button" class="link" data-act="merge" data-flight="' + f.id +
-              '">Keep / merge</button></td></tr>';
+              '<button type="button" class="link" data-act="review-identity" data-flight="' + f.id +
+              '">Review identity</button></td></tr>';
           }).join("") + "</tbody></table>"
           : '<div class="panel-body small muted">No unresolved flights.</div>') +
         "</div></section>" +
@@ -2109,11 +2109,67 @@
           });
       });
     });
-    document.querySelectorAll('[data-act="merge"]').forEach(function (btn) {
+    document.querySelectorAll('[data-act="review-identity"]').forEach(function (btn) {
       btn.addEventListener("click", function () {
-        go("#/flights/" + btn.dataset.flight + "/details");
+        openIdentityReview(Number(btn.dataset.flight));
       });
     });
+
+    function saveIdentity(id, decision, fallbackNote) {
+      var noteEl = document.getElementById("identity-note");
+      var note = (noteEl && noteEl.value) || fallbackNote;
+      api("/api/identity/" + id, { method: "POST",
+        body: { decision: decision, note: note } }).then(function (res) {
+        var settled = res.flight && res.flight.identity_status === "authoritative";
+        toast(settled ? "Marked as a separate flight" : "Record kept as excluded");
+        closeModal();
+        refreshState().then(renderImport);
+      }).catch(function (e) {
+        toast("Not saved: " + e.message);
+      });
+    }
+
+    function openIdentityReview(id) {
+      api("/api/identity/" + id).then(function (data) {
+        if (!data.ok) { toast("Could not load identity review"); return; }
+        var f = data.flight;
+        var html = '<p class="small">' + esc(f.aircraft_name || "Unknown aircraft") +
+          " · " + esc(dateOnly(f.start_time_utc || f.filename_time || "—")) + " · " +
+          esc(reasonLabel(f.excluded_reason)) + "</p>" +
+          '<p class="tiny faint">Originals: ' + f.files.length +
+          " · samples: " + f.sample_count + "</p>";
+        if (data.candidates.length) {
+          html += '<h3 class="small" style="margin-top:12px">Possible matches</h3>' +
+            '<ul class="small">' + data.candidates.map(function (c) {
+              return "<li>" + esc(c.aircraft_name || "—") + " · " +
+                esc(dateOnly(c.start_time_utc || "—")) +
+                (c.same_fingerprint ? " · same fingerprint" : "") +
+                " · " + c.files.length + " original(s)</li>";
+            }).join("") + "</ul>";
+        } else {
+          html += '<p class="small muted">No other record looks like this one.</p>';
+        }
+        html += '<label class="small" style="display:block;margin-top:10px">Note (optional)' +
+          '<input id="identity-note" type="text" maxlength="200" style="width:100%"></label>' +
+          '<p class="tiny faint">Saying "separate" marks this record as its own flight when it ' +
+          'has enough evidence. Nothing is merged, and no original is deleted.</p>';
+        var buttons = [
+          { label: "These are separate flights", cls: "primary", action: function () {
+              saveIdentity(id, "separate", "kept separate"); } },
+          { label: "Leave excluded", cls: "secondary", action: function () {
+              saveIdentity(id, "exclude", "excluded by owner"); } },
+          { label: "Close", cls: "secondary" }
+        ];
+        if (data.decision) {
+          buttons.splice(2, 0, { label: "Undo decision", cls: "secondary", action: function () {
+            api("/api/identity/" + id + "/undo", { method: "POST", body: {} })
+              .then(function () { toast("Decision undone"); closeModal();
+                                  refreshState().then(renderImport); });
+          } });
+        }
+        openModal("Review identity", html, buttons);
+      }).catch(function (e) { toast("Could not load identity review: " + e.message); });
+    }
   }
 
   var IMPORT_REASONS = {
