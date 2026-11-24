@@ -62,7 +62,7 @@ def _flight_rows(conn: sqlite3.Connection, equipment_id: int, kind: str) -> list
     column = "aircraft_equipment_id" if kind == "aircraft" else "battery_equipment_id"
     rows = db.all_rows(
         conn,
-        f"""SELECT f.id, f.start_time_utc, f.duration_s, f.identity_status,
+        f"""SELECT f.id, f.start_time_utc, f.duration_s, f.airborne_time_s, f.identity_status,
                    GROUP_CONCAT(DISTINCT sm.source_kind) AS kinds
             FROM flights f
             JOIN flight_files ff ON ff.flight_id=f.id
@@ -276,13 +276,22 @@ def rule_status(conn: sqlite3.Connection, rule: sqlite3.Row,
         after = flights
 
     def minutes(rows: list[dict[str, Any]]) -> tuple[float, int]:
+        """Air minutes, from off-ground time — never the whole log duration.
+
+        Log time includes the wait on the ground before and after a flight, so
+        counting it made a 600 s log with 60 s of air time read as ten air
+        minutes and tripped a five-minute rule. A flight whose air time could
+        not be measured is counted in `missing`, which makes the counter
+        partial rather than silently short.
+        """
         total = 0.0
         missing = 0
         for row in rows:
-            if row.get("duration_s") is None:
+            air = row.get("airborne_time_s")
+            if air is None:
                 missing += 1
             else:
-                total += float(row["duration_s"]) / 60.0
+                total += float(air) / 60.0
         return total, missing
 
     after_minutes, missing_duration = minutes(after)
@@ -315,6 +324,11 @@ def rule_status(conn: sqlite3.Connection, rule: sqlite3.Row,
     if basis == "all_logged" and not flights:
         for metric in ("flights", "minutes", "charges"):
             values[metric] = 0.0 if metric != "charges" or kind == "battery" else None
+    if missing_duration and after_minutes == 0.0 and not base_values["minutes"]:
+        # Every flight in scope had air time we could not measure. That is an
+        # unknown counter, not a reassuring zero — unless another metric can
+        # still prove a known breach, which the loop below keeps.
+        values["minutes"] = None
 
     limits = {
         "flights": rule["flights_limit"],
@@ -735,7 +749,10 @@ def set_rule_policy(conn: sqlite3.Connection, rule_id: int, **fields: Any) -> di
 
     with db.tx(conn):
         sets = ",".join(f"{k}=?" for k in updates)
-        conn.execute(f"UPDATE rules SET {sets},updated_at=? WHERE id=?",
+        # An owner who changes a threshold owns it: a later capture must not
+        # reset it to the AirData value.
+        owner_flag = ",owner_limits=1" if any(name in updates for name in LIMIT_FIELDS) else ""
+        conn.execute(f"UPDATE rules SET {sets}{owner_flag},updated_at=? WHERE id=?",
                      (*updates.values(), db.now_utc(), rule_id))
         db.audit(conn, "owner", "rule_policy", "rules", str(rule_id), updates)
     updated = db.one(conn, "SELECT * FROM rules WHERE id=?", (rule_id,))

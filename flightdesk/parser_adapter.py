@@ -412,6 +412,28 @@ def frame_warnings(frame: dict) -> dict[str, Any]:
     return out
 
 
+def _tri_state(value: object) -> bool | None:
+    """A boolean telemetry flag kept as true / false / unknown.
+
+    `bool(osd.get("isOnGround"))` turned a missing flag into False, so two
+    stationary frames with no ground report were counted as airborne and the
+    documented missing-flag fallback never ran.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in ("true", "1", "yes"):
+            return True
+        if low in ("false", "0", "no"):
+            return False
+    return None
+
+
 def sample_from_frame(frame: dict) -> dict | None:
     osd = frame.get("osd") or {}
     t = _num(_first(osd, "flyTime", "fly_time"))
@@ -447,8 +469,8 @@ def sample_from_frame(frame: dict) -> dict | None:
         "signal": signal,
         "gps_num": _num(osd.get("gpsNum")),
         "gps_level": _num(osd.get("gpsLevel")),
-        "on_ground": bool(osd.get("isOnGround")),
-        "motor_on": bool(osd.get("isMotorOn")),
+        "on_ground": _tri_state(osd.get("isOnGround")),
+        "motor_on": _tri_state(osd.get("isMotorOn")),
         "home_lat": _num(home.get("latitude")),
         "home_lon": _num(home.get("longitude")),
         "home_alt_m": _num(home.get("altitude")),

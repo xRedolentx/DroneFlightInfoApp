@@ -68,9 +68,9 @@ no private records were read.
 
 ## Current batch / next runnable batch
 
-- Current batch: **P06 — DONE**
-- Next runnable batch: **P07 — Air-time semantics and maintenance inputs**
-  (depends on P06, now met)
+- Current batch: **P07 — DONE**
+- Next runnable batch: **P08 — Truthful dry-run repair tooling**
+  (depends on P05/P06/P07, now met)
 
 ## Batch table
 
@@ -85,7 +85,8 @@ Statuses: `TODO` `IN_PROGRESS` `DONE` `PARTIAL` `BLOCKED` `WAITING_DEPENDENCY` `
 | P04 | DONE | `flightdesk/db.py`, `flightdesk/backup.py`, `flightdesk/server.py`, `flightdesk/__main__.py`, `tools/fault_check.py`, `tests/test_restore_protection.py`, `tests/test_stage7_backup.py` | selftest **458 / 0 failures**; fault harness clean (marker kept, no half-written target, no stale staging); F05/F06 probes: the missing-original probe aborts at restore because restore now refuses the artifact | (this checkpoint) | none |
 | P05 | DONE | `flightdesk/importer.py`, `flightdesk/db.py`, `flightdesk/fingerprints.py`, `tests/test_identity_conservative.py` | selftest **473 / 0 failures**; F07 probes: the missing-serial merge and the double-link reparse are both covered by tests that now expect 2 flights / one owner | (this checkpoint) | none |
 | P06 | DONE | `flightdesk/importer.py`, `flightdesk/capture.py`, `flightdesk/db.py`, `tests/test_derived_refresh.py` | selftest **482 / 0 failures**; F08 equal-length track refresh and F09 battery reassignment are covered | (this checkpoint) | none |
-| P07 | TODO | — | — | — | after P06 (met) |
+| P07 | DONE | `flightdesk/parser_adapter.py`, `flightdesk/analysis.py`, `flightdesk/maintenance.py`, `flightdesk/capture.py`, `flightdesk/db.py`, `tests/test_airtime_semantics.py` | selftest **494 / 0 failures**; recon_check 11/11 | (this checkpoint) | none |
+| P08 | TODO | — | — | — | after P05/P06/P07 (met) |
 | P05 | TODO | — | — | — | after P04 |
 | P06 | TODO | — | — | — | after P05 |
 | P07 | TODO | — | — | — | after P06 |
@@ -114,7 +115,9 @@ compaction and restarts.
 | F06 newer schema silently downgraded | 0 (fixed on first attempt) | Hypothesis: `init_db` ran DDL/migrations then set any differing version to 1. Change: probe `user_version` read-only (header fallback) before any write; raise `SchemaTooNew`; advance the version only after migrations succeed; migration failures surface; close the connection on failure. 4 new tests, including byte-for-byte immutability. | `test_a_newer_schema_is_refused_and_left_untouched` compares file hashes |
 | F07 fingerprint overruled evidence and ownership | 0 (fixed on first attempt) | Hypotheses: (a) fingerprint lookup ran before the existing link; (b) the fingerprint omitted the aircraft identity; (c) absence of duration/distance counted as corroboration; (d) nothing enforced one owner per original. Change: existing link first, corroborated fingerprint, aircraft identity in the hash, `_corroborates` requires complete evidence, normalised instants, `identity_conflicts` + unique raw-ownership index. 15 new tests. | `test_missing_serial_different_names_do_not_merge`, `test_reparse_does_not_give_one_original_two_flights` |
 | F08 equal-length reparse kept stale track | 0 (fixed on first attempt) | Hypothesis: `_store_telemetry` refused parser telemetry at `sample_count >= len(kept)`. Change: replace at equal length; refuse only a strict drop from a different raw; record `source_raw_id` so a reparse of the accepted original is recognised. 4 new tests. | `test_equal_length_correction_changes_summary_and_track` |
-| F09 wrong equipment kind and stale battery history | 0 (fixed on first attempt) | Hypotheses: (a) the FK did not check kind; (b) reassignment did not refresh log-derived readings; (c) the reading was only written on new-flight insert. Change: `reassign_flight` validates kind/existence/Boolean, `refresh_log_battery_reading` rebuilds only `source='log'` rows, called from reassignment and from accepted reparse in the same transaction; `resolve_equipment` name fallback only on candidates without a conflicting serial. 5 new tests. | `test_aircraft_cannot_be_reassigned_to_a_battery`, `test_battery_history_moves_but_manual_readings_stay` |
+| F09 wrong equipment kind and stale battery history | 0 (fixed on first attempt) | Hypotheses: (a) the FK did not check kind; (b) reassignment did not refresh log-derived readings; (c) the reading was only written on new-flight insert. Change: `reassign_flight` validates kind/existence/Boolean, `refresh_log_battery_reading` rebuilds only `source='log'` rows, called from reassignment and from accepted reparse; `resolve_equipment` name fallback only on candidates without a conflicting serial. 5 new tests. | `test_aircraft_cannot_be_reassigned_to_a_battery`, `test_battery_history_moves_but_manual_readings_stay` |
+| F10 air-time semantics inconsistent | 0 (fixed on first attempt) | Hypotheses: (a) `bool(None)` made a missing ground flag False; (b) air time required a GPS fix; (c) maintenance summed `duration_s`. Change: tri-state adapter flags, `airborne_state` fallback ground→motor→height with unknown preserved, air time computed without fixes, `airborne_partial`/`airborne_unknown` flags, maintenance uses `airborne_time_s` and reports unknown rather than zero. 8 new tests. | `test_stationary_without_ground_flag_is_not_airborne`, `test_log_duration_does_not_become_air_minutes`, `test_unknown_air_time_makes_the_counter_partial_not_zero` |
+| F11 first capture ignored captured limits | 0 (fixed on first attempt) | Hypotheses: (a) rules were created with defaults before the snapshot pass; (b) the existing-row branch never updated limits. Change: existing-row path applies captured limits unless `owner_limits`; `set_rule_policy` marks `owner_limits=1` on a threshold change. 2 new tests + calendar-baseline case. | `test_first_capture_applies_the_captured_limit`, `test_a_later_capture_preserves_an_owner_edited_limit` |
 
 ## Behaviour changes landed (keep docs in step)
 
@@ -191,6 +194,17 @@ compaction and restarts.
   from the duration actually written, so an unknown duration no longer leaves a
   stale hash.
 
+- **P07** — Telemetry flags are tri-state through the adapter; a missing
+  ground/motor flag is unknown, not False. Air time counts intervals whose state
+  is off-ground, using ground → motor → height in that order, and is computed
+  from timing alone (a flight can have air time and no GPS fix). Unknown air
+  time is `None` with an `airborne_unknown` flag; partly-known coverage carries
+  `airborne_partial`. Maintenance counts `airborne_time_s` air minutes, never
+  the log duration, and an enabled counter whose flights are all unmeasurable
+  reports `unknown` instead of a reassuring `ok`. First-capture rules receive
+  the captured limits; a later capture will not reset a threshold the owner
+  edited (`rules.owner_limits`).
+
 ## Pending human IDs
 
 Canonical file: `FlightDesk_Review_Pack/FLIGHTFIX-HUMAN.md`.
@@ -231,11 +245,11 @@ re-asked):
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
 git switch flightfix/repairs
-python -m flightdesk selftest      # expect 482 tests, 0 failures at P06
+python -m flightdesk selftest      # expect 494 tests, 0 failures at P07
 ```
 
-Smallest next action: read P07 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
-findings F10–F11, then fix `parser_adapter.sample_from_frame` ground flags,
-`maintenance` air-minute source, and first-capture rule limits in `capture.py`.
+Smallest next action: read P08 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
+finding F12, then make `tools/reparse_all.py` a real dry run (analysis without
+writes) with resume state, and fix the never-resetting consecutive counter.
 
-If the host forces a stop: verify `git status` is clean, push, then resume at P07.
+If the host forces a stop: verify `git status` is clean, push, then resume at P08.

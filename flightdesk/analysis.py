@@ -184,24 +184,34 @@ def compute_metrics(
     # Older logs that never report the flag fall back to the motor-or-height
     # rule and say so.
     ground_flag_present = any(s.get("on_ground") is not None for s in clean)
+    motor_flag_present = any(s.get("motor_on") is not None for s in clean)
+    height_present = any(isinstance(s.get("height_m"), (int, float)) for s in clean)
+    airborne_known = ground_flag_present or motor_flag_present or height_present
+    airborne_unknown_dt = 0.0
     if not ground_flag_present:
-        m.flags.append("airborne_from_motor")
+        m.flags.append("airborne_from_motor" if (motor_flag_present or height_present)
+                       else "airborne_unknown")
 
-    def is_airborne(sample: dict[str, Any]) -> bool:
-        """Whether the interval ending at this sample counts as air time.
+    def airborne_state(sample: dict[str, Any]) -> bool | None:
+        """Off-ground state of one sample: True, False, or unknown.
 
         The interval is attributed to the state at its end. A single interval
         that spans take-off or landing is therefore counted with the later
         state: at most one sample interval of ambiguity per transition, which
         on real logs is about a second, and which the archive-wide calibration
         against AirData (24h10m vs 24h10m) absorbed.
+
+        A missing flag is unknown, not ground and not air. The fallback order is
+        the explicit ground flag, then the motor flag, then height above take-off.
         """
-        if ground_flag_present:
+        if sample.get("on_ground") is not None:
             return sample.get("on_ground") is False
+        if sample.get("motor_on") is not None:
+            return bool(sample.get("motor_on"))
         height = sample.get("height_m")
-        return bool(sample.get("motor_on")) or (
-            isinstance(height, (int, float)) and height > 0.5
-        )
+        if isinstance(height, (int, float)) and math.isfinite(float(height)):
+            return float(height) > 0.5
+        return None
 
     def close_gap(end_t: float) -> None:
         nonlocal gap_open
@@ -259,8 +269,11 @@ def compute_metrics(
             )
 
         if prev is not None and 0 < dt <= gap_threshold:
-            if is_airborne(s):
+            state = airborne_state(s)
+            if state is True:
                 airborne_s += dt
+            elif state is None:
+                airborne_unknown_dt += dt
 
         if has_fix:
             prev_valid = s
@@ -270,7 +283,16 @@ def compute_metrics(
         close_gap(float(clean[-1]["t"]))
     m.path_length_m = round(path_m, 2) if m.valid_fix_count > 1 else None
     m.max_home_distance_m = round(max_home_m, 2) if m.valid_fix_count else None
-    m.airborne_time_s = round(airborne_s, 3) if m.valid_fix_count else None
+    # Air time comes from the ground/motor/height evidence, not from the GPS
+    # route: a flight can have valid timing with no fix at all. When no sample
+    # carried any of that evidence the air time is unknown, not zero.
+    if airborne_known and len(clean) > 1:
+        m.airborne_time_s = round(airborne_s, 3)
+        if airborne_unknown_dt > 0:
+            m.flags.append("airborne_partial")
+    else:
+        m.airborne_time_s = None
+        m.flags.append("airborne_unknown")
     m.gap_count = len(m.gaps)
 
     charges = [s.get("battery_pct") for s in clean if s.get("battery_pct") is not None]

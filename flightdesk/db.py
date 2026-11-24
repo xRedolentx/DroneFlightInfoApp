@@ -191,6 +191,7 @@ CREATE TABLE IF NOT EXISTS rules (
     captured_baseline_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    owner_limits INTEGER NOT NULL DEFAULT 0,
     UNIQUE(equipment_id, code)
 );
 
@@ -540,6 +541,9 @@ def _add_rule_columns(conn: sqlite3.Connection) -> None:
         ("days_limit", "ALTER TABLE rules ADD COLUMN days_limit INTEGER"),
         ("service_items_json", "ALTER TABLE rules ADD COLUMN service_items_json TEXT"),
         ("source", "ALTER TABLE rules ADD COLUMN source TEXT"),
+        # Owner-edited limits must survive a later capture. Without this flag a
+        # capture could reset a policy the owner changed on purpose.
+        ("owner_limits", "ALTER TABLE rules ADD COLUMN owner_limits INTEGER NOT NULL DEFAULT 0"),
     ):
         if column in existing:
             continue

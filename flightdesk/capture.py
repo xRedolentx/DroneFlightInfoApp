@@ -805,15 +805,36 @@ def _ensure_rule(
         rule_id = int(cur.lastrowid)
     else:
         rule_id = int(row["id"])
+        # Apply captured limits to a rule that still holds its defaults. A rule
+        # whose limits the owner edited keeps them: a capture restates policy,
+        # it does not overrule the owner. The reviewed build never updated the
+        # limits on the existing-row path, so a captured limit of 7 stayed 20.
+        owner_limits = int(row["owner_limits"] or 0) if "owner_limits" in row.keys() else 0
+        limit_sets = ""
+        limit_values: list[Any] = []
+        if captured and not owner_limits:
+            for c in captured.counters:
+                if not c.get("limit"):
+                    continue
+                column = {"flights": "flights_limit",
+                          "minutes": "air_minutes_limit",
+                          "charges": "charges_limit"}.get(c["metric"])
+                if column is None or limits.get(c["metric"]) is None:
+                    continue
+                limit_sets += f",{column}=?"
+                limit_values.append(limits[c["metric"]])
         conn.execute(
             "UPDATE rules SET captured_status=COALESCE(?,captured_status),"
             "captured_baseline_text=COALESCE(?,captured_baseline_text),"
-            "captured_baseline_at=COALESCE(?,captured_baseline_at),updated_at=? WHERE id=?",
+            "captured_baseline_at=COALESCE(?,captured_baseline_at),updated_at=?"
+            + limit_sets + " WHERE id=?",
             (
                 captured.status if captured else None,
                 captured.baseline_text if captured else None,
                 captured.baseline_text if captured else None,
-                now, rule_id,
+                now,
+                *limit_values,
+                rule_id,
             ),
         )
     return rule_id
