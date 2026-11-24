@@ -174,6 +174,18 @@ These answers exist before the repair run. Do not re-ask them; preserve them.
 - **Restore target preference** — the owner has never activated a restored
   root. Fresh-root restore only; activation stays an explicit owner action.
 
+## Archive corruption quarantine (added 2026-11-23, P02)
+
+If an import finds an archived original whose bytes no longer match its own
+name, the import stops with `archive_object_corrupt`. Nothing in the archive is
+replaced. Both the damaged object and the good bytes just received are copied to
+`<data root>\quarantine\` as `…-corrupt.bin` and `…-incoming.bin`.
+
+That is a recovery prompt, not a routine event. If it ever appears, the owner
+decides whether the archive copy should be restored from the quarantined
+incoming file or from an independent backup. The agent must not apply that repair
+to the live root without the usual preview and approval (H01).
+
 ## Required final handoff
 
 Before ending the repair run, the agent must update this section with:

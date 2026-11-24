@@ -12,8 +12,9 @@ Rules that matter, and why:
     including a file the owner put there. A name collision is resolved by
     suffixing, never by replacing.
   * **A manifest, so the second run is fast.** `flightdesk-export.json` maps a
-    content hash to the name it was written under. A hash already exported, with
-    its file still present at the recorded size, is skipped.
+    content hash to the name it was written under. A hash already exported is
+    skipped only after the destination file has been hashed and matched; the
+    manifest alone never justifies a skip.
   * **Verify after copy.** The bytes are hashed again from the destination; a
     mismatch is reported, not silently left behind.
 """
@@ -22,16 +23,24 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
+import tempfile
 import threading
-from pathlib import Path
+import uuid
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from . import db, errlog
 
 MANIFEST_NAME = "flightdesk-export.json"
 MANIFEST_VERSION = 1
+# Names Windows reserves regardless of extension. A file called `con.txt` cannot
+# be created there, so an export must not write one.
+_RESERVED_NAMES = {"con", "prn", "aux", "nul"} | {
+    f"{stem}{n}" for stem in ("com", "lpt") for n in range(1, 10)
+}
 DEFAULT_SETTINGS = {
     "folder": "",
     "variants": False,
@@ -137,25 +146,64 @@ def _safe_name(name: str) -> str:
         core = core.replace(bad, "_")
     if not core.lower().endswith(".txt"):
         core += ".txt"
-    return core
+    stem = core[:-4].rstrip(" .") or "flight"
+    if stem.lower() in _RESERVED_NAMES:
+        stem = "_" + stem
+    return stem + ".txt"
+
+
+def _safe_rel(rel: object) -> str | None:
+    """Accept only a plain relative path inside the destination."""
+    if not isinstance(rel, str) or not rel.strip():
+        return None
+    raw = rel.replace("\\", "/")
+    if raw.startswith("/") or re.match(r"^[A-Za-z]:", raw):
+        return None
+    parts = [part for part in raw.split("/") if part not in ("", ".")]
+    if not parts or any(part == ".." for part in parts):
+        return None
+    return "/".join(parts)
 
 
 def _load_manifest(dest: Path) -> dict[str, Any]:
+    """Read the manifest, keeping only well-formed entries.
+
+    The manifest records what this program wrote; it is not permission to
+    overwrite whatever is on disk now. Malformed or escaping entries are
+    dropped, so their files are treated as someone else's.
+    """
     path = dest / MANIFEST_NAME
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and isinstance(data.get("files"), dict):
-            return data
     except (OSError, ValueError):
-        pass
-    return {"version": MANIFEST_VERSION, "files": {}}
+        return {"version": MANIFEST_VERSION, "files": {}}
+    if not isinstance(data, dict) or not isinstance(data.get("files"), dict):
+        return {"version": MANIFEST_VERSION, "files": {}}
+    files: dict[str, dict[str, Any]] = {}
+    for sha, entry in data["files"].items():
+        if not isinstance(sha, str) or len(sha) < 8 or not isinstance(entry, dict):
+            continue
+        rel = _safe_rel(entry.get("path"))
+        if rel is None:
+            continue
+        size = entry.get("size")
+        files[sha] = {"path": rel, "size": size if isinstance(size, int) else None}
+    version = data.get("version")
+    return {"version": version if isinstance(version, int) else MANIFEST_VERSION,
+            "files": files}
 
 
 def _save_manifest(dest: Path, manifest: dict[str, Any]) -> None:
     path = dest / MANIFEST_NAME
-    tmp = path.with_suffix(".json.part")
-    tmp.write_text(json.dumps(manifest, indent=1, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, path)
+    fd, name = tempfile.mkstemp(prefix=f".{MANIFEST_NAME}.", suffix=".part",
+                                dir=str(dest))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(manifest, indent=1, sort_keys=True))
+        os.replace(name, path)
+    except BaseException:
+        Path(name).unlink(missing_ok=True)
+        raise
 
 
 def _claimed(manifest: dict[str, Any]) -> dict[str, str]:
@@ -168,82 +216,207 @@ def _claimed(manifest: dict[str, Any]) -> dict[str, str]:
     return out
 
 
+def _sha_claim(manifest: dict[str, Any], sha: str) -> str | None:
+    entry = manifest.get("files", {}).get(sha)
+    if isinstance(entry, dict):
+        rel = entry.get("path")
+        if isinstance(rel, str):
+            return rel
+    return None
+
+
+def _inside(dest: Path, target: Path) -> bool:
+    """Does target resolve to somewhere inside dest? Follows junctions/symlinks."""
+    try:
+        base = dest.resolve()
+        resolved = target.resolve()
+    except OSError:
+        return False
+    return resolved == base or base in resolved.parents
+
+
+def _folder_of(rel: str) -> str:
+    parent = str(PurePosixPath(rel).parent)
+    return "" if parent == "." else parent
+
+
+def _alloc_rel(dest: Path, folder: str, base: str, sha: str,
+               taken: set[str]) -> str | None:
+    """Pick a destination name that is free, contained, and not already taken.
+
+    The base name is tried first, then the hash-suffixed form, then numbered
+    suffixes. Nothing already on disk is ever chosen, so an owner's file and an
+    occupied suffixed name are both preserved.
+    """
+    stem = base[:-4] if base.lower().endswith(".txt") else base
+    names = [base, f"{stem}__{sha[:8]}.txt"]
+    names.extend(f"{stem}__{sha[:8]}-{n}.txt" for n in range(2, 100))
+    for name in names:
+        rel = f"{folder}/{name}" if folder else name
+        if rel.lower() in taken:
+            continue
+        target = dest / rel
+        if target.exists() or not _inside(dest, target):
+            continue
+        return rel
+    for _ in range(8):
+        name = f"{stem}__{sha[:8]}-{uuid.uuid4().hex[:8]}.txt"
+        rel = f"{folder}/{name}" if folder else name
+        if rel.lower() in taken:
+            continue
+        target = dest / rel
+        if not target.exists() and _inside(dest, target):
+            return rel
+    return None
+
+
+def _reusable_rel(dest: Path, manifest: dict[str, Any], sha: str, folder: str,
+                  base: str, taken: set[str]) -> str | None:
+    """The manifest's name for this sha, if it still fits and still exists."""
+    claim = _sha_claim(manifest, sha)
+    if not claim or claim.lower() in taken:
+        return None
+    if _folder_of(claim) != folder:
+        return None
+    if PurePosixPath(claim).name.lower() != base.lower():
+        return None
+    target = dest / claim
+    if not target.exists() or not _inside(dest, target):
+        return None
+    return claim
+
+
+def _publish_no_clobber(tmp: Path, target: Path) -> None:
+    """Move tmp into place, raising FileExistsError instead of replacing.
+
+    `os.replace` overwrites, which is exactly what an additive export must not
+    do: a file that appeared between the existence check and this move would be
+    lost. Windows `os.rename` refuses an occupied target; POSIX needs a hard
+    link, which fails the same way and is atomic.
+    """
+    if os.name == "nt":
+        os.rename(tmp, target)
+        return
+    os.link(tmp, target)
+    tmp.unlink(missing_ok=True)
+
+
 def plan(conn: sqlite3.Connection, dest: Path, *, variants: bool,
          group_by_year: bool) -> list[dict[str, Any]]:
+    """Advisory preview of names an export would write. No bytes are verified."""
     dest = Path(dest)
     manifest = _load_manifest(dest)
-    owners = _claimed(manifest)
     items = select(conn, variants=variants)
     out: list[dict[str, Any]] = []
-    assigned: set[str] = set()
+    taken: set[str] = set()
     for item in items:
         base = _safe_name(item["name"])
         folder = item["year"] if group_by_year else ""
-        rel = f"{folder}/{base}" if folder else base
-        owner = owners.get(rel.lower())
-        if owner is not None and owner != item["sha256"]:
-            rel = _suffixed(folder, base, item["sha256"])
-        elif rel.lower() in assigned:
-            rel = _suffixed(folder, base, item["sha256"])
-        # A file the owner already put there is not ours to replace.
-        target = dest / rel
-        if target.exists() and owners.get(rel.lower()) != item["sha256"]:
-            rel = _suffixed(folder, base, item["sha256"])
-        assigned.add(rel.lower())
+        rel = _reusable_rel(dest, manifest, item["sha256"], folder, base, taken)
+        if rel is None:
+            rel = _alloc_rel(dest, folder, base, item["sha256"], taken)
+        if rel is None:
+            rel = f"{folder}/{base}" if folder else base
+        taken.add(rel.lower())
         out.append({**item, "path": rel})
     return out
 
 
-def _suffixed(folder: str, base: str, sha: str) -> str:
-    stem = base[:-4] if base.lower().endswith(".txt") else base
-    name = f"{stem}__{sha[:8]}.txt"
-    return f"{folder}/{name}" if folder else name
+def _export_one(root: Path, dest: Path, item: dict[str, Any],
+                manifest: dict[str, Any], taken: set[str],
+                report: dict[str, Any], group_by_year: bool) -> None:
+    sha = item["sha256"]
+    base = _safe_name(item["name"])
+    folder = item["year"] if group_by_year else ""
+    rel = _reusable_rel(dest, manifest, sha, folder, base, taken)
+    if rel is None:
+        rel = _alloc_rel(dest, folder, base, sha, taken)
+    if rel is None:
+        report["problems"].append({"sha256": sha[:12], "code": "no_free_name"})
+        return
+    target = dest / rel
+    if target.exists():
+        if _hash_file(target) == sha:
+            taken.add(rel.lower())
+            report["skipped"] += 1
+            report["verified"] += 1
+            return
+        # The bytes are not what this name claims. Keep the file and write a
+        # verified copy under a fresh name; never replace it.
+        report["preserved"] += 1
+        report["conflicts"].append({"sha256": sha[:12], "path": rel})
+        replacement = _alloc_rel(dest, folder, base, sha, taken)
+        if replacement is None:
+            report["problems"].append({"sha256": sha[:12], "code": "no_free_name"})
+            return
+        rel = replacement
+        target = dest / rel
+    taken.add(rel.lower())
+    source = Path(root) / "archive" / item["stored_rel"]
+    if not source.exists():
+        report["problems"].append({"sha256": sha[:12], "code": "source_missing"})
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".part",
+                                    dir=str(target.parent))
+    os.close(fd)
+    temp = Path(temp_name)
+    published = False
+    try:
+        shutil.copyfile(source, temp)
+        if _hash_file(temp) != sha:
+            report["problems"].append({"sha256": sha[:12], "code": "hash_mismatch"})
+            return
+        for _ in range(8):
+            try:
+                _publish_no_clobber(temp, target)
+                published = True
+                break
+            except FileExistsError:
+                # Something appeared at the target after the existence check.
+                report["preserved"] += 1
+                report["conflicts"].append({"sha256": sha[:12], "path": rel})
+                replacement = _alloc_rel(dest, folder, base, sha, taken)
+                if replacement is None:
+                    report["problems"].append(
+                        {"sha256": sha[:12], "code": "no_free_name"})
+                    return
+                rel = replacement
+                target = dest / rel
+                taken.add(rel.lower())
+        if not published:
+            report["problems"].append({"sha256": sha[:12], "code": "target_occupied"})
+            return
+        manifest["files"][sha] = {"path": rel, "size": item["size"]}
+        report["copied"] += 1
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def run(conn: sqlite3.Connection, root: Path, dest: Path, *, variants: bool,
         group_by_year: bool,
         progress: Callable[[int, int], None] | None = None) -> dict[str, Any]:
-    """Copy the selection into `dest`. Additive only; returns a report."""
+    """Copy the selection into `dest`. Additive only; returns a report.
+
+    `skipped` means the destination was hashed and matched, not merely sized.
+    A destination file whose bytes differ is counted in `preserved` and
+    `conflicts`, and a new copy is written beside it.
+    """
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     manifest = _load_manifest(dest)
-    items = plan(conn, dest, variants=variants, group_by_year=group_by_year)
-    report: dict[str, Any] = {"copied": 0, "skipped": 0, "problems": [],
+    items = select(conn, variants=variants)
+    report: dict[str, Any] = {"copied": 0, "skipped": 0, "verified": 0,
+                              "preserved": 0, "conflicts": [], "problems": [],
                               "total": len(items), "folder": str(dest)}
+    taken: set[str] = set()
     total = len(items)
     for index, item in enumerate(items, start=1):
-        sha = item["sha256"]
-        rel = item["path"]
-        target = dest / rel
-        entry = manifest["files"].get(sha)
         try:
-            if (isinstance(entry, dict) and entry.get("path") == rel
-                    and target.exists() and target.stat().st_size == item["size"]):
-                report["skipped"] += 1
-                if progress:
-                    progress(index, total)
-                continue
-            source = Path(root) / "archive" / item["stored_rel"]
-            if not source.exists():
-                report["problems"].append({"sha256": sha[:12], "code": "source_missing"})
-                if progress:
-                    progress(index, total)
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            part = target.with_name(target.name + ".part")
-            shutil.copyfile(source, part)
-            digest = _hash_file(part)
-            if digest != sha:
-                part.unlink(missing_ok=True)
-                report["problems"].append({"sha256": sha[:12], "code": "hash_mismatch"})
-                if progress:
-                    progress(index, total)
-                continue
-            os.replace(part, target)
-            manifest["files"][sha] = {"path": rel, "size": item["size"]}
-            report["copied"] += 1
+            _export_one(root, dest, item, manifest, taken, report, group_by_year)
         except OSError as exc:
-            report["problems"].append({"sha256": sha[:12], "code": type(exc).__name__})
+            report["problems"].append({"sha256": item["sha256"][:12],
+                                       "code": type(exc).__name__})
             errlog.record(root, "raw_export_copy", exc)
         if progress:
             progress(index, total)
@@ -287,13 +460,6 @@ class Job:
 
     def start(self, db_file: Path, root: Path, dest: Path, *, variants: bool,
               group_by_year: bool, auto: bool = False) -> bool:
-        if self.running():
-            return False
-        with self._lock:
-            self._state = {"state": "running", "done": 0, "total": 0, "copied": 0,
-                           "skipped": 0, "problems": [], "at": db.now_utc(),
-                           "auto": auto}
-
         def progress(done: int, total: int) -> None:
             with self._lock:
                 self._state["done"] = done
@@ -320,6 +486,16 @@ class Job:
                 if conn is not None:
                     conn.close()
 
-        self._thread = threading.Thread(target=body, name="fd-raw-export", daemon=True)
-        self._thread.start()
+        # The running check, the state reset and the thread start share one
+        # lock: two requests arriving together used to both pass the check and
+        # both start a job, and the second silently replaced the first's state.
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return False
+            self._state = {"state": "running", "done": 0, "total": 0, "copied": 0,
+                           "skipped": 0, "problems": [], "at": db.now_utc(),
+                           "auto": auto}
+            thread = threading.Thread(target=body, name="fd-raw-export", daemon=True)
+            self._thread = thread
+            thread.start()
         return True

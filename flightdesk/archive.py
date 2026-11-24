@@ -4,9 +4,11 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import uuid
 import zipfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Iterable, Iterator
 
@@ -32,6 +34,12 @@ class TooLarge(ArchiveError):
 
 class DiskFull(ArchiveError):
     category = "disk_full"
+
+
+class ArchiveCorrupt(ArchiveError):
+    """An archive object already on disk does not match its own hash."""
+
+    category = "archive_object_corrupt"
 
 
 @dataclass(frozen=True)
@@ -111,6 +119,36 @@ def classify_member(norm: str) -> str:
     return "archive"
 
 
+def quarantine_dir(root: Path) -> Path:
+    return Path(root) / "quarantine"
+
+
+def _object_problem(dest: Path, size: int, digest: str) -> str | None:
+    """Why an existing object cannot be trusted, or None when it is identical.
+
+    Size alone is not proof: the reviewed build accepted a same-length
+    corruption as a duplicate and discarded the intact bytes just received.
+    """
+    try:
+        if dest.stat().st_size != size:
+            return "a different size"
+        return None if hash_file(dest) == digest else "a different hash"
+    except OSError:
+        return "unreadable"
+
+
+def _quarantine(root: Path, source: Path, digest: str, tag: str) -> str | None:
+    """Copy evidence aside without touching the archive. Returns the name used."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    target = quarantine_dir(root) / f"{digest[:16]}-{stamp}-{tag}.bin"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        return target.name
+    except OSError:
+        return None
+
+
 def store_stream(src: BinaryIO, root: Path, *, max_bytes: int = MAX_MEMBER_BYTES) -> Stored:
     """Persist src under the archive. Hash is computed while writing; the
     destination is content-addressed and moved into place atomically."""
@@ -146,8 +184,19 @@ def store_stream(src: BinaryIO, root: Path, *, max_bytes: int = MAX_MEMBER_BYTES
         dest = root / "archive" / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists():
-            if dest.stat().st_size != size:
-                raise ArchiveError("existing archive object has different size")
+            problem = _object_problem(dest, size, digest)
+            if problem is not None:
+                # Fail closed. The corrupt object stays where it is and the
+                # good bytes just received are kept beside it, so neither the
+                # archive nor the only intact copy is silently replaced. A
+                # visible `archive_object_corrupt` item is the recovery prompt.
+                corrupt_copy = _quarantine(root, dest, digest, "corrupt")
+                received_copy = _quarantine(root, tmp, digest, "incoming")
+                raise ArchiveCorrupt(
+                    "archive object " + digest[:12] + " is " + problem
+                    + "; copies kept in quarantine (" + str(corrupt_copy)
+                    + ", " + str(received_copy) + ")"
+                )
             tmp.unlink(missing_ok=True)
         else:
             os.replace(tmp, dest)

@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import json
 import unittest
+from pathlib import Path
 
 from support import TempCase, TempRoot, log_bytes
 
-from flightdesk import db, errlog, rawexport
+from flightdesk import db, errlog, paths, rawexport
 from flightdesk.server import build_server
 
 
@@ -145,6 +146,152 @@ class RawExportTest(TempCase):
         row = db.one(self.conn, "SELECT payload_json FROM audit_log "
                                 "WHERE action='raw_export_settings' ORDER BY id DESC")
         self.assertNotIn("tmp/logs", row["payload_json"])
+
+
+class RawExportPreservationTest(TempCase):
+    """P02/F02: an export is additive. Nothing in the folder is replaced."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.dest = self.root / "out"
+        self.dest.mkdir(parents=True, exist_ok=True)
+        self.data = log_bytes(11)
+        self.name = "FlightRecord_2026-08-11_[21-53-20].txt"
+        self.import_bytes(self.data, self.name)
+        self.sha = db.one(self.conn, "SELECT sha256 FROM raw_files")["sha256"]
+
+    def _export(self, **kwargs):
+        options = {"variants": False, "group_by_year": False}
+        options.update(kwargs)
+        return rawexport.run(self.conn, self.root, self.dest, **options)
+
+    def _txt_names(self) -> list[str]:
+        return sorted(p.name for p in self.dest.iterdir() if p.suffix == ".txt")
+
+    def test_a_modified_export_of_different_length_is_preserved(self) -> None:
+        self.assertEqual(self._export()["copied"], 1)
+        target = self.dest / self.name
+        target.write_bytes(b"owner edited this")
+        report = self._export()
+        self.assertEqual(target.read_bytes(), b"owner edited this")
+        self.assertEqual(report["copied"], 1, report)
+        self.assertEqual(report["preserved"], 1, report)
+        self.assertEqual(len(self._txt_names()), 2, self._txt_names())
+        fresh = [p for p in self.dest.iterdir() if p.suffix == ".txt" and p != target][0]
+        self.assertEqual(fresh.read_bytes(), self.data)
+
+    def test_a_modified_export_of_the_same_length_is_detected(self) -> None:
+        # Size alone proves nothing. The reviewed build skipped this as "already
+        # exported" while the owner's edited bytes sat in the folder.
+        self.assertEqual(self._export()["copied"], 1)
+        target = self.dest / self.name
+        edited = bytearray(self.data)
+        edited[30] ^= 0xFF
+        target.write_bytes(bytes(edited))
+        report = self._export()
+        self.assertEqual(target.read_bytes(), bytes(edited))
+        self.assertEqual(report["copied"], 1, report)
+        self.assertEqual(report["preserved"], 1, report)
+        self.assertEqual(report["skipped"], 0, report)
+        copies = [p for p in self.dest.iterdir() if p.suffix == ".txt" and p != target]
+        self.assertEqual([p.read_bytes() for p in copies], [self.data])
+
+    def test_an_occupied_suffixed_name_is_preserved(self) -> None:
+        quiet = self.dest / self.name
+        quiet.write_text("owner first", encoding="utf-8")
+        suffixed = self.dest / (
+            Path(self.name).stem + "__" + self.sha[:8] + ".txt")
+        suffixed.write_text("owner second", encoding="utf-8")
+        report = self._export()
+        self.assertEqual(quiet.read_text(encoding="utf-8"), "owner first")
+        self.assertEqual(suffixed.read_text(encoding="utf-8"), "owner second")
+        self.assertEqual(report["copied"], 1, report)
+        self.assertEqual(len(self._txt_names()), 3, self._txt_names())
+        written = [p for p in self.dest.iterdir() if p.suffix == ".txt"
+                   and p not in (quiet, suffixed)][0]
+        self.assertEqual(written.read_bytes(), self.data)
+
+    def test_an_unrelated_part_file_is_never_overwritten(self) -> None:
+        stray = self.dest / "something.part"
+        stray.write_bytes(b"another program's temp")
+        report = self._export()
+        self.assertEqual(stray.read_bytes(), b"another program's temp")
+        self.assertEqual(report["copied"], 1, report)
+        self.assertEqual([p for p in self.dest.iterdir() if p.suffix == ".part"], [stray])
+
+    def test_a_target_appearing_during_publication_is_preserved(self) -> None:
+        original = rawexport._publish_no_clobber
+        planted: list[Path] = []
+
+        def racing(tmp, target):
+            if not planted:
+                planted.append(target)
+                target.write_text("appeared late", encoding="utf-8")
+            return original(tmp, target)
+
+        rawexport._publish_no_clobber = racing
+        try:
+            report = self._export()
+        finally:
+            rawexport._publish_no_clobber = original
+        self.assertEqual(planted[0].read_text(encoding="utf-8"), "appeared late")
+        self.assertEqual(report["copied"], 1, report)
+        written = [p for p in self.dest.iterdir() if p.suffix == ".txt"
+                   and p != planted[0]]
+        self.assertEqual([p.read_bytes() for p in written], [self.data])
+
+    def test_two_concurrent_exports_never_lose_bytes(self) -> None:
+        import threading
+        results: list[dict] = []
+
+        def export() -> None:
+            conn = db.connect(paths.db_path(self.root))
+            try:
+                results.append(rawexport.run(conn, self.root, self.dest,
+                                             variants=True, group_by_year=False))
+            finally:
+                conn.close()
+
+        threads = [threading.Thread(target=export) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+        self.assertEqual(len(results), 2)
+        names = self._txt_names()
+        self.assertGreaterEqual(len(names), 1)
+        for path in self.dest.iterdir():
+            if path.suffix == ".txt":
+                self.assertEqual(path.read_bytes(), self.data, path.name)
+        self.assertEqual([p for p in self.dest.iterdir() if p.suffix == ".part"], [])
+
+    def test_a_manifest_entry_that_escapes_is_ignored(self) -> None:
+        victim = self.root / "victim.txt"
+        victim.write_text("outside the export folder", encoding="utf-8")
+        (self.dest / rawexport.MANIFEST_NAME).write_text(json.dumps({
+            "version": 1,
+            "files": {self.sha: {"path": "../victim.txt", "size": len(self.data)}},
+        }), encoding="utf-8")
+        report = self._export()
+        self.assertEqual(victim.read_text(encoding="utf-8"), "outside the export folder")
+        self.assertEqual(report["copied"], 1, report)
+        self.assertTrue((self.dest / self.name).exists())
+
+    def test_the_job_refuses_two_starts_in_a_row(self) -> None:
+        import time
+        job = rawexport.Job()
+        first = job.start(paths.db_path(self.root), self.root, self.dest,
+                          variants=False, group_by_year=False)
+        second = job.start(paths.db_path(self.root), self.root, self.dest,
+                           variants=False, group_by_year=False)
+        self.assertTrue(first)
+        self.assertFalse(second)
+        for _ in range(200):
+            if not job.running():
+                break
+            time.sleep(0.05)
+        self.assertFalse(job.running())
+        self.assertEqual(job.snapshot()["state"], "done")
 
 
 class RawExportApiTest(unittest.TestCase):

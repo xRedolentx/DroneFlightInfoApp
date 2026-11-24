@@ -67,9 +67,8 @@ no private records were read.
 
 ## Current batch / next runnable batch
 
-- Current batch: **P01 — DONE**
-- Next runnable batch: **P02 — Non-overwriting exports and archive integrity**
-  (independent after P00)
+- Current batch: **P02 — DONE**
+- Next runnable batch: **P03 — Complete backup validation** (independent after P00)
 
 ## Batch table
 
@@ -79,7 +78,7 @@ Statuses: `TODO` `IN_PROGRESS` `DONE` `PARTIAL` `BLOCKED` `WAITING_DEPENDENCY` `
 |---|---|---|---|---|---|
 | P00 | DONE | `FLIGHTFIX-STATE.md`, review pack, `FlightDesk_Review_Pack/FLIGHTFIX-HUMAN.md` (owner-decision merge) | baseline selftest 407/0/0; probes 19/19 reproduced | `ebe0706` | none |
 | P01 | DONE | `flightdesk/demo.py`, `importer.py`, `db.py`, `views.py`, `server.py`, `__main__.py`, `web/app.js`, `OWNER-GUIDE.md`, `tests/test_demo_isolation.py`, `tests/test_stage3_web.py` | selftest **418 / 0 failures / 0 errors**; F01 probe now reports `pilot="Owner pilot", tags=["Owner tag"]` unchanged | (this checkpoint) | none |
-| P02 | TODO | — | — | — | none |
+| P02 | DONE | `flightdesk/rawexport.py`, `flightdesk/archive.py`, `tests/test_stage18_raw_export.py`, `tests/test_archive_integrity.py` | selftest **430 / 0 failures**; F02 probes now return the owner's bytes in both collision cases; F03 probe `duplicate_count=0` with the corrupt object left in place | (this checkpoint) | none |
 | P03 | TODO | — | — | — | none |
 | P04 | TODO | — | — | — | after P03 |
 | P05 | TODO | — | — | — | after P04 |
@@ -102,7 +101,9 @@ compaction and restarts.
 
 | Problem | Attempts since progress | Hypotheses / results | Progress evidence |
 |---|---|---|---|
-| F01 demo seeding contaminated owner records | 0 (fixed on first attempt) | Hypothesis: the seed's guard is `demo_seeded` only, so any populated root is eligible; the tag/pilot update selects all flights. Change: atomic empty-root claim inside `BEGIN IMMEDIATE`, synthetic marker set before any write, serials-by-content scoping of pilot/tag edits, and a backend import refusal in a synthetic root. Result: 11 new tests pass; F01 probe shows the owner's pilot and tags unchanged. | Probe output before `["mapping"]`/`Demo Pilot`, after `["Owner tag"]`/`Owner pilot`; 418-test suite green |
+| F01 demo seeding contaminated owner records | 0 (fixed on first attempt) | Hypothesis: the seed's guard is `demo_seeded` only; the tag/pilot update selects all flights. Change: atomic empty-root claim inside `BEGIN IMMEDIATE`, synthetic marker before any write, content-scoped pilot/tag edits, backend import refusal in a synthetic root. Result: 11 new tests pass. | Probe before `["mapping"]`/`Demo Pilot`, after `["Owner tag"]`/`Owner pilot`; 418-test suite green |
+| F02 raw export overwrote destination files | 0 (fixed on first attempt) | Hypotheses: (a) one-shot suffixing collides with an occupied suffixed name; (b) `os.replace` publishes over whatever appeared; (c) skip decided by size only. Change: collision loop, validated manifest claims, hash-verified skips, unique `mkstemp` temp, no-clobber publish, containment checks, atomic `Job.start`. 8 new tests including a target planted mid-publication and concurrent exporters. | Probe bytes before `one`/`one`, after `owner changed this file`/`owner second` |
+| F03 same-size archive corruption accepted | 0 (fixed on first attempt) | Hypothesis: `store_stream` compares only `st_size`. Change: hash the existing object; on mismatch quarantine both copies and raise `ArchiveCorrupt` without touching the archive. 4 new tests. | Probe `duplicate_count` 1 -> 0; corrupt bytes unchanged |
 
 ## Behaviour changes landed (keep docs in step)
 
@@ -116,6 +117,16 @@ compaction and restarts.
   originals are the exact bytes the seed wrote. `OWNER-GUIDE.md` explains the
   separate-root workflow. Tests moved to `ImportApiTest` (non-demo root) because
   importing into a demo root is now refused by design.
+
+- **P02** — Raw export never replaces a destination file. `skipped` now means the
+  destination was hashed and matched (the report also carries `verified`); a
+  modified destination is kept and a verified copy is written beside it
+  (`preserved`, `conflicts`). Manifest entries are validated and used only as a
+  hint. An existing archive object is verified by hash, not length; a mismatch
+  raises `archive_object_corrupt`, quarantines both the corrupt object and the
+  bytes just received under `<root>/quarantine/`, and leaves the archive
+  untouched. `Job.start` serialises its running check and thread start under one
+  lock.
 
 ## Pending human IDs
 
@@ -157,14 +168,18 @@ re-asked):
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
 git switch flightfix/repairs
-python -m flightdesk selftest      # expect 418 tests, 0 failures at P01
+python -m flightdesk selftest      # expect 430 tests, 0 failures at P02
 ```
 
-Smallest next action: read P02 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
-findings F02–F03, then fix `flightdesk/rawexport.py` (collision-safe allocator,
-no-clobber publication, atomic `Job.start`) and `flightdesk/archive.py::store_stream`
-(hash verification, quarantine on same-size corruption), with tests in
-`tests/test_stage18_raw_export.py` and the archive tests.
+Smallest next action: read P03 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
+finding F04, then rebuild `backup.py::validate_backup` as one strict validator
+reused by restore: reconcile `raw_files`, manifest entries and normalised ZIP
+members; reject missing/duplicate/aliased paths; stream members within size
+bounds; make creation validate its own artifact. Tests in
+`tests/test_stage7_backup.py` and `tests/test_stage21_concurrent_backup.py`.
+
+Checkpoint note: P03 was not started in this turn. Everything through P02 is
+committed and pushed on `flightfix/repairs`.
 
 If the host forces a stop: verify `git status` is clean on `flightfix/repairs`,
-push the branch, then resume at P02.
+push the branch, then resume at P03.
