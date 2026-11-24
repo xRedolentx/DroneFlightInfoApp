@@ -75,13 +75,11 @@ def main() -> int:
     target.mkdir(exist_ok=True)
     (target / "existing-marker.txt").write_text("do not lose me", encoding="utf-8")
 
-    real_extract = zipfile.ZipFile.extractall
-
-    def interrupted_extract(self, *args, **kwargs):
+    def interrupted_extract(*args, **kwargs):
         raise OSError(5, "simulated disconnect while extracting the backup")
 
     try:
-        with mock.patch.object(zipfile.ZipFile, "extractall", interrupted_extract):
+        with mock.patch.object(backup.shutil, "copyfileobj", interrupted_extract):
             interrupted = backup.restore_backup(Path(follow["path"]), target,
                                                 allow_existing=True)
     except Exception as exc:  # an interruption may raise rather than return
@@ -93,7 +91,8 @@ def main() -> int:
     print("target_marker_kept=" + str(marker.exists()
                                       and marker.read_text(encoding="utf-8") == "do not lose me"))
     print("no_half_written_target=" + str(not (target / "manifest.json").exists()))
-    stale = [p.name for p in base.iterdir() if ".restore-tmp" in p.name]
+    stale = [p.name for p in base.iterdir()
+             if ".restore-tmp" in p.name or ".restore-" in p.name]
     print("stale_staging_dirs=" + str(stale))
 
     # ---- and a clean restore after that must still work --------------------

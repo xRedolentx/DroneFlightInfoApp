@@ -339,6 +339,48 @@ def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+class SchemaTooNew(RuntimeError):
+    """The database was written by a newer version of the app.
+
+    Opening it must not modify it — not a WAL switch, not a DDL statement, not
+    a version bump. The reviewed build executed the schema script, ran the
+    migration helpers and then set every differing version to 1, so a database
+    from the future was silently relabelled and mutated.
+    """
+
+    code = "schema_newer_than_app"
+
+    def __init__(self, found: int, supported: int):
+        super().__init__(
+            f"database schema version {found} is newer than this app supports "
+            f"({supported}); refusing to open or modify it"
+        )
+        self.found = int(found)
+        self.supported = int(supported)
+
+
+def probe_user_version(path: Path) -> int:
+    """Read user_version without writing anything. 0 when it cannot be read."""
+    try:
+        conn = connect(path, readonly=True)
+        try:
+            return int(conn.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError):
+        pass
+    # A WAL database without its -shm cannot always be opened read-only. The
+    # version is also stored in the file header, big-endian, at byte 60.
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(100)
+        if len(head) < 100 or head[:16] != b"SQLite format 3\x00":
+            return 0
+        return int.from_bytes(head[60:64], "big")
+    except OSError:
+        return 0
+
+
 def connect(path: Path | str, readonly: bool = False) -> sqlite3.Connection:
     p = Path(path)
     if readonly:
@@ -356,14 +398,31 @@ def connect(path: Path | str, readonly: bool = False) -> sqlite3.Connection:
 
 
 def init_db(path: Path | str) -> sqlite3.Connection:
+    p = Path(path)
+    # Fail closed on a newer schema before touching the file: this connection
+    # would otherwise switch the journal mode and run DDL on a database it does
+    # not understand.
+    if p.exists() and p.stat().st_size > 0:
+        found = probe_user_version(p)
+        if found > int(SCHEMA_VERSION):
+            raise SchemaTooNew(found, int(SCHEMA_VERSION))
     conn = connect(path)
-    conn.executescript(SCHEMA)
-    _retire_media_columns(conn)
-    _add_warning_columns(conn)
-    _add_rule_columns(conn)
-    current = conn.execute("PRAGMA user_version").fetchone()[0]
-    if current != SCHEMA_VERSION:
-        conn.execute(f"PRAGMA user_version={int(SCHEMA_VERSION)}")
+    try:
+        conn.executescript(SCHEMA)
+        _retire_media_columns(conn)
+        _add_warning_columns(conn)
+        _add_rule_columns(conn)
+        current = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        # Advance the version only after every migration step succeeded, and
+        # never lower a version: a mismatch is a bug in this code, not a fact to
+        # impose.
+        if current < int(SCHEMA_VERSION):
+            conn.execute(f"PRAGMA user_version={int(SCHEMA_VERSION)}")
+    except BaseException:
+        # A half-migrated connection must not be left open, and on Windows an
+        # open handle keeps the file locked against cleanup.
+        conn.close()
+        raise
     return conn
 
 
@@ -396,6 +455,9 @@ def _add_rule_columns(conn: sqlite3.Connection) -> None:
     first version of this app implemented only the two counter triggers and no
     checklist, so these columns bring the model up to what the source actually
     has. Idempotent: each column is checked before it is added.
+
+    A failure here is not swallowed: without these columns the rule model is
+    wrong, and a migration that quietly did nothing is worse than an error.
     """
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(rules)")}
     for column, ddl in (
@@ -407,8 +469,10 @@ def _add_rule_columns(conn: sqlite3.Connection) -> None:
             continue
         try:
             conn.execute(ddl)
-        except sqlite3.Error:
-            pass
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                conn.commit()
+                raise
     conn.commit()
 
 
@@ -423,8 +487,10 @@ def _add_warning_columns(conn: sqlite3.Connection) -> None:
     if "warnings_json" not in existing:
         try:
             conn.execute("ALTER TABLE flights ADD COLUMN warnings_json TEXT")
-        except sqlite3.Error:
-            pass
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                conn.commit()
+                raise
     conn.commit()
 
 

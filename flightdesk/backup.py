@@ -534,8 +534,91 @@ def validate_backup(path: Path, *, max_members: int = 20000,
     }
 
 
+def _protected_roots(extra: list[Path] | None = None) -> list[Path]:
+    """Every root a restore must never write into or replace.
+
+    The default root and the currently activated root are both protected even
+    when the app is serving from somewhere else: a restore aimed at the active
+    archive would destroy it, and a restore aimed at the default root would
+    quietly plant a second archive where the next launch would find it.
+    """
+    candidates: list[Path] = []
+    try:
+        candidates.append(paths.default_data_root())
+    except OSError:
+        pass
+    try:
+        pointer = paths.app_home() / "active_data_root.txt"
+        if pointer.is_file():
+            text = pointer.read_text(encoding="utf-8").strip()
+            if text:
+                candidates.append(Path(text))
+    except OSError:
+        pass
+    if extra:
+        candidates.extend(Path(item) for item in extra if item)
+    out: list[Path] = []
+    for candidate in candidates:
+        try:
+            resolved = Path(candidate).expanduser().resolve()
+        except OSError:
+            continue
+        if resolved not in out:
+            out.append(resolved)
+    return out
+
+
+def _target_conflict(target: Path, protected: list[Path]) -> str | None:
+    """Why this target is not a safe place to restore into, or None.
+
+    Canonicalising both sides through `resolve()` follows junctions and symlinks
+    on Windows and POSIX, so an alias of a protected root is caught too.
+    """
+    try:
+        resolved = target.resolve()
+    except OSError:
+        return None
+    for root in protected:
+        if resolved == root:
+            return "target_is_active_root"
+        if root in resolved.parents:
+            return "target_inside_active_root"
+        if resolved in root.parents:
+            return "target_contains_active_root"
+    return None
+
+
+def _restore_lock(target: Path) -> Path:
+    """Exclusive per-target lock, so two restores cannot write the same root."""
+    lock = target.with_name("." + target.name + ".restore.lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+
+    def _acquire() -> int:
+        return os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+
+    try:
+        fd = _acquire()
+    except FileExistsError:
+        # A lock older than two hours is a crash, not a live restore.
+        try:
+            stale = time.time() - lock.stat().st_mtime > 2 * 3600
+        except OSError:
+            stale = True
+        if not stale:
+            raise RuntimeError("restore_in_progress")
+        try:
+            lock.unlink(missing_ok=True)
+            fd = _acquire()
+        except OSError as exc:
+            raise RuntimeError("restore_in_progress") from exc
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(str(os.getpid()))
+    return lock
+
+
 def restore_backup(path: Path, target_root: Path, *,
-                   allow_existing: bool = False) -> dict[str, Any]:
+                   allow_existing: bool = False,
+                   protected: list[Path] | None = None) -> dict[str, Any]:
     path = Path(path)
     if not path.is_file():
         return {"ok": False, "code": "backup_not_found"}
@@ -545,22 +628,35 @@ def restore_backup(path: Path, target_root: Path, *,
     os.close(fd)
     source = Path(name)
     staging: Path | None = None
+    lock: Path | None = None
     try:
         shutil.copyfile(path, source)
         validation = validate_backup(source)
         if not validation.get("ok"):
             return {"ok": False, "code": "validation_failed", "validation": validation}
         manifest = validation.get("manifest") or {}
-        target_root = Path(target_root).resolve()
-        live = paths.default_data_root().resolve()
-        if target_root == live:
-            return {"ok": False, "code": "refuses_live_root"}
+        target_root = Path(target_root).expanduser()
+        try:
+            target_root = target_root.resolve()
+        except OSError:
+            target_root = Path(os.path.abspath(str(target_root)))
+        conflict = _target_conflict(target_root, _protected_roots(protected))
+        if conflict:
+            return {"ok": False, "code": conflict}
         if target_root.exists() and any(target_root.iterdir()) and not allow_existing:
             return {"ok": False, "code": "target_not_empty"}
-        staging = target_root.with_name(target_root.name + ".restore-tmp")
-        if staging.exists():
-            shutil.rmtree(staging)
-        staging.mkdir(parents=True, exist_ok=True)
+        try:
+            lock = _restore_lock(target_root)
+        except RuntimeError:
+            return {"ok": False, "code": "restore_in_progress"}
+
+        # A uniquely owned directory beside the target. A predictable
+        # `<target>.restore-tmp` is never reused: someone else's folder at that
+        # name is not ours to delete.
+        target_root.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(
+            prefix=f".{target_root.name}.restore-", dir=str(target_root.parent)))
+
         # Extract exactly the members the validator approved — nothing that was
         # not in the manifest, and nothing discovered while unpacking.
         wanted = [MANIFEST, DB_NAME]
@@ -577,12 +673,15 @@ def restore_backup(path: Path, target_root: Path, *,
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(member) as src, open(destination, "wb") as out:
                     shutil.copyfileobj(src, out)
+
+        # Revalidate what was actually written, not only what was read.
         if _sha256_file(staging / DB_NAME) != (manifest.get("db") or {}).get("sha256"):
             return {"ok": False, "code": "restored_db_checksum_failed"}
         for item in manifest.get("archive", []):
-            p = staging / "archive" / item["rel"]
-            if not p.exists() or _sha256_file(p) != item.get("sha256"):
+            staged = staging / "archive" / item["rel"]
+            if not staged.exists() or _sha256_file(staged) != item.get("sha256"):
                 return {"ok": False, "code": "restored_archive_checksum_failed"}
+
         # Move the existing root aside rather than deleting it. Deleting first
         # leaves a window where a crash loses the only copy: the target is gone
         # and the staged copy is not yet in place. Renaming is reversible, so an
@@ -593,6 +692,9 @@ def restore_backup(path: Path, target_root: Path, *,
                 target_root.name + ".previous-" + uuid.uuid4().hex[:8])
             os.replace(target_root, previous)
         try:
+            if target_root.exists():
+                # Something appeared after the move-aside; do not clobber it.
+                raise OSError("restore target occupied during publication")
             os.replace(staging, target_root)
         except OSError:
             if previous is not None and not target_root.exists():
@@ -603,6 +705,11 @@ def restore_backup(path: Path, target_root: Path, *,
     finally:
         if staging is not None and staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
+        if lock is not None:
+            try:
+                lock.unlink(missing_ok=True)
+            except OSError:
+                pass
         try:
             source.unlink(missing_ok=True)
         except OSError:
@@ -616,9 +723,39 @@ def restore_backup(path: Path, target_root: Path, *,
 
 
 def activate_data_root(target_root: Path, home: Path | None = None) -> dict[str, Any]:
-    target_root = Path(target_root).resolve()
-    if not (target_root / DB_NAME).exists():
+    """Point the launcher at a data root, but only after checking it is one.
+
+    A filename is not proof of a usable archive. The reviewed build activated a
+    root merely because `flightdesk.sqlite3` existed; a newer-schema database or
+    one whose originals are missing would then be served as if it were sound.
+    """
+    target_root = Path(target_root).expanduser()
+    try:
+        target_root = target_root.resolve()
+    except OSError:
+        target_root = Path(os.path.abspath(str(target_root)))
+    db_file = target_root / DB_NAME
+    if not db_file.is_file() or db_file.stat().st_size == 0:
         return {"ok": False, "code": "no_database_in_target"}
+    found = db.probe_user_version(db_file)
+    if found > int(SCHEMA_VERSION):
+        return {"ok": False, "code": "target_schema_newer_than_app",
+                "found": found, "supported": int(SCHEMA_VERSION)}
+    missing = 0
+    try:
+        conn = db.connect(db_file, readonly=True)
+        try:
+            if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                return {"ok": False, "code": "target_integrity_failed"}
+            for row in conn.execute("SELECT stored_rel FROM raw_files"):
+                if not (target_root / "archive" / str(row["stored_rel"])).is_file():
+                    missing += 1
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return {"ok": False, "code": "target_unreadable"}
+    if missing:
+        return {"ok": False, "code": "target_archive_incomplete", "missing": missing}
     home = Path(home) if home else paths.app_home()
     home.mkdir(parents=True, exist_ok=True)
     pointer = home / "active_data_root.txt"

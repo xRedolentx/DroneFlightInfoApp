@@ -68,9 +68,9 @@ no private records were read.
 
 ## Current batch / next runnable batch
 
-- Current batch: **P03 — DONE**
-- Next runnable batch: **P04 — Safe restore targets and schema opening**
-  (depends on P03, now met)
+- Current batch: **P04 — DONE**
+- Next runnable batch: **P05 — Flight identity and original ownership**
+  (depends on P04, now met)
 
 ## Batch table
 
@@ -82,7 +82,8 @@ Statuses: `TODO` `IN_PROGRESS` `DONE` `PARTIAL` `BLOCKED` `WAITING_DEPENDENCY` `
 | P01 | DONE | `flightdesk/demo.py`, `importer.py`, `db.py`, `views.py`, `server.py`, `__main__.py`, `web/app.js`, `OWNER-GUIDE.md`, `tests/test_demo_isolation.py`, `tests/test_stage3_web.py` | selftest **418 / 0 failures / 0 errors**; F01 probe now reports `pilot="Owner pilot", tags=["Owner tag"]` unchanged | (this checkpoint) | none |
 | P02 | DONE | `flightdesk/rawexport.py`, `flightdesk/archive.py`, `tests/test_stage18_raw_export.py`, `tests/test_archive_integrity.py` | selftest **430 / 0 failures**; F02 probes now return the owner's bytes in both collision cases; F03 probe `duplicate_count=0` with the corrupt object left in place | (this checkpoint) | none |
 | P03 | DONE | `flightdesk/backup.py`, `tests/test_backup_completeness.py`, `tests/test_stage7_backup.py` | selftest **444 / 0 failures**; F04 probes: the missing-member probe now aborts at the restore step because restore refuses the artifact (validation_failed), which is the fix | (this checkpoint) | none |
-| P04 | TODO | — | — | — | after P03 (met) |
+| P04 | DONE | `flightdesk/db.py`, `flightdesk/backup.py`, `flightdesk/server.py`, `flightdesk/__main__.py`, `tools/fault_check.py`, `tests/test_restore_protection.py`, `tests/test_stage7_backup.py` | selftest **458 / 0 failures**; fault harness clean (marker kept, no half-written target, no stale staging); F05/F06 probes: the missing-original probe aborts at restore because restore now refuses the artifact | (this checkpoint) | none |
+| P05 | TODO | — | — | — | after P04 (met) |
 | P05 | TODO | — | — | — | after P04 |
 | P06 | TODO | — | — | — | after P05 |
 | P07 | TODO | — | — | — | after P06 |
@@ -106,7 +107,9 @@ compaction and restarts.
 | F01 demo seeding contaminated owner records | 0 (fixed on first attempt) | Hypothesis: the seed's guard is `demo_seeded` only; the tag/pilot update selects all flights. Change: atomic empty-root claim inside `BEGIN IMMEDIATE`, synthetic marker before any write, content-scoped pilot/tag edits, backend import refusal in a synthetic root. Result: 11 new tests pass. | Probe before `["mapping"]`/`Demo Pilot`, after `["Owner tag"]`/`Owner pilot`; 418-test suite green |
 | F02 raw export overwrote destination files | 0 (fixed on first attempt) | Hypotheses: (a) one-shot suffixing collides with an occupied suffixed name; (b) `os.replace` publishes over whatever appeared; (c) skip decided by size only. Change: collision loop, validated manifest claims, hash-verified skips, unique `mkstemp` temp, no-clobber publish, containment checks, atomic `Job.start`. 8 new tests including a target planted mid-publication and concurrent exporters. | Probe bytes before `one`/`one`, after `owner changed this file`/`owner second` |
 | F03 same-size archive corruption accepted | 0 (fixed on first attempt) | Hypothesis: `store_stream` compares only `st_size`. Change: hash the existing object; on mismatch quarantine both copies and raise `ArchiveCorrupt` without touching the archive. 4 new tests. | Probe `duplicate_count` 1 -> 0; corrupt bytes unchanged |
-| F04 backup validation approved missing originals | 0 (fixed on first attempt) | Hypotheses: (a) the validator iterated present members instead of proving required ones exist; (b) a manifest count stood in for inventory equivalence; (c) restore re-read the source independently of validation. Change: one strict `validate_backup` reconciling DB rows, manifest entries and canonicalised ZIP members; allowlisted members; duplicate/alias detection; streamed DB inspection; creation self-validates the artifact; restore validates then extracts only approved members from a private copy of the source. 14 new tests, including the exact ghost-original case. | Probe `manifest_omits_db_referenced_object` now refuses at restore; 444-test suite green |
+| F04 backup validation approved missing originals | 0 (fixed on first attempt) | Hypotheses: (a) the validator iterated present members instead of proving required ones exist; (b) a manifest count stood in for inventory equivalence; (c) restore re-read the source independently of validation. Change: one strict `validate_backup` reconciling DB rows, manifest entries and canonicalised ZIP members; allowlisted members; duplicate/alias detection; streamed DB inspection; creation self-validates the artifact; restore validates then extracts only approved members from a private copy of the source. 14 new tests. | Probe `manifest_omits_db_referenced_object` now refuses at restore; 444-test suite green |
+| F05 restore owned unprotected paths | 0 (fixed on first attempt) | Hypotheses: (a) staging name was predictable and deleted unconditionally; (b) protection covered only the default root; (c) the web route exposed `allow_existing`. Change: unique `mkdtemp` staging, per-target exclusive lock, protection of default + active-pointer + serving root with canonical resolution and ancestor/descendant checks, `allow_existing` forced false on the web route, activation validates the DB and every referenced original. 14 new tests. | `test_an_unrelated_staging_directory_survives`, `test_a_custom_serving_root_is_protected` |
+| F06 newer schema silently downgraded | 0 (fixed on first attempt) | Hypothesis: `init_db` ran DDL/migrations then set any differing version to 1. Change: probe `user_version` read-only (header fallback) before any write; raise `SchemaTooNew`; advance the version only after migrations succeed; migration failures surface; close the connection on failure. 4 new tests, including byte-for-byte immutability. | `test_a_newer_schema_is_refused_and_left_untouched` compares file hashes |
 
 ## Behaviour changes landed (keep docs in step)
 
@@ -142,6 +145,19 @@ compaction and restarts.
   and uses a random-suffixed filename when the timestamp name is taken.
   `restore_backup` copies the source, validates that copy, then extracts only the
   approved members, so validation and extraction never read different bytes.
+
+- **P04** — `restore_backup` protects the default root, the activated root (read
+  from `active_data_root.txt`) and the serving root passed by the caller; it
+  refuses a target equal to, inside, or containing any of them, after canonical
+  resolution. Staging is a unique `mkdtemp` directory beside the target, never a
+  predictable `<target>.restore-tmp`, and a per-target lock refuses overlapping
+  restores. The web route no longer accepts `allow_existing`. `activate_data_root`
+  verifies the target's schema is supported, the database passes
+  `integrity_check`, and every referenced original exists. `db.init_db` raises
+  `db.SchemaTooNew` for a newer schema **without writing anything**, advances the
+  version only after migrations succeed, surfaces required-migration failures,
+  and closes its connection on failure. The launcher reports a newer-schema root
+  plainly instead of opening it.
 
 ## Pending human IDs
 
@@ -183,12 +199,12 @@ re-asked):
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
 git switch flightfix/repairs
-python -m flightdesk selftest      # expect 444 tests, 0 failures at P03
+python -m flightdesk selftest      # expect 458 tests, 0 failures at P04
 ```
 
-Smallest next action: read P04 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
-findings F05–F06, then protect restore targets (`backup.py::restore_backup`,
-`server.py` restore routes) and make `db.init_db` refuse a newer schema before
-any DDL/migration write.
+Smallest next action: read P05 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
+finding F07, then make flight identity conservative in
+`importer.py::_insert_or_link_flight/reparse_raw` and add the raw-ownership
+invariant, with tests in `tests/test_stage1_import.py`/`test_stage16_fingerprints.py`.
 
-If the host forces a stop: verify `git status` is clean, push, then resume at P04.
+If the host forces a stop: verify `git status` is clean, push, then resume at P05.

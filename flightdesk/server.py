@@ -1056,7 +1056,11 @@ def api_backup_restore(ctx: Ctx) -> None:
         _send_json(ctx.handler, {"ok": False, "code": "target_required"}, 400)
         return
     result = backup.restore_backup(Path(path), Path(target),
-                                   allow_existing=bool(body.get("allow_existing")))
+                                   # Never an in-place replacement from the web
+                                   # route: restoring is always into a fresh
+                                   # root, and the active roots are protected.
+                                   allow_existing=False,
+                                   protected=[ctx.app.root])
     _send_json(ctx.handler, result)
 
 

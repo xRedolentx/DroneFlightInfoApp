@@ -130,7 +130,14 @@ def serve(args: argparse.Namespace) -> int:
             _open_browser(url)
         return 0
     paths.ensure_layout(root)
-    server, app = build_server(root, args.port)
+    try:
+        server, app = build_server(root, args.port)
+    except db.SchemaTooNew as exc:
+        # Refuse rather than open: a newer database must not be modified, and a
+        # silently downgraded one loses records the newer app wrote.
+        print(f"This data root was written by a newer Flight Desk: {exc}")
+        print("Update the app, or start with a different --root.")
+        return 2
     write_state(root, app.port)
     url = home_url(app.port)
     print(f"Flight Desk is running at {url}")

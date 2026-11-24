@@ -54,7 +54,9 @@ class BackupTest(TempCase):
         with mock.patch("flightdesk.paths.default_data_root", return_value=Path(self.root)):
             attempt = backup.restore_backup(Path(result["path"]), Path(self.root))
         self.assertFalse(attempt["ok"])
-        self.assertEqual(attempt["code"], "refuses_live_root")
+        # The live root is now protected as the active root, which subsumes the
+        # older live-root check.
+        self.assertIn(attempt["code"], {"refuses_live_root", "target_is_active_root"})
 
     def test_restore_refuses_a_populated_target(self) -> None:
         result = backup.create_backup(self.conn, self.root, self.dest)
