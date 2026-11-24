@@ -61,8 +61,15 @@ def validate_flight_bytes(data: bytes) -> tuple[bool, str]:
                 return False, "copy_truncated"
         return True, "ok"
     offset = struct.unpack_from("<Q", data, 0)[0]
-    if offset <= 0 or offset >= len(data):
+    if offset <= 0:
+        # Offset 0 / a negative value is a defect in the file: on the real
+        # archive two v11 logs store 0 and are genuinely unreadable. Keep them.
         return False, "bad_details_offset"
+    if offset >= len(data):
+        # The block is said to start past the bytes we received, which is a
+        # truncated transfer, not a damaged original. They need different
+        # handling: one is retried, the other is kept as evidence.
+        return False, "copy_truncated"
     # The details block has a declared length too. `offset < len(data)` alone
     # accepted a file that ended halfway through its own details block — which
     # is what a stalled MTP copy leaves behind.
@@ -165,9 +172,43 @@ def _mark_success(conn, device: str) -> None:
                      (db.now_utc(), device))
 
 
+def _retain_unverified(root: Path, path: Path, reason: str) -> str | None:
+    """Move bytes whose completeness could not be proven somewhere retryable.
+
+    They are not imported and not added to the known set, so the next scan tries
+    them again; they are kept so nothing observed is silently destroyed.
+    """
+    folder = Path(root) / "tmp" / "usb-unverified"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = db.now_utc().replace(":", "").replace("-", "")
+        target = folder / f"{stamp}-{reason}-{path.name}"
+        shutil.move(str(path), str(target))
+        return target.name
+    except OSError:
+        return None
+
+
+def _entry_complete(entry: dict) -> tuple[bool, str]:
+    """Whether a collector entry is a proven complete transfer.
+
+    A known source length that was fully received, and the collector's own
+    closed read, is the normal case. An unknown size (MTP reports 0) is only
+    trusted when the collector read the file twice and the hashes agreed; a
+    stable size for three seconds is not proof, and neither is a header that
+    fits inside whatever arrived.
+    """
+    if entry.get("complete") is False:
+        return False, "incomplete_transfer"
+    if entry.get("size_known") is False and not entry.get("sha256_match"):
+        return False, "unverified_unknown_size"
+    return True, "ok"
+
+
 def _import_staged_file(importer: Importer, conn, result: ScanResult, *,
                         batch, path: Path, name: str, device: str,
-                        target: str | None) -> bool:
+                        target: str | None, complete: bool = True,
+                        incomplete_reason: str = "incomplete_transfer") -> bool:
     """Validate and import one staged file. Returns True if a record was stored.
 
     Shared by the normal path and by the salvage path after a collector timeout,
@@ -181,6 +222,15 @@ def _import_staged_file(importer: Importer, conn, result: ScanResult, *,
             result.attention += 1
             result.notes.append("staged_file_missing")
             importer.note_rejected(batch, code="staged_file_missing")
+            return False
+        if not complete:
+            # Keep the bytes, do not index them: an unproven copy must not enter
+            # the known set, or every later scan would skip the real file.
+            kept = _retain_unverified(importer.root, path, incomplete_reason)
+            result.attention += 1
+            result.notes.append(f"unverified_transfer:{incomplete_reason}")
+            importer.note_rejected(batch, code=f"unverified_transfer:{incomplete_reason}",
+                                   detail=(kept or name))
             return False
         if path.stat().st_size > MAX_COPY_BYTES:
             result.attention += 1
@@ -271,10 +321,19 @@ def _salvage_staged(conn, root: Path, staging: Path, result: ScanResult, batch) 
                 pass
     result.scanned += salvaged
     result.notes.append("salvaged_after_timeout" if salvaged else "nothing_staged_to_salvage")
+    if salvaged:
+        # These passed structural checks but the collector never confirmed the
+        # transfer completed; say so rather than presenting them as read.
+        result.notes.append("salvaged_structural_only")
 
 
 def scan(conn, root: Path, *, staging_root: Path | None = None,
-         timeout_s: int = 60, max_files: int = 0) -> ScanResult:
+         timeout_s: int = 60, max_files: int = 0, verify: bool = False) -> ScanResult:
+    """Read the attached controller.
+
+    `verify=True` ignores the name+size fast skip, so every file is copied and
+    content-hashed. Use it when the owner wants proof rather than a heuristic.
+    """
     root = Path(root)
     staging = Path(staging_root) if staging_root else root / "tmp" / f"usb-{uuid.uuid4().hex}"
     staging.mkdir(parents=True, exist_ok=True)
@@ -304,16 +363,22 @@ def scan(conn, root: Path, *, staging_root: Path | None = None,
         # Everything the archive already holds, by name and size. Without this a
         # controller left plugged in makes the 45 s watcher re-copy the whole
         # device on every pass: measured at 182 MB per scan on a Smart Controller.
-        skip_file = staging.parent / f"usb-skip-{uuid.uuid4().hex}.json"
-        try:
-            known = db.all_rows(
-                conn, "SELECT original_name AS name, size_bytes AS size FROM raw_files")
-            skip_file.write_text(
-                json.dumps([{"name": r["name"], "size": int(r["size"] or 0)}
-                            for r in known if r["name"]], separators=(",", ":")),
-                encoding="utf-8")
-        except OSError:
+        if verify:
+            # No skip list: re-read and hash every file. Name+size is a hint, not
+            # proof that the bytes are identical.
             skip_file = None
+            result.notes.append("verified_reread")
+        else:
+            skip_file = staging.parent / f"usb-skip-{uuid.uuid4().hex}.json"
+            try:
+                known = db.all_rows(
+                    conn, "SELECT original_name AS name, size_bytes AS size FROM raw_files")
+                skip_file.write_text(
+                    json.dumps([{"name": r["name"], "size": int(r["size"] or 0)}
+                                for r in known if r["name"]], separators=(",", ":")),
+                    encoding="utf-8")
+            except OSError:
+                skip_file = None
         args = ["-StagingRoot", str(staging), "-TimeoutSeconds", str(timeout_s)]
         if max_files > 0:
             args += ["-MaxFilesPerRun", str(int(max_files))]
@@ -383,9 +448,11 @@ def scan(conn, root: Path, *, staging_root: Path | None = None,
             try:
                 name = str(entry.get("source_name") or path.name)
                 device = str(entry.get("device") or "controller")
+                complete, reason = _entry_complete(entry)
                 _import_staged_file(importer, conn, result, batch=scan_batch,
                                     path=path, name=name, device=device,
-                                    target=entry.get("target"))
+                                    target=entry.get("target"),
+                                    complete=complete, incomplete_reason=reason)
             finally:
                 try:
                     path.unlink(missing_ok=True)
@@ -433,7 +500,8 @@ class SimEntry:
 
 
 def simulate(conn, root: Path, entries: Iterable[SimEntry], *,
-             interrupt: bool = False, duplicate_storage: bool = False) -> ScanResult:
+             interrupt: bool = False, duplicate_storage: bool = False,
+             verify: bool = False) -> ScanResult:
     """Exercise the collector contract without claiming physical hardware."""
     root = Path(root)
     result = ScanResult(status="ok", mode="simulated")
@@ -471,7 +539,7 @@ def simulate(conn, root: Path, entries: Iterable[SimEntry], *,
         seen_paths.add(key)
         result.scanned += 1
         sizes = known.get(display)
-        if sizes is not None and len(entry.data) in sizes:
+        if not verify and sizes is not None and len(entry.data) in sizes:
             result.duplicates += 1
             result.notes.append("skipped_known")
             continue

@@ -176,7 +176,7 @@ class App:
             self._watcher_wake.wait(timeout=max(20, interval))
             self._watcher_wake.clear()
 
-    def run_scan(self, *, reason: str = "manual") -> tuple[dict[str, Any], bool]:
+    def run_scan(self, *, reason: str = "manual", verify: bool = False) -> tuple[dict[str, Any], bool]:
         """Run one controller scan, or report busy. Never overlaps another."""
         if not self._scan_lock.acquire(blocking=False):
             return {"ok": False, "code": "scan_in_progress", "busy": True}, True
@@ -186,7 +186,7 @@ class App:
                 self._scan_state["scanning"] = True
                 self._scan_state["last_attempt"] = db.now_utc()
             conn = self.connect()
-            result = usb.scan(conn, self.root)
+            result = usb.scan(conn, self.root, verify=verify)
             with self._state_lock:
                 self._scan_state["last_success"] = db.now_utc()
                     
@@ -841,7 +841,8 @@ def api_usb(ctx: Ctx) -> None:
 
 @route("POST", r"/api/usb/scan")
 def api_usb_scan(ctx: Ctx) -> None:
-    payload, busy = ctx.app.run_scan(reason="manual")
+    body = ctx.json_body()
+    payload, busy = ctx.app.run_scan(reason="manual", verify=bool(body.get("verify")))
     if busy:
         _send_json(ctx.handler, payload, 409)
         return
