@@ -69,8 +69,7 @@ no private records were read.
 ## Current batch / next runnable batch
 
 - Current batch: **P11a — DONE**; P11b (merge) not implemented
-- Next runnable batch: **P12 — Small UI reliability and usability repairs**
-  (dependencies P01, P09 and the P11 identity labels are met)
+- Next runnable batch: **P13 — Reproducible setup and meaningful test tiers**
 
 ## Batch table
 
@@ -90,7 +89,7 @@ Statuses: `TODO` `IN_PROGRESS` `DONE` `PARTIAL` `BLOCKED` `WAITING_DEPENDENCY` `
 | P09 | DONE | `flightdesk/server.py`, `flightdesk/__main__.py`, `tests/test_watcher_lifecycle.py`, `tests/test_launcher.py` | selftest **509 / 0 failures**; enable starts a real scan, disable stops it, repeated enable is one worker, manual/scheduled scans never overlap | (this checkpoint) | none |
 | P10 | DONE | `flightdesk/usb.py`, `flightdesk/server.py`, `tests/test_usb_completeness.py` | selftest **517 / 0 failures**; unknown-size copies need matching reads, incomplete bytes are retained and retried, verify mode bypasses the skip, offset-past-prefix is a truncated copy | (this checkpoint) | PowerShell collector unchanged (no evidence fields yet); hardware completion is H03 |
 | P11 | PARTIAL | `flightdesk/identity.py`, `flightdesk/db.py`, `flightdesk/views.py`, `flightdesk/server.py`, `flightdesk/importer.py`, `flightdesk/web/app.js`, `tests/test_identity_review.py` | selftest **525 / 0 failures**; evidence review, keep-separate/exclude, undo, reparse persistence, API round-trip, static label all pass | (this checkpoint) | **P11b merge is not implemented.** The doc permits shipping an honest review/keep-separate workflow and recording merge as unfinished; do not call the full batch DONE |
-| P12 | TODO | — | — | — | after P01, P09; identity labels after P11 |
+| P12 | PARTIAL | `flightdesk/web/app.js`, `tests/test_ui_small_fixes.py` | selftest **532 / 0 failures**; static pins for Q01-Q05 pass | (this checkpoint) | **browser gate not run this session** (needs a live Edge + server); behaviour is asserted statically, not clicked. Recorded for P14 |
 | P13 | TODO | — | — | — | none |
 | P14 | TODO | — | — | — | all runnable batches addressed |
 | H02 | OPEN | — | — | — | owner runs Windows/parser suite on repaired commit |
@@ -245,6 +244,16 @@ compaction and restarts.
   is not implemented** — it needs an owner conflict policy for pilot/notes/tags
   and is recorded as unfinished, not done.
 
+- **P12** — Small UI corrections: downloads say "Download requested" rather than
+  claiming a save; every navigation bumps `state.renderSeq` and list/detail/filter
+  loads ignore responses from an older route; the Settings USB panel shows the
+  worker's running/scanning/last-success/last-error state and offers a Verify /
+  re-read button; modal action buttons disable while their request is pending, so
+  a double-click cannot submit twice; a flight with no measurable air time reads
+  "unknown", not zero. Behavioural browser checks were not run this session —
+  the corrections are pinned by static tests (`test_ui_small_fixes.py`) and the
+  live gate is recorded for P14.
+
 ## Pending human IDs
 
 Canonical file: `FlightDesk_Review_Pack/FLIGHTFIX-HUMAN.md`.
@@ -285,12 +294,9 @@ re-asked):
 ```powershell
 cd "C:\Users\raven\Desktop\Deepseek\Air-Data-Replace-Build"
 git switch flightfix/repairs
-python -m flightdesk selftest      # expect 525 tests, 0 failures at P11a
+python -m flightdesk selftest      # expect 532 tests, 0 failures at P12
 ```
 
-Smallest next action: read P12 in `FlightDesk_Review_Pack/FLIGHTFIX.md` plus
-Q01–Q05, then apply the small UI corrections: truthful download wording, a
-request-generation guard, real worker/import status, double-submit protection and
-consistent missing-data labels.
+Smallest next action: read P13 in `FlightDesk_Review_Pack/FLIGHTFIX.md`, then add a bounded setup/check command and honest test tiers.
 
-If the host forces a stop: verify `git status` is clean, push, then resume at P12.
+If the host forces a stop: verify `git status` is clean, push, then resume at P13.

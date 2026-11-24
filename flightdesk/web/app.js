@@ -109,7 +109,10 @@
     document.body.appendChild(a);
     a.click();
     setTimeout(function () { a.remove(); }, 2000);
-    toast("Saved " + filename);
+    // The click only *requests* a download. Whether the browser saved it, and
+    // where, is the browser's business; claiming it was saved was a promise
+    // this code could not keep.
+    toast("Download requested: " + filename);
   }
 
   // A native dialog is spawned by the server, so it can surface behind the
@@ -337,6 +340,9 @@
   }
 
   function render() {
+    // Every navigation invalidates earlier in-flight loads, so a slow old
+    // response cannot paint over a newer route or a different selection.
+    state.renderSeq = (state.renderSeq || 0) + 1;
     var r = parseHash();
     var head = r.parts[0] || "flights";
     setNav(head === "flights" ? "flights" : head);
@@ -405,7 +411,9 @@
   }
 
   function renderFiltersInto(target, filters) {
+    var seq = state.renderSeq;
     api("/api/flights?" + queryFromFilters(filters)).then(function (data) {
+      if (seq !== state.renderSeq) return;
       var facets = data.facets;
       var aircraftOptions = ['<option value="">All aircraft</option>'].concat(
         facets.aircraft.map(function (a) {
@@ -516,9 +524,13 @@
   // time; AirData shows both, and so does this app. A flight whose samples
   // could not be read falls back to the log duration and says which it is.
   function flightAir(f) {
-    return (f.airborne_time_s === null || f.airborne_time_s === undefined)
-      ? { value: f.duration_s, label: "log" }
-      : { value: f.airborne_time_s, label: "air" };
+    if (f.airborne_time_s === null || f.airborne_time_s === undefined) {
+      if (f.duration_s === null || f.duration_s === undefined) {
+        return { value: null, label: "unknown" };
+      }
+      return { value: f.duration_s, label: "log" };
+    }
+    return { value: f.airborne_time_s, label: "air" };
   }
 
   function renderResults(data) {
@@ -576,8 +588,14 @@
   }
 
   function loadFlightData(filters) {
-    return api("/api/flights?" + queryFromFilters(filters)).then(renderResults)
-      .catch(function (err) { toast("Could not load flights: " + err.message); });
+    var seq = state.renderSeq;
+    return api("/api/flights?" + queryFromFilters(filters)).then(function (data) {
+      if (seq !== state.renderSeq) return;  // a newer view is showing
+      renderResults(data);
+    }).catch(function (err) {
+      if (seq !== state.renderSeq) return;
+      toast("Could not load flights: " + err.message);
+    });
   }
 
   function bindGo(root) {
@@ -596,7 +614,9 @@
   function renderFlightDetail(id, section) {
     if (!id) return renderFlights();
     state.section = section;
+    var seq = state.renderSeq;
     api("/api/flights/" + id).then(function (data) {
+      if (seq !== state.renderSeq) return;  // navigated away mid-request
       // A different flight is a different map: drop any pan/zoom so each
       // flight opens fitted to its own track.
       if (state.flight && state.flight.flight && state.flight.flight.id !== id) {
@@ -2212,6 +2232,10 @@
         '</div><div class="l">' + pair[1] + "</div></div>";
     }).join("") + "</div>";
     var note = result.note || result.code;
+    if ((totals.new || 0) > 0) {
+      html += '<p class="tiny faint" style="margin-top:6px">Original bytes for every new ' +
+        "file are preserved in the archive; nothing was re-encoded.</p>";
+    }
     var reason = note ? IMPORT_REASONS[note] : null;
     if (reason) {
       html += '<div class="notice bad small" style="margin-top:10px"><b>Nothing was imported ' +
@@ -2325,8 +2349,18 @@
               "without drive letters.</p>" +
               '<div class="row" style="margin-top:10px"><button type="button" class="primary" ' +
               'id="usb-check">Check controllers now</button>' +
+              '<button type="button" class="secondary" id="usb-verify">Verify / re-read logs' +
+              '</button>' +
               '<button type="button" class="secondary" id="usb-watch">' +
               (usbData.watcher.enabled ? "Disable watcher" : "Enable watcher") + "</button></div>" +
+              (usbData.runtime ? '<div class="tiny faint" style="margin-top:6px">Worker: ' +
+                (usbData.runtime.running ? "running" : "stopped") +
+                (usbData.runtime.scanning ? " \u00b7 scanning now" : "") +
+                (usbData.runtime.last_success
+                  ? " \u00b7 last success " + esc(dateOnly(usbData.runtime.last_success)) : "") +
+                (usbData.runtime.last_error
+                  ? " \u00b7 last problem " + esc(usbData.runtime.last_error.category) : "") +
+                "</div>" : "") +
               '<div class="row" style="margin-top:8px"><label class="small"><input type="checkbox" ' +
               'id="usb-logon"' + (usbData.logon.installed ? " checked" : "") + "> Start at " +
               "logon (reversible per-user task)</label></div>" +
@@ -2722,21 +2756,26 @@
           if (out) out.textContent = text;
         });
     });
-    var check = document.getElementById("usb-check");
-    if (check) check.addEventListener("click", function () {
+    function runUsbScan(verify) {
       var out = document.getElementById("usb-result");
-      out.textContent = "Checking controllers…";
-      api("/api/usb/scan", { method: "POST", body: {} }).then(function (res) {
-        out.innerHTML = '<div class="notice small">' + esc(res.status) + " \u00b7 scanned " +
-          res.scanned + " \u00b7 new " + res.imported + " \u00b7 duplicates " + res.duplicates +
-          " \u00b7 attention " + res.attention +
-          (res.status === "partial"
-            ? ". The device still holds logs it has not read yet; the next check " +
-              "continues from what is left."
-            : "") + "</div>";
-        refreshState().then(renderSettings);
-      }).catch(function (e) { out.textContent = "Scan failed: " + e.message; });
-    });
+      out.textContent = verify ? "Re-reading and hashing every controller log…"
+                               : "Checking controllers…";
+      return api("/api/usb/scan", { method: "POST", body: { verify: !!verify } })
+        .then(function (res) {
+          out.innerHTML = '<div class="notice small">' + esc(res.status) + " \u00b7 scanned " +
+            res.scanned + " \u00b7 new " + res.imported + " \u00b7 duplicates " + res.duplicates +
+            " \u00b7 attention " + res.attention +
+            (res.status === "partial"
+              ? ". The device still holds logs it has not read yet; the next check " +
+                "continues from what is left."
+              : "") + "</div>";
+          refreshState().then(renderSettings);
+        }).catch(function (e) { out.textContent = "Scan failed: " + e.message; });
+    }
+    var check = document.getElementById("usb-check");
+    if (check) check.addEventListener("click", function () { runUsbScan(false); });
+    var verifyBtn = document.getElementById("usb-verify");
+    if (verifyBtn) verifyBtn.addEventListener("click", function () { runUsbScan(true); });
     var watch = document.getElementById("usb-watch");
     if (watch) watch.addEventListener("click", function () {
       api("/api/usb").then(function (data) {
@@ -3224,10 +3263,14 @@
       btn.className = b.cls === "primary" ? "primary" : "secondary";
       btn.textContent = b.label;
       btn.addEventListener("click", function () {
-        if (b.action) {
-          var result = b.action();
-          if (result && result.catch) result.catch(function (e) { toast(e.message); });
-        } else closeModal();
+        if (!b.action) { closeModal(); return; }
+        if (btn.disabled) return;  // a double-click must not send twice
+        var result = b.action();
+        if (result && result.then) {
+          btn.disabled = true;
+          var restore = function () { if (btn.isConnected) btn.disabled = false; };
+          result.then(restore, restore);
+        }
       });
       actions.appendChild(btn);
     });
